@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import logging
 import math
 import os
 import sys
 import threading
 import time
 from typing import Optional, Type
+
+log = logging.getLogger(__name__)
 
 from PyQt6.QtCore import (
     Qt, QThread, QTimer, QRectF, QPointF, pyqtSignal, pyqtSlot,
@@ -1477,7 +1480,7 @@ class GameBridgeWindow(QMainWindow):
         try:
             self._engine.process_tick(msg)
         except Exception:
-            pass
+            log.exception("Error processing tick %s", msg.get("tick", "?"))
 
         g = self._engine.game
         tick = g.tick

@@ -41,6 +41,7 @@ import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
 import net.runelite.api.GroundObject;
 import net.runelite.api.Item;
+import net.runelite.api.ItemContainer;
 import net.runelite.api.NPC;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Player;
@@ -93,10 +94,6 @@ public class GameBridgePlugin extends Plugin
 	// key = "varpId,varbitId"; last write within a tick wins
 	private final Map<String, int[]> pendingVarbits = new LinkedHashMap<>();
 
-	// Cached container snapshots for init messages sent to newly-connected clients
-	private List<Map<String, Object>> lastInventoryItems = null;  // container 93
-	private List<Map<String, Object>> lastEquipmentItems = null;  // container 95
-
 	@Provides
 	GameBridgeConfig provideConfig(ConfigManager configManager)
 	{
@@ -117,8 +114,6 @@ public class GameBridgePlugin extends Plugin
 		server.stop();
 		pendingEvents.clear();
 		pendingVarbits.clear();
-		lastInventoryItems = null;
-		lastEquipmentItems = null;
 	}
 
 	@Subscribe
@@ -178,18 +173,9 @@ public class GameBridgePlugin extends Plugin
 			slot.put("qty", items[i].getQuantity());
 			slots.add(slot);
 		}
-		int containerId = event.getContainerId();
-		if (containerId == 93)
-		{
-			lastInventoryItems = new ArrayList<>(slots);
-		}
-		else if (containerId == 95)
-		{
-			lastEquipmentItems = new ArrayList<>(slots);
-		}
 		Map<String, Object> e = new LinkedHashMap<>();
 		e.put("type", "container");
-		e.put("containerId", containerId);
+		e.put("containerId", event.getContainerId());
 		e.put("items", slots);
 		pendingEvents.add(e);
 	}
@@ -234,40 +220,11 @@ public class GameBridgePlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
-		server.activateNewClients(config.exposeInventory() ? buildInitMessage() : null);
+		server.activateNewClients();
 		Map<String, Object> message = buildTickMessage();
 		server.broadcast(gson.toJson(message));
 		pendingEvents.clear();
 		pendingVarbits.clear();
-	}
-
-	private String buildInitMessage()
-	{
-		if (lastInventoryItems == null && lastEquipmentItems == null)
-		{
-			return null;
-		}
-		List<Map<String, Object>> events = new ArrayList<>();
-		if (lastInventoryItems != null)
-		{
-			Map<String, Object> e = new LinkedHashMap<>();
-			e.put("type", "container");
-			e.put("containerId", 93);
-			e.put("items", lastInventoryItems);
-			events.add(e);
-		}
-		if (lastEquipmentItems != null)
-		{
-			Map<String, Object> e = new LinkedHashMap<>();
-			e.put("type", "container");
-			e.put("containerId", 95);
-			e.put("items", lastEquipmentItems);
-			events.add(e);
-		}
-		Map<String, Object> msg = new LinkedHashMap<>();
-		msg.put("tick", client.getTickCount());
-		msg.put("events", events);
-		return gson.toJson(msg);
 	}
 
 	// -------------------------------------------------------------------------
@@ -308,6 +265,13 @@ public class GameBridgePlugin extends Plugin
 		if (config.exposeWidgets())
 		{
 			msg.put("widgets", buildWidgetsList());
+		}
+
+		// 93 = inventory (INV), 94 = worn equipment (WORN)
+		if (config.exposeInventory())
+		{
+			msg.put("inventory", buildItemContainerList(93));
+			msg.put("equipment", buildItemContainerList(94));
 		}
 
 		// Merge pending events and flushed varbits into a single list
@@ -368,36 +332,36 @@ public class GameBridgePlugin extends Plugin
 				{
 					if (go != null)
 					{
-						addObjectIfIncluded(list, go);
+						addObjectIfIncluded(list, go, "game");
 					}
 				}
 				WallObject wall = tile.getWallObject();
 				if (wall != null)
 				{
-					addObjectIfIncluded(list, wall);
+					addObjectIfIncluded(list, wall, "wall");
 				}
 				GroundObject ground = tile.getGroundObject();
 				if (ground != null)
 				{
-					addObjectIfIncluded(list, ground);
+					addObjectIfIncluded(list, ground, "ground");
 				}
 				DecorativeObject deco = tile.getDecorativeObject();
 				if (deco != null)
 				{
-					addObjectIfIncluded(list, deco);
+					addObjectIfIncluded(list, deco, "decorative");
 				}
 			}
 		}
 		return list;
 	}
 
-	private void addObjectIfIncluded(List<Map<String, Object>> list, TileObject obj)
+	private void addObjectIfIncluded(List<Map<String, Object>> list, TileObject obj, String category)
 	{
 		int id = obj.getId();
 		String name = resolveName(id);
 		if (shouldIncludeObject(id, name))
 		{
-			list.add(serializeTileObject(obj, name));
+			list.add(serializeTileObject(obj, name, category));
 		}
 	}
 
@@ -471,6 +435,26 @@ public class GameBridgePlugin extends Plugin
 		return m;
 	}
 
+	private List<Map<String, Object>> buildItemContainerList(int containerId)
+	{
+		ItemContainer container = client.getItemContainer(containerId);
+		if (container == null)
+		{
+			return new ArrayList<>();
+		}
+		Item[] items = container.getItems();
+		List<Map<String, Object>> slots = new ArrayList<>(items.length);
+		for (int i = 0; i < items.length; i++)
+		{
+			Map<String, Object> slot = new LinkedHashMap<>();
+			slot.put("slot", i);
+			slot.put("itemId", items[i].getId());
+			slot.put("qty", items[i].getQuantity());
+			slots.add(slot);
+		}
+		return slots;
+	}
+
 	// -------------------------------------------------------------------------
 	// Serialisation helpers
 	// -------------------------------------------------------------------------
@@ -486,39 +470,27 @@ public class GameBridgePlugin extends Plugin
 		m.put("plane", wp.getPlane());
 		m.put("animation", actor.getAnimation());
 		m.put("combatLevel", actor.getCombatLevel());
-
-		Shape hull = actor.getConvexHull();
-		boolean onScreen = hull != null;
-		m.put("onScreen", onScreen);
-		if (onScreen)
-		{
-			Rectangle b = hull.getBounds();
-			m.put("canvasX", b.x + b.width / 2);
-			m.put("canvasY", b.y + b.height / 2);
-			m.put("hull", hullFilter.matches(id, name) ? hullPoints(hull) : null);
-		}
-		else
-		{
-			m.put("canvasX", null);
-			m.put("canvasY", null);
-			m.put("hull", null);
-		}
+		applyHullFields(m, actor.getConvexHull(), id, name);
 		return m;
 	}
 
-	private Map<String, Object> serializeTileObject(TileObject obj, String name)
+	private Map<String, Object> serializeTileObject(TileObject obj, String name, String category)
 	{
 		int id = obj.getId();
-
 		Map<String, Object> m = new LinkedHashMap<>();
 		m.put("id", id);
 		m.put("name", name);
+		m.put("category", category);
 		WorldPoint wp = obj.getWorldLocation();
 		m.put("worldX", wp.getX());
 		m.put("worldY", wp.getY());
 		m.put("plane", wp.getPlane());
+		applyHullFields(m, getObjectHull(obj), id, name);
+		return m;
+	}
 
-		Shape hull = getObjectHull(obj);
+	private void applyHullFields(Map<String, Object> m, Shape hull, int id, String name)
+	{
 		boolean onScreen = hull != null;
 		m.put("onScreen", onScreen);
 		if (onScreen)
@@ -534,7 +506,6 @@ public class GameBridgePlugin extends Plugin
 			m.put("canvasY", null);
 			m.put("hull", null);
 		}
-		return m;
 	}
 
 	private String resolveName(int id)

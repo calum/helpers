@@ -1,0 +1,171 @@
+{
+  "_comment": "Canonical wire-format contract for the GameBridge plugin. This is the single source of truth for the JSON schema exchanged between the Java plugin and the Python consumer. Update this file whenever the schema changes, then both test suites (test_contract.py and ContractTest.java) will catch mismatches.",
+
+  "tick": 12345,
+
+  "player": {
+    "name": "Zezima",
+    "worldX": 3221,
+    "worldY": 3218,
+    "plane": 0,
+    "animation": -1,
+    "hp": 99,
+    "prayer": 75
+  },
+
+  "camera": {
+    "yaw": 1024,
+    "pitch": 256,
+    "x": 6582,
+    "y": 218,
+    "z": 6532
+  },
+
+  "npcs": [
+    {
+      "id": 3106,
+      "name": "Cow",
+      "worldX": 3225,
+      "worldY": 3215,
+      "plane": 0,
+      "animation": -1,
+      "combatLevel": 2,
+      "onScreen": true,
+      "canvasX": 412,
+      "canvasY": 380,
+      "hull": [[400, 370], [420, 370], [420, 390], [400, 390]]
+    },
+    {
+      "id": 2267,
+      "name": "Guard",
+      "worldX": 3240,
+      "worldY": 3215,
+      "plane": 0,
+      "animation": -1,
+      "combatLevel": 22,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null
+    }
+  ],
+
+  "objects": [
+    {
+      "id": 1276,
+      "name": "Oak tree",
+      "category": "game",
+      "worldX": 3222,
+      "worldY": 3218,
+      "plane": 0,
+      "onScreen": true,
+      "canvasX": 350,
+      "canvasY": 290,
+      "hull": [[340, 280], [360, 280], [360, 300], [340, 300]]
+    },
+    {
+      "id": 1530,
+      "name": "Door",
+      "category": "wall",
+      "worldX": 3222,
+      "worldY": 3219,
+      "plane": 0,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null
+    },
+    {
+      "id": 2290,
+      "name": "Rug",
+      "category": "ground",
+      "worldX": 3222,
+      "worldY": 3220,
+      "plane": 0,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null
+    },
+    {
+      "id": 4350,
+      "name": "Torch",
+      "category": "decorative",
+      "worldX": 3223,
+      "worldY": 3218,
+      "plane": 0,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null
+    }
+  ],
+
+  "widgets": [
+    {
+      "groupId": 149,
+      "childId": 0,
+      "itemId": 995,
+      "quantity": 1000,
+      "bounds": {"x": 560, "y": 210, "width": 32, "height": 32},
+      "text": ""
+    },
+    {
+      "groupId": 149,
+      "childId": 1,
+      "itemId": 1440,
+      "quantity": 1,
+      "bounds": {"x": 596, "y": 210, "width": 32, "height": 32},
+      "text": ""
+    }
+  ],
+
+  "inventory": [
+    {"slot": 0, "itemId": 1440, "qty": 1},
+    {"slot": 1, "itemId": -1,   "qty": 0}
+  ],
+
+  "equipment": [
+    {"slot": 3, "itemId": 4151, "qty": 1},
+    {"slot": 5, "itemId": -1,   "qty": 0}
+  ],
+
+  "events": [
+    {
+      "type": "xp",
+      "skill": "MINING",
+      "xp": 1204050,
+      "level": 72,
+      "boostedLevel": 72
+    },
+    {
+      "type": "chat",
+      "msgType": "GAMEMESSAGE",
+      "name": "",
+      "message": "You mine some iron ore."
+    },
+    {
+      "type": "container",
+      "containerId": 93,
+      "items": [
+        {"slot": 0, "itemId": 1440, "qty": 1},
+        {"slot": 1, "itemId": -1,   "qty": 0}
+      ]
+    },
+    {
+      "type": "animation",
+      "actor": "player",
+      "animId": 625
+    },
+    {
+      "type": "varbit",
+      "varpId": 2,
+      "varbitId": 9178,
+      "value": 3
+    },
+    {
+      "type": "interacting",
+      "target": "Cow"
+    }
+  ]
+}

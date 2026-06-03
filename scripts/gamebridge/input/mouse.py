@@ -56,9 +56,15 @@ class _INPUT(ctypes.Structure):
 # Screen helpers
 # ------------------------------------------------------------------ #
 
+_cached_screen_size: tuple[int, int] | None = None
+
+
 def _screen_size() -> tuple[int, int]:
-    u32 = ctypes.windll.user32
-    return u32.GetSystemMetrics(0), u32.GetSystemMetrics(1)
+    global _cached_screen_size
+    if _cached_screen_size is None:
+        u32 = ctypes.windll.user32
+        _cached_screen_size = (u32.GetSystemMetrics(0), u32.GetSystemMetrics(1))
+    return _cached_screen_size
 
 
 def _to_absolute(x: float, y: float) -> tuple[int, int]:
@@ -129,12 +135,13 @@ def wind_mouse(
     start_y: float,
     dest_x: float,
     dest_y: float,
-    gravity: float = 9.0,
-    wind: float = 3.0,
-    min_wait_ms: float = 2.0,
-    max_wait_ms: float = 8.0,
-    max_step: float = 12.0,
-    target_area: float = 10.0,
+    gravity: float = 5.0,
+    wind: float = 6.0,
+    min_wait_ms: float = 3.0,
+    max_wait_ms: float = 11.0,
+    max_step: float = 9.0,
+    target_area: float = 12.0,
+    move_speed: float = 0.3,
     rng: random.Random | None = None,
 ) -> None:
     """
@@ -145,10 +152,8 @@ def wind_mouse(
       • Gravity — pulls toward the destination
       • Wind    — adds noise that decays as the cursor nears the target
 
-    This produces the natural S-curve overshoot-and-correct pattern seen
-    in real mouse movements.  Each intermediate position is delivered via
-    move_to(), with a tiny inter-step sleep to produce real movement rather
-    than a jump.
+    move_speed (0.0 = fast, 1.0 = slow/deliberate) scales max step size down
+    and inter-step waits up, producing a more careful approach at higher values.
     """
     if rng is None:
         rng = random
@@ -159,12 +164,14 @@ def wind_mouse(
     cx, cy = float(start_x), float(start_y)
     wx, wy = 0.0, 0.0
     vx, vy = 0.0, 0.0
-    step = max_step
+    # Slower move_speed → smaller steps → more detailed, deliberate path
+    step = max_step * max(0.4, 1.0 - move_speed * 0.6)
 
     total_dist = math.hypot(dest_x - cx, dest_y - cy)
 
     dist = total_dist
-    while dist > 1.0:
+    steps = 0
+    while dist > 1.0 and steps < 10_000:
         w_mag = min(wind, dist)
 
         if dist >= target_area:
@@ -189,13 +196,18 @@ def wind_mouse(
 
         cx += vx
         cy += vy
+        steps += 1
 
         dist = math.hypot(dest_x - cx, dest_y - cy)
         move_to(cx, cy)
 
-        # Slow down near the target; speed up in the middle of long moves
+        # Ease-in-out: slow at start and near target, fast through the middle.
+        # progress goes 0→1 over the path; the bell curve peaks at 0.5.
         progress = 1.0 - dist / max(1.0, total_dist)
-        wait = min_wait_ms + (max_wait_ms - min_wait_ms) * (1.0 - progress)
-        time.sleep(wait / 1000.0)
+        ease = 4.0 * progress * (1.0 - progress)
+        wait = max_wait_ms - (max_wait_ms - min_wait_ms) * ease
+        wait *= 1.0 + move_speed * 1.5   # deliberate moves take longer per step
+        wait += rng.gauss(0.0, wait * 0.12)  # small per-step jitter
+        time.sleep(max(0.001, wait) / 1000.0)
 
     move_to(dest_x, dest_y)

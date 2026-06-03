@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 
@@ -42,15 +42,6 @@ class TypingIntent:
     """Describes how a human would type a string."""
     text: str
     key_delays: List[float]  # per-character delay after key-up (seconds)
-
-
-@dataclass
-class MousePathHint:
-    """
-    Optional waypoints for the mouse to visit on the way to a destination.
-    Models a human glancing at other UI elements before acting.
-    """
-    waypoints: List[tuple[float, float]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ #
@@ -138,8 +129,9 @@ class HumanEmulator:
 
         pre_move_pause = self.reaction_time()
 
-        # Move speed: further = faster, fatigue slows it down
-        base_speed = max(0.05, dist / 2500.0)
+        # Move speed: further = slower and more deliberate; fatigue adds more drag.
+        # Divisor tuned so typical in-game clicks (100–400 px) land in 0.1–0.5 range.
+        base_speed = max(0.05, dist / 800.0)
         move_speed = min(1.0, base_speed * (1.0 + self.fatigue * 0.3))
 
         post_move_pause = self.random_pause(0.03, 0.14)
@@ -204,36 +196,3 @@ class HumanEmulator:
         """Sample a break length in seconds (20 s – 5 min)."""
         return self._rng.uniform(20.0, 300.0)
 
-    # ------------------------------------------------------------------
-    # Mouse path hint (optional flavour)
-    # ------------------------------------------------------------------
-
-    def plan_mouse_path(
-        self,
-        dest_x: float,
-        dest_y: float,
-        current_x: float,
-        current_y: float,
-        canvas_width: int = 765,
-        canvas_height: int = 503,
-    ) -> MousePathHint:
-        """
-        Optionally add a waypoint that the mouse drifts through on the way
-        to dest — models eye-hand coordination lag and incidental UI glancing.
-        Only generated occasionally; returns an empty hint most of the time.
-        """
-        if self._rng.random() > 0.15:
-            return MousePathHint()
-
-        # A point roughly 30-50 % of the way along the path, offset sideways
-        t = self._rng.uniform(0.3, 0.5)
-        mid_x = current_x + (dest_x - current_x) * t
-        mid_y = current_y + (dest_y - current_y) * t
-        offset = self._rng.gauss(0, 20)
-        dx = dest_x - current_x
-        dy = dest_y - current_y
-        length = math.hypot(dx, dy) or 1
-        perp_x = -dy / length * offset
-        perp_y = dx / length * offset
-
-        return MousePathHint(waypoints=[(mid_x + perp_x, mid_y + perp_y)])

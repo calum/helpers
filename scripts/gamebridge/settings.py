@@ -22,9 +22,14 @@ _DEFAULTS: dict[str, Any] = {
     "hull_y_offset": 0,
 }
 
+_cache: dict[str, Any] | None = None
+
 
 def load() -> dict[str, Any]:
     """Return settings dict, falling back to defaults for missing keys."""
+    global _cache
+    if _cache is not None:
+        return dict(_cache)
     settings = dict(_DEFAULTS)
     if _SETTINGS_PATH.exists():
         try:
@@ -33,17 +38,21 @@ def load() -> dict[str, Any]:
             settings.update(stored)
         except Exception as exc:
             log.warning("Could not read settings from %s: %s", _SETTINGS_PATH, exc)
-    return settings
+    _cache = settings
+    return dict(settings)
 
 
 def save(settings: dict[str, Any]) -> None:
     """Persist settings dict to disk."""
+    global _cache
     try:
         _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _SETTINGS_PATH.open("w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
+        _cache = dict(settings)
     except Exception as exc:
         log.warning("Could not save settings to %s: %s", _SETTINGS_PATH, exc)
+        _cache = None
 
 
 def get(key: str) -> Any:

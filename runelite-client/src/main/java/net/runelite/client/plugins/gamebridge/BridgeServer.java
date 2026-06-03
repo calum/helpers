@@ -79,7 +79,13 @@ class BridgeServer
 		{
 			log.warn("Game Bridge: error closing server socket", e);
 		}
-		for (ClientEntry entry : clients)
+		closeSilently(clients);
+		closeSilently(pendingClients);
+	}
+
+	private static void closeSilently(CopyOnWriteArrayList<ClientEntry> entries)
+	{
+		for (ClientEntry entry : entries)
 		{
 			try
 			{
@@ -89,18 +95,7 @@ class BridgeServer
 			{
 			}
 		}
-		clients.clear();
-		for (ClientEntry entry : pendingClients)
-		{
-			try
-			{
-				entry.socket.close();
-			}
-			catch (IOException ignored)
-			{
-			}
-		}
-		pendingClients.clear();
+		entries.clear();
 	}
 
 	/**
@@ -129,39 +124,17 @@ class BridgeServer
 	}
 
 	/**
-	 * Sends {@code initJson} (if non-null) to every newly-connected client, then moves
-	 * successful ones into the active client list. Must be called from the game thread.
+	 * Moves all newly-connected clients into the active client list.
+	 * They will receive the current tick message on the next broadcast call.
+	 * Must be called from the game thread.
 	 */
-	void activateNewClients(String initJson)
+	void activateNewClients()
 	{
 		if (pendingClients.isEmpty())
 		{
 			return;
 		}
-		for (ClientEntry entry : pendingClients)
-		{
-			boolean ok = true;
-			if (initJson != null)
-			{
-				entry.writer.println(initJson);
-				ok = !entry.writer.checkError();
-			}
-			if (ok)
-			{
-				clients.add(entry);
-			}
-			else
-			{
-				log.debug("Game Bridge: new client failed init send, dropping");
-				try
-				{
-					entry.socket.close();
-				}
-				catch (IOException ignored)
-				{
-				}
-			}
-		}
+		clients.addAll(pendingClients);
 		pendingClients.clear();
 	}
 

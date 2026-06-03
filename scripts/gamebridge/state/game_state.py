@@ -7,6 +7,7 @@ Read-only from outside; write only via update().
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -33,8 +34,8 @@ class GameState:
     # Derived from varbit events  {"varpId:varbitId": value}
     varbits: Dict[str, int] = field(default_factory=dict)
 
-    # Rolling chat log (capped)
-    chat_log: List[dict] = field(default_factory=list)
+    # Rolling chat log (capped at 200; deque evicts oldest automatically)
+    chat_log: deque = field(default_factory=lambda: deque(maxlen=200))
 
     # Widget slots (populated when exposeWidgets is on)
     widgets: List[dict] = field(default_factory=list)
@@ -44,7 +45,6 @@ class GameState:
 
     _prev_animation: int = field(default=-1, repr=False)
     _prev_pos: Optional[tuple] = field(default=None, repr=False)
-    _CHAT_LOG_CAP: int = field(default=200, init=False, repr=False)
 
     # ------------------------------------------------------------------ #
     # Core update
@@ -71,6 +71,12 @@ class GameState:
         if "widgets" in msg:
             self.widgets = msg["widgets"]
 
+        if "inventory" in msg:
+            self.inventory = msg["inventory"]
+
+        if "equipment" in msg:
+            self.equipment = msg["equipment"]
+
         for event in msg.get("events", []):
             self._apply_event(event)
 
@@ -87,7 +93,7 @@ class GameState:
             cid = event["containerId"]
             if cid == 93:
                 self.inventory = event["items"]
-            elif cid == 95:
+            elif cid == 94:  # Equipment (worn items); 95 is Bank
                 self.equipment = event["items"]
 
         elif t == "varbit":
@@ -95,9 +101,9 @@ class GameState:
             self.varbits[key] = event["value"]
 
         elif t == "chat":
-            self.chat_log.append(event)
-            if len(self.chat_log) > self._CHAT_LOG_CAP:
-                self.chat_log.pop(0)
+            stamped = dict(event)
+            stamped["_tick"] = self.tick
+            self.chat_log.append(stamped)
 
         elif t == "interacting":
             self.interacting_with = event.get("target")
@@ -206,6 +212,15 @@ class GameState:
             default=None,
         )
 
+    def nearest_npc_on_screen(self, name: str) -> Optional[dict]:
+        """Nearest NPC matching name that is currently on screen."""
+        px, py = self.player_pos
+        return min(
+            (n for n in self.npcs_named(name) if n.get("onScreen")),
+            key=lambda n: abs(n["worldX"] - px) + abs(n["worldY"] - py),
+            default=None,
+        )
+
     # ------------------------------------------------------------------ #
     # Objects
     # ------------------------------------------------------------------ #
@@ -213,10 +228,22 @@ class GameState:
     def objects_named(self, name: str) -> List[dict]:
         return [o for o in self.objects if o.get("name", "").lower() == name.lower()]
 
+    def objects_on_screen(self) -> List[dict]:
+        return [o for o in self.objects if o.get("onScreen")]
+
     def nearest_object(self, name: str) -> Optional[dict]:
         px, py = self.player_pos
         return min(
             self.objects_named(name),
+            key=lambda o: abs(o["worldX"] - px) + abs(o["worldY"] - py),
+            default=None,
+        )
+
+    def nearest_object_on_screen(self, name: str) -> Optional[dict]:
+        """Nearest object matching name that is currently on screen."""
+        px, py = self.player_pos
+        return min(
+            (o for o in self.objects_named(name) if o.get("onScreen")),
             key=lambda o: abs(o["worldX"] - px) + abs(o["worldY"] - py),
             default=None,
         )

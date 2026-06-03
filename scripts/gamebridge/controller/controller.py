@@ -90,6 +90,7 @@ class GameController:
         self._window: Optional[tuple[int, int, int, int]] = None
         self.min_click_interval: float = 0.0
         self._last_entity_click: float = 0.0
+        self._session_start: float = time.monotonic()
 
     # ------------------------------------------------------------------
     # Window management
@@ -115,6 +116,23 @@ class GameController:
         return left + cx, top + cy - y_off
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _after_click(self) -> None:
+        """Call after every click: accumulate fatigue and take a break if due."""
+        self._human.accumulate_fatigue(0.0002)
+        session_s = time.monotonic() - self._session_start
+        if self._human.should_take_break(session_s):
+            duration = self._human.break_duration()
+            log.info(
+                "Taking a %.0f s micro-break (session %.0f s, fatigue %.2f)",
+                duration, session_s, self._human.fatigue,
+            )
+            self._human.rest(duration)
+            time.sleep(duration)
+
+    # ------------------------------------------------------------------
     # Mouse actions
     # ------------------------------------------------------------------
 
@@ -126,7 +144,7 @@ class GameController:
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y)
+        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
 
     def click_entity(self, entity: dict) -> None:
         """Left-click an on-screen entity."""
@@ -145,7 +163,7 @@ class GameController:
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y)
+        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_left()
 
@@ -155,6 +173,7 @@ class GameController:
 
         self._last_entity_click = time.monotonic()
         log.debug("Clicked %s at screen (%.0f, %.0f)", entity.get("name", "?"), sx, sy)
+        self._after_click()
 
     def right_click_entity(self, entity: dict) -> None:
         """Right-click an on-screen entity."""
@@ -165,11 +184,12 @@ class GameController:
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y)
+        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_right()
 
         log.debug("Right-clicked %s", entity.get("name", "?"))
+        self._after_click()
 
     def click_widget(self, widget: dict) -> None:
         """Left-click the centre of a UI widget slot."""
@@ -189,9 +209,10 @@ class GameController:
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y)
+        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_left()
+        self._after_click()
 
     # ------------------------------------------------------------------
     # Keyboard actions

@@ -47,7 +47,8 @@ class DecisionEngine:
         self._human = human
         self._session_start = time.monotonic()
         self._on_break = False
-        self._break_until: float = 0.0  # monotonic timestamp when break ends
+        self._break_until: float = 0.0
+        self._break_duration: float = 0.0
 
     # ------------------------------------------------------------------
     # Routine management
@@ -91,9 +92,9 @@ class DecisionEngine:
             if self._on_break:
                 if now < self._break_until:
                     return  # still resting
-                # Break over
+                # Break over — recover fatigue proportional to how long we rested
                 self._on_break = False
-                self._human.rest(self._break_until - (self._break_until - now))
+                self._human.rest(self._break_duration)
                 self._session_start = now
                 log.info("Break over, resuming.")
                 return
@@ -101,6 +102,7 @@ class DecisionEngine:
             session_s = now - self._session_start
             if self._human.should_take_break(session_s):
                 duration = self._human.break_duration()
+                self._break_duration = duration
                 log.info("Scheduled %.0f s break.", duration)
                 self._on_break = True
                 self._break_until = now + duration

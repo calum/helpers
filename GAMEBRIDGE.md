@@ -36,7 +36,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | Framing | Newline-delimited JSON — one JSON object per line |
 | Rate | One message per game tick (~600 ms, ~1.67 msg/s) |
 | Direction | Server → client only; the plugin never reads from the socket |
-| Init message | On the first game tick after connecting, the client receives one synthetic tick message containing the current inventory/equipment `container` events (if `exposeInventory` is enabled and the data has been seen since login). This ensures `inventory` is populated immediately rather than waiting for the next item change. |
+| Init message | When `exposeInventory` is enabled, every tick message contains top-level `inventory` and `equipment` arrays with the current container state. A newly-connected client therefore receives a full inventory and equipment snapshot on its very first tick — there is no special init handshake. |
 
 ---
 
@@ -44,13 +44,15 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 
 ```json
 {
-  "tick":    12345,
-  "player":  { ... },
-  "camera":  { ... },
-  "npcs":    [ ... ],
-  "objects": [ ... ],
-  "widgets": [ ... ],
-  "events":  [ ... ]
+  "tick":      12345,
+  "player":    { ... },
+  "camera":    { ... },
+  "npcs":      [ ... ],
+  "objects":   [ ... ],
+  "widgets":   [ ... ],
+  "inventory": [ ... ],
+  "equipment": [ ... ],
+  "events":    [ ... ]
 }
 ```
 
@@ -62,6 +64,8 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `npcs` | yes | `exposeNpcs` (default on) |
 | `objects` | yes | `exposeObjects` (default on) |
 | `widgets` | no | `exposeWidgets` (default **off**) |
+| `inventory` | no | `exposeInventory` (default on) |
+| `equipment` | no | `exposeInventory` (default on) |
 | `events` | yes (may be `[]`) | — |
 
 ---
@@ -158,14 +162,29 @@ def yaw_delta(current_yaw, target_yaw):
 
 Same shape as NPCs minus `combatLevel` and `animation`. Object names are impostor-resolved: a door that changes appearance based on a varbit shows its current name (e.g. `"Door"` not `"null"`).
 
-The `objects` list includes all four RuneScape tile object categories:
+Each object entry now includes a `category` field:
 
-| Category | Examples |
-|---|---|
-| `GameObject` | Trees, rocks, furnaces, anvils |
-| `WallObject` | Doors, gates, fences |
-| `GroundObject` | Floor tiles, rugs |
-| `DecorativeObject` | Cosmetic scenery |
+```json
+{
+  "id":       1276,
+  "name":     "Oak tree",
+  "category": "game",
+  "worldX":   3225,
+  "worldY":   3215,
+  "plane":    0,
+  "onScreen": true,
+  "canvasX":  350,
+  "canvasY":  290,
+  "hull":     [[340,280],[360,280],[360,300],[340,300]]
+}
+```
+
+| `category` value | RuneScape type | Examples |
+|---|---|---|
+| `"game"` | `GameObject` | Trees, rocks, furnaces, anvils |
+| `"wall"` | `WallObject` | Doors, gates, fences |
+| `"ground"` | `GroundObject` | Floor tiles, rugs |
+| `"decorative"` | `DecorativeObject` | Cosmetic scenery |
 
 ### Object filtering
 
@@ -229,6 +248,34 @@ def click_inventory_item(ctrl, game, item_id):
 
 ---
 
+## Inventory and Equipment snapshots
+
+When `exposeInventory` is enabled, every tick message contains `inventory` and `equipment` as top-level arrays — polled snapshots of container 93 (inventory) and container 94 (worn equipment):
+
+```json
+[
+  { "slot": 0, "itemId": 440, "qty": 1 },
+  { "slot": 1, "itemId": -1,  "qty": 0 },
+  ...
+]
+```
+
+| Field | Notes |
+|---|---|
+| `slot` | Zero-based slot index |
+| `itemId` | Item ID; `-1` = slot explicitly cleared; `0` = slot never occupied (also treated as empty) |
+| `qty` | Stack size; `0` for empty slots |
+
+These are **full snapshots on every tick** — not diffs. The `container` events in `events[]` are delta notifications of changes and use the same slot format. Both mechanisms are active when `exposeInventory` is on.
+
+```python
+# Read current inventory from the top-level snapshot
+inv = msg["inventory"]          # list of {"slot", "itemId", "qty"}
+equip = msg["equipment"]        # worn items in the same format
+```
+
+---
+
 ## Events
 
 `events` is a delta log containing only things that changed during this tick. Each entry has a `type` field.
@@ -272,8 +319,8 @@ Common container IDs:
 | ID | Container |
 |---|---|
 | 93 | Inventory |
-| 94 | Bank |
-| 95 | Equipment |
+| 94 | Equipment (worn items) |
+| 95 | Bank |
 
 ### `varbit` — varbit or varplayer change
 
@@ -367,6 +414,7 @@ class GameState:
     npcs: List[dict] = field(default_factory=list)
     objects: List[dict] = field(default_factory=list)
     inventory: List[dict] = field(default_factory=list)
+    equipment: List[dict] = field(default_factory=list)
     xp: Dict[str, int] = field(default_factory=dict)
 
     def update(self, msg: dict):
@@ -379,11 +427,18 @@ class GameState:
             self.npcs = msg['npcs']
         if 'objects' in msg:
             self.objects = msg['objects']
+        if 'inventory' in msg:
+            self.inventory = msg['inventory']
+        if 'equipment' in msg:
+            self.equipment = msg['equipment']
         for event in msg.get('events', []):
             if event['type'] == 'xp':
                 self.xp[event['skill']] = event['xp']
-            elif event['type'] == 'container' and event['containerId'] == 93:
-                self.inventory = event['items']
+            elif event['type'] == 'container':
+                if event['containerId'] == 93:
+                    self.inventory = event['items']
+                elif event['containerId'] == 94:   # Equipment (worn items)
+                    self.equipment = event['items']
 
     # --- convenience queries ---
 
