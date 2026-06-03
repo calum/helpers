@@ -6,5 +6,8 @@
 # Qt dashboard
 PyQt6>=6.6.0
 
+# Testing
+pytest>=7.0
+
 # Optional — hull polygon hit-testing (GAMEBRIDGE.md "Canvas coordinates" section)
 # shapely>=2.0

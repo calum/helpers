@@ -17,3 +17,10 @@ run = "python -m scripts.gamebridge.main --dashboard"
 [tasks.gamebridge-watch]
 description = "Watch live game state in the terminal (no routine, no input)"
 run = "python -m scripts.gamebridge.main --watch"
+
+[tasks.test]
+description = "Run all tests (Python GameBridge + Java RuneLite)"
+run = """
+python -m pytest scripts/gamebridge/tests/ -v && \
+mise exec -- ./gradlew.bat testAll
+"""
