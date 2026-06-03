@@ -1,19 +1,64 @@
-#!/bin/bash
+#!/usr/bin/env pwsh
 
-set -e -x
+<#
+.SYNOPSIS
+    Build and test the GameBridge custom RuneLite client and Python automation layer.
 
-CACHEDIR="$HOME/.cache/runelite"
-mkdir -p "${CACHEDIR}"
-GLSLANG_ARCHIVE="${CACHEDIR}/glslang.zip"
-GLSLANG_DIR="${CACHEDIR}/glslang"
-GLSLANG_RELEASE='https://github.com/KhronosGroup/glslang/releases/download/8.13.3743/glslang-master-linux-Release.zip'
-GLSLANG_CHECKSUM='d02b22d35ba7bc786a115fbc90ff2caef7f1cd99d87ab053e3dba8efda5b405a'
+.DESCRIPTION
+    This script:
+    1. Installs Python and Java dependencies
+    2. Builds the custom RuneLite client
+    3. Runs all unit tests (Python + Java)
+    4. Reports results
 
-if [ ! -f "${GLSLANG_ARCHIVE}" ] || [ ! -d "${GLSLANG_DIR}" ] || ! echo "${GLSLANG_CHECKSUM} ${GLSLANG_ARCHIVE}" | sha256sum -c -; then
-  wget -O "${GLSLANG_ARCHIVE}" "${GLSLANG_RELEASE}"
-  echo "${GLSLANG_CHECKSUM} ${GLSLANG_ARCHIVE}" | sha256sum -c
-  unzip -o -q "${GLSLANG_ARCHIVE}" -d "${GLSLANG_DIR}"
-fi
+    Requires: Windows, PowerShell 5.1+, mise
+#>
 
-export ORG_GRADLE_PROJECT_glslangPath="$GLSLANG_DIR/bin/glslangValidator"
-./gradlew --build-cache ':buildAll'
+param(
+    [switch]$SkipDependencies,
+    [switch]$SkipBuild,
+    [switch]$SkipTests
+)
+
+$ErrorActionPreference = 'Stop'
+$WarningPreference = 'Continue'
+
+Write-Host "====== GameBridge Build & Test ======" -ForegroundColor Cyan
+
+# Step 1: Install dependencies
+if (-not $SkipDependencies)
+{
+    Write-Host "`n[1/3] Installing dependencies..." -ForegroundColor Green
+    
+    Write-Host "  - Python packages" -ForegroundColor Gray
+    mise run gamebridge-setup
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install Python dependencies" }
+    
+    Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
+}
+
+# Step 2: Build custom RuneLite client
+if (-not $SkipBuild)
+{
+    Write-Host "`n[2/3] Building custom RuneLite client..." -ForegroundColor Green
+    
+    mise run full-build
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build custom RuneLite client" }
+    
+    Write-Host "  ✓ Build complete" -ForegroundColor Green
+}
+
+# Step 3: Run all tests
+if (-not $SkipTests)
+{
+    Write-Host "`n[3/3] Running unit tests..." -ForegroundColor Green
+    
+    mise run test
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
+    
+    Write-Host "  ✓ All tests passed" -ForegroundColor Green
+}
+
+Write-Host "`n====== Build & Test Complete ======" -ForegroundColor Cyan
+exit 0
+
