@@ -1,8 +1,8 @@
 """
-GameBridge TUI Dashboard — Textual app.
+GameBridge Qt Dashboard — PyQt6 native UI.
 
-Shows a live model of the game world, controls routines, and provides a
-scrollable debug log of every incoming tick.
+A live desktop window that shows game state streamed from the GameBridge
+RuneLite plugin, with routine control and a debug event log.
 
 Usage
 -----
@@ -11,26 +11,23 @@ Usage
 """
 from __future__ import annotations
 
-import threading
+import math
+import sys
 import time
 from datetime import timedelta
 from typing import Optional, Type
 
-from textual import on
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import (
-    Button,
-    DataTable,
-    Footer,
-    Header,
-    Label,
-    RichLog,
-    Select,
-    Static,
-    TabbedContent,
-    TabPane,
+from PyQt6.QtCore import (
+    Qt, QThread, QTimer, QRectF, QPointF, pyqtSignal, pyqtSlot,
+)
+from PyQt6.QtGui import (
+    QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QTextCursor,
+)
+from PyQt6.QtWidgets import (
+    QApplication, QComboBox, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .client import stream as tcp_stream
@@ -41,482 +38,1118 @@ from .decision.engine import DecisionEngine
 from .routines.base import Routine
 from .routines.examples.iron_mining import IronMiningRoutine
 
-# Registry — add new routines here and they appear in the dropdown automatically
+# ---------------------------------------------------------------------------
+# Routine registry — add entries here to expose them in the dropdown
+# ---------------------------------------------------------------------------
+
 ROUTINES: dict[str, Type[Routine]] = {
-    "iron_mining": IronMiningRoutine,
+    "Iron Mining": IronMiningRoutine,
 }
 
-# ------------------------------------------------------------------ #
-# Rendering helpers
-# ------------------------------------------------------------------ #
+# ---------------------------------------------------------------------------
+# Color palette (GitHub dark-inspired)
+# ---------------------------------------------------------------------------
 
-_MINIMAP_R = 7  # tiles radius; yields a 15×15 grid
+class C:
+    BG            = "#0d1117"
+    SURFACE       = "#161b22"
+    SURFACE_HOVER = "#1c2128"
+    BORDER        = "#30363d"
+    BORDER_SUBTLE = "#21262d"
 
+    ACCENT        = "#58a6ff"
+    ACCENT_DIM    = "#1c3554"
+    ACCENT2       = "#bc8cff"
 
-def _minimap(game: GameState) -> str:
-    """
-    ASCII minimap centred on the player.
-    Uses Rich markup for colour; rendered inside a Static widget.
+    HP            = "#f85149"
+    HP_DIM        = "#4a1919"
+    PRAYER        = "#58a6ff"
+    PRAYER_DIM    = "#1c3554"
+    FATIGUE       = "#e3b341"
+    FATIGUE_DIM   = "#3d2f0e"
 
-    Coordinate system: RS y+ = north → map row decrements as worldY increases.
-    """
-    px, py = game.player_pos
-    r = _MINIMAP_R
-    size = r * 2 + 1
-    grid: list[list[str]] = [["[dim]·[/]"] * size for _ in range(size)]
+    SUCCESS       = "#3fb950"
+    SUCCESS_DIM   = "#0d3d1e"
+    WARNING       = "#e3b341"
+    DANGER        = "#f85149"
 
-    for obj in game.objects:
-        dc, dr = obj["worldX"] - px, py - obj["worldY"]
-        c, row = r + dc, r + dr
-        if 0 <= c < size and 0 <= row < size:
-            grid[row][c] = "[yellow]O[/]"
+    TEXT          = "#e6edf3"
+    TEXT_MUTED    = "#8b949e"
+    TEXT_DIM      = "#484f58"
 
-    for npc in game.npcs:
-        dc, dr = npc["worldX"] - px, py - npc["worldY"]
-        c, row = r + dc, r + dr
-        if 0 <= c < size and 0 <= row < size:
-            grid[row][c] = "[bold red]N[/]" if npc.get("onScreen") else "[dim red]n[/]"
+    NPC_VIS       = "#f85149"
+    NPC_HIDDEN    = "#6b2828"
+    OBJ_VIS       = "#e3b341"
+    OBJ_HIDDEN    = "#5a4810"
+    PLAYER_COLOR  = "#3fb950"
 
-    grid[r][r] = "[bold green]@[/]"
-    return "\n".join(" ".join(cells) for cells in grid)
+# ---------------------------------------------------------------------------
+# Global stylesheet
+# ---------------------------------------------------------------------------
 
+STYLESHEET = f"""
+* {{
+    font-family: "Segoe UI", "Inter", Arial, sans-serif;
+    font-size: 13px;
+    color: {C.TEXT};
+}}
+
+QMainWindow, QWidget {{
+    background-color: {C.BG};
+}}
+
+QLabel {{ background: transparent; }}
+
+QPushButton {{
+    background-color: {C.SURFACE};
+    color: {C.TEXT};
+    border: 1px solid {C.BORDER};
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-weight: 500;
+    min-height: 28px;
+}}
+QPushButton:hover {{
+    background-color: {C.SURFACE_HOVER};
+    border-color: {C.ACCENT};
+}}
+QPushButton:pressed {{ background-color: {C.ACCENT_DIM}; }}
+
+QPushButton#btn-start {{
+    background-color: {C.SUCCESS_DIM};
+    border-color: {C.SUCCESS};
+    color: {C.SUCCESS};
+}}
+QPushButton#btn-start:hover {{ background-color: #164a28; }}
+
+QPushButton#btn-stop {{
+    background-color: #3a1414;
+    border-color: {C.DANGER};
+    color: {C.DANGER};
+}}
+QPushButton#btn-stop:hover {{ background-color: #5a1e1e; }}
+
+QComboBox {{
+    background-color: {C.SURFACE};
+    border: 1px solid {C.BORDER};
+    border-radius: 6px;
+    padding: 5px 10px;
+    min-height: 28px;
+}}
+QComboBox::drop-down {{ border: none; padding-right: 8px; }}
+QComboBox QAbstractItemView {{
+    background-color: {C.SURFACE};
+    border: 1px solid {C.BORDER};
+    selection-background-color: {C.ACCENT_DIM};
+    selection-color: {C.ACCENT};
+    outline: none;
+}}
+
+QTabWidget::pane {{
+    border: none;
+    background-color: {C.SURFACE};
+}}
+QTabBar::tab {{
+    background: transparent;
+    color: {C.TEXT_MUTED};
+    border: none;
+    padding: 7px 18px;
+    font-size: 12px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+}}
+QTabBar::tab:selected {{
+    color: {C.ACCENT};
+    border-bottom: 2px solid {C.ACCENT};
+}}
+QTabBar::tab:hover:!selected {{
+    color: {C.TEXT};
+    border-bottom: 2px solid {C.BORDER};
+}}
+
+QTableWidget {{
+    background-color: {C.SURFACE};
+    border: none;
+    gridline-color: {C.BORDER_SUBTLE};
+    font-size: 12px;
+    selection-background-color: {C.ACCENT_DIM};
+    alternate-background-color: #0f1419;
+    outline: none;
+}}
+QTableWidget::item {{
+    padding: 4px 8px;
+    border: none;
+}}
+QTableWidget::item:selected {{
+    background-color: {C.ACCENT_DIM};
+}}
+QHeaderView::section {{
+    background-color: {C.BG};
+    color: {C.TEXT_MUTED};
+    border: none;
+    border-bottom: 1px solid {C.BORDER};
+    padding: 5px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+}}
+
+QTextEdit {{
+    background-color: {C.BG};
+    border: none;
+    font-family: "Cascadia Code", "JetBrains Mono", "Consolas", monospace;
+    font-size: 11px;
+    color: {C.TEXT_MUTED};
+}}
+
+QScrollBar:vertical {{
+    background: {C.BG};
+    width: 6px;
+    margin: 0;
+    border: none;
+}}
+QScrollBar::handle:vertical {{
+    background: {C.BORDER};
+    border-radius: 3px;
+    min-height: 20px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {C.TEXT_MUTED}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{
+    background: {C.BG};
+    height: 6px;
+    border: none;
+}}
+QScrollBar::handle:horizontal {{
+    background: {C.BORDER};
+    border-radius: 3px;
+    min-width: 20px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+QScrollArea {{ border: none; background: transparent; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+
+QStatusBar {{
+    background-color: {C.BG};
+    color: {C.TEXT_MUTED};
+    border-top: 1px solid {C.BORDER};
+    font-size: 12px;
+}}
+"""
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _hms(seconds: float) -> str:
-    td = timedelta(seconds=int(max(0.0, seconds)))
-    h = td.seconds // 3600
-    m = (td.seconds % 3600) // 60
-    s = td.seconds % 60
-    return f"{h}h{m:02d}m{s:02d}s" if h else f"{m:02d}m{s:02d}s"
-
-
-def _fatigue_bar(f: float, w: int = 12) -> str:
-    filled = round(f * w)
-    return "[green]" + "█" * filled + "[/][dim]" + "░" * (w - filled) + "[/]"
+    secs = int(max(0.0, seconds))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m:02d}m {s:02d}s"
 
 
 def _yaw_dir(yaw: int) -> str:
-    for threshold, label in [(64, "N"), (192, "NE"), (320, "E"), (448, "SE"),
-                              (576, "S"), (704, "SW"), (832, "W"), (960, "NW"),
-                              (1088, "N"), (1216, "NE"), (1344, "E"), (1472, "SE"),
-                              (1600, "S"), (1728, "SW"), (1856, "W"), (1984, "NW"),
-                              (2048, "N")]:
+    for threshold, label in [
+        (64, "N"), (192, "NE"), (320, "E"), (448, "SE"),
+        (576, "S"), (704, "SW"), (832, "W"), (960, "NW"),
+        (1088, "N"), (1216, "NE"), (1344, "E"), (1472, "SE"),
+        (1600, "S"), (1728, "SW"), (1856, "W"), (1984, "NW"), (2048, "N"),
+    ]:
         if yaw < threshold:
             return label
     return "N"
 
 
-# ------------------------------------------------------------------ #
-# App
-# ------------------------------------------------------------------ #
+def _qc(hex_str: str) -> QColor:
+    return QColor(hex_str)
 
-class GameBridgeApp(App[None]):
-    """Live TUI dashboard for the GameBridge RuneLite plugin."""
 
-    TITLE = "GameBridge"
+# ---------------------------------------------------------------------------
+# Card — rounded dark panel with optional title
+# ---------------------------------------------------------------------------
 
-    CSS = """
-    Screen {
-        layout: horizontal;
-    }
+class Card(QWidget):
+    def __init__(self, title: str = "", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._inner = QVBoxLayout(self)
+        self._inner.setContentsMargins(14, 12, 14, 12)
+        self._inner.setSpacing(8)
 
-    /* ---- Left column ---- */
+        if title:
+            lbl = QLabel(title.upper())
+            lbl.setStyleSheet(
+                f"color: {C.TEXT_MUTED}; font-size: 10px; font-weight: 600;"
+                " letter-spacing: 1px; background: transparent;"
+            )
+            self._inner.addWidget(lbl)
 
-    #left {
-        width: 46;
-        height: 100%;
-    }
+    # expose layout directly so callers can do card.layout().addWidget(...)
+    def layout(self) -> QVBoxLayout:  # type: ignore[override]
+        return self._inner
 
-    .panel {
-        height: auto;
-        border: round $primary-darken-3;
-        padding: 0 1 1 1;
-        margin: 0 0 1 0;
-    }
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 8, 8)
+        p.fillPath(path, _qc(C.SURFACE))
+        pen = QPen(_qc(C.BORDER))
+        pen.setWidthF(1.0)
+        p.setPen(pen)
+        p.drawPath(path)
+        p.end()
 
-    .panel-title {
-        text-style: bold;
-        color: $primary-lighten-1;
-        padding: 0;
-        margin: 0 0 0 0;
-    }
 
-    /* ---- Right column ---- */
+# ---------------------------------------------------------------------------
+# Divider
+# ---------------------------------------------------------------------------
 
-    #right {
-        width: 1fr;
-        height: 100%;
-    }
+class HDivider(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.HLine)
+        self.setFixedHeight(1)
+        self.setStyleSheet(f"background: {C.BORDER}; border: none;")
 
-    #control-panel {
-        height: auto;
-        border: round $accent-darken-2;
-        padding: 0 1 1 1;
-        margin: 0 0 1 0;
-    }
 
-    #control-title {
-        text-style: bold;
-        color: $accent-lighten-1;
-    }
+# ---------------------------------------------------------------------------
+# StatBar — colored labeled progress bar
+# ---------------------------------------------------------------------------
 
-    #routine-select {
-        width: 1fr;
-        margin: 1 0 0 0;
-    }
-
-    #routine-state-label {
-        margin: 0 0 1 0;
-        height: 1;
-    }
-
-    .btn-row {
-        height: 3;
-    }
-
-    #btn-start { width: 12; margin-right: 1; }
-    #btn-stop  { width: 12; margin-right: 1; }
-    #btn-reset { width: 12; }
-
-    #session-stats {
-        color: $text-muted;
-        margin-top: 1;
-    }
-
-    #nearby-tabs {
-        height: 1fr;
-        min-height: 12;
-        border: round $primary-darken-3;
-        margin: 0 0 1 0;
-    }
-
-    #debug-log {
-        height: 11;
-        border: round $warning-darken-3;
-    }
-
-    #debug-log.hidden {
-        display: none;
-    }
+class StatBar(QWidget):
     """
+    A pill-shaped progress bar with a short label on the left and
+    the numeric value on the right.  Drawn entirely with QPainter.
+    """
+    _LABEL_W = 48
+    _VAL_W   = 36
+    _BAR_H   = 7
 
-    BINDINGS = [
-        Binding("d",   "toggle_debug",   "Debug",  show=True),
-        Binding("s",   "start_routine",  "Start",  show=True),
-        Binding("x",   "stop_routine",   "Stop",   show=True),
-        Binding("r",   "reset_routine",  "Reset",  show=False),
-        Binding("q",   "quit",           "Quit",   show=True),
-    ]
+    def __init__(
+        self, label: str, color: str, dim: str,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._label = label
+        self._color = _qc(color)
+        self._dim   = _qc(dim)
+        self._value = 0
+        self._max   = 99
+        self.setFixedHeight(22)
+        self.setMinimumWidth(120)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
 
+    def set_value(self, value: int, maximum: int = 99) -> None:
+        self._value = value
+        self._max = max(1, maximum)
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        bar_x = self._LABEL_W
+        bar_w = w - self._LABEL_W - self._VAL_W - 4
+        bar_y = (h - self._BAR_H) // 2
+
+        # Label
+        p.setPen(_qc(C.TEXT_MUTED))
+        p.setFont(QFont("Segoe UI", 9))
+        p.drawText(0, 0, self._LABEL_W, h, Qt.AlignmentFlag.AlignVCenter, self._label)
+
+        # Background track
+        tr = QRectF(bar_x, bar_y, bar_w, self._BAR_H)
+        tp = QPainterPath()
+        tp.addRoundedRect(tr, self._BAR_H / 2, self._BAR_H / 2)
+        p.fillPath(tp, self._dim)
+
+        # Fill
+        frac = self._value / self._max
+        fill_w = max(0.0, min(float(bar_w), bar_w * frac))
+        if fill_w >= self._BAR_H:          # only draw when wide enough to round
+            fp = QPainterPath()
+            fp.addRoundedRect(QRectF(bar_x, bar_y, fill_w, self._BAR_H),
+                              self._BAR_H / 2, self._BAR_H / 2)
+            p.fillPath(fp, self._color)
+        elif fill_w > 0:
+            p.fillRect(QRectF(bar_x, bar_y, fill_w, self._BAR_H), self._color)
+
+        # Numeric value
+        p.setPen(_qc(C.TEXT))
+        p.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
+        p.drawText(
+            w - self._VAL_W, 0, self._VAL_W, h,
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+            str(self._value),
+        )
+        p.end()
+
+
+# ---------------------------------------------------------------------------
+# MinimapWidget — QPainter tile grid centred on the player
+# ---------------------------------------------------------------------------
+
+class MinimapWidget(QWidget):
+    _RADIUS  = 8    # tiles from centre → 17×17 grid
+    _CELL    = 13   # pixels per tile
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._game: Optional[GameState] = None
+        side = (self._RADIUS * 2 + 1) * self._CELL + 4
+        self.setFixedSize(side, side)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def update_state(self, game: GameState) -> None:
+        self._game = game
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        r = self._RADIUS
+        n = r * 2 + 1
+        cell = self._CELL
+        pad = 2.0
+
+        # Background
+        bg = QPainterPath()
+        bg.addRoundedRect(QRectF(0, 0, w, h), 6, 6)
+        p.fillPath(bg, _qc("#080c14"))
+
+        # Grid lines
+        p.setPen(QPen(_qc("#111928"), 1))
+        for i in range(n + 1):
+            x = pad + i * cell
+            y = pad + i * cell
+            p.drawLine(int(x), int(pad), int(x), int(h - pad))
+            p.drawLine(int(pad), int(y), int(w - pad), int(y))
+
+        def to_screen(wx: int, wy: int) -> tuple[float, float]:
+            dc = wx - px
+            dr = py - wy
+            cx = pad + (r + dc + 0.5) * cell
+            cy = pad + (r + dr + 0.5) * cell
+            return cx, cy
+
+        if not self._game or not self._game.player:
+            p.setPen(_qc(C.TEXT_DIM))
+            p.drawText(0, 0, w, h, Qt.AlignmentFlag.AlignCenter, "No data")
+            p.end()
+            return
+
+        px, py = self._game.player_pos
+
+        # Objects — small squares
+        p.setPen(Qt.PenStyle.NoPen)
+        for obj in self._game.objects:
+            dc = obj["worldX"] - px
+            dr = py - obj["worldY"]
+            if -r <= dc <= r and -r <= dr <= r:
+                cx, cy = to_screen(obj["worldX"], obj["worldY"])
+                on = obj.get("onScreen", False)
+                sz = cell * 0.45
+                p.setBrush(_qc(C.OBJ_VIS if on else C.OBJ_HIDDEN))
+                p.drawRect(QRectF(cx - sz / 2, cy - sz / 2, sz, sz))
+
+        # NPCs — circles
+        for npc in self._game.npcs:
+            dc = npc["worldX"] - px
+            dr = py - npc["worldY"]
+            if -r <= dc <= r and -r <= dr <= r:
+                cx, cy = to_screen(npc["worldX"], npc["worldY"])
+                on = npc.get("onScreen", False)
+                rad = max(2.5, cell * 0.35)
+                p.setBrush(_qc(C.NPC_VIS if on else C.NPC_HIDDEN))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QPointF(cx, cy), rad, rad)
+
+        # Player — green dot with camera direction tick
+        cx_p, cy_p = to_screen(px, py)
+        cam = self._game.camera
+        yaw = cam.get("yaw", 0) if cam else 0
+        angle = (yaw / 2048.0) * 2 * math.pi
+
+        # Soft halo
+        p.setBrush(_qc("#0d3020"))
+        p.setPen(Qt.PenStyle.NoPen)
+        halo_r = cell * 0.72
+        p.drawEllipse(QPointF(cx_p, cy_p), halo_r, halo_r)
+
+        # Core dot
+        dot_r = max(3.5, cell * 0.42)
+        p.setBrush(_qc(C.PLAYER_COLOR))
+        p.setPen(QPen(_qc("#c0ffd0"), 0.7))
+        p.drawEllipse(QPointF(cx_p, cy_p), dot_r, dot_r)
+
+        # Direction tick
+        tick = cell * 0.8
+        dx = math.sin(angle) * tick
+        dy = -math.cos(angle) * tick
+        p.setPen(QPen(_qc(C.PLAYER_COLOR), 1.8,
+                      Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(cx_p, cy_p), QPointF(cx_p + dx, cy_p + dy))
+
+        p.end()
+
+
+# ---------------------------------------------------------------------------
+# InventoryWidget — 4×7 painted slot grid
+# ---------------------------------------------------------------------------
+
+class InventoryWidget(QWidget):
+    _COLS = 4
+    _ROWS = 7
+    _SZ   = 38
+    _GAP  = 3
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._slots: list[dict] = []
+        tw = self._COLS * self._SZ + (self._COLS - 1) * self._GAP
+        th = self._ROWS * self._SZ + (self._ROWS - 1) * self._GAP
+        self.setFixedSize(tw, th)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def set_inventory(self, items: list[dict]) -> None:
+        self._slots = items
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sz, gap = self._SZ, self._GAP
+
+        # Build a slot-index → item lookup
+        by_slot = {s["slot"]: s for s in self._slots}
+
+        for i in range(28):
+            col = i % self._COLS
+            row = i // self._COLS
+            x = col * (sz + gap)
+            y = row * (sz + gap)
+            rect = QRectF(x, y, sz, sz)
+
+            slot = by_slot.get(i)
+            occupied = slot is not None and slot.get("itemId", -1) != -1
+
+            # Slot background
+            slot_path = QPainterPath()
+            slot_path.addRoundedRect(rect, 5, 5)
+            p.fillPath(slot_path, _qc("#1a2030" if occupied else "#10141c"))
+            pen = QPen(_qc(C.ACCENT if occupied else C.BORDER_SUBTLE), 1.0)
+            p.setPen(pen)
+            p.drawPath(slot_path)
+
+            if occupied:
+                item_id = slot["itemId"]
+                qty     = slot.get("qty", 1)
+
+                # Item ID (small, centered top)
+                p.setPen(_qc(C.TEXT_MUTED))
+                p.setFont(QFont("Segoe UI", 7))
+                p.drawText(
+                    int(x), int(y) + 2, sz, 14,
+                    Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                    str(item_id),
+                )
+
+                # Quantity badge (bottom-right)
+                if qty > 1:
+                    qty_str = (
+                        f"{qty // 1_000_000}m" if qty >= 1_000_000
+                        else f"{qty // 1_000}k" if qty >= 10_000
+                        else f"×{qty}"
+                    )
+                    p.setPen(_qc(C.WARNING))
+                    p.setFont(QFont("Segoe UI", 7, QFont.Weight.Bold))
+                    p.drawText(
+                        int(x), int(y) + sz - 14, sz - 2, 14,
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom,
+                        qty_str,
+                    )
+
+        p.end()
+
+
+# ---------------------------------------------------------------------------
+# Connection indicator dot
+# ---------------------------------------------------------------------------
+
+class ConnectionDot(QWidget):
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._connected = False
+        self.setFixedSize(10, 10)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def set_connected(self, v: bool) -> None:
+        self._connected = v
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        if self._connected:
+            p.setBrush(_qc(C.SUCCESS_DIM))
+            p.drawEllipse(0, 0, 10, 10)
+            p.setBrush(_qc(C.SUCCESS))
+        else:
+            p.setBrush(_qc("#3a1414"))
+            p.drawEllipse(0, 0, 10, 10)
+            p.setBrush(_qc(C.DANGER))
+        p.drawEllipse(2, 2, 6, 6)
+        p.end()
+
+
+# ---------------------------------------------------------------------------
+# Background TCP thread
+# ---------------------------------------------------------------------------
+
+class BridgeTicker(QThread):
+    """Reads the GameBridge stream and emits one signal per tick."""
+    tick_received: pyqtSignal = pyqtSignal(dict)
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 7070):
+        super().__init__()
+        self.host = host
+        self.port = port
+
+    def run(self) -> None:
+        for msg in tcp_stream(host=self.host, port=self.port):
+            self.tick_received.emit(dict(msg))
+
+
+# ---------------------------------------------------------------------------
+# Main window
+# ---------------------------------------------------------------------------
+
+class GameBridgeWindow(QMainWindow):
     def __init__(self, host: str = "127.0.0.1", port: int = 7070):
         super().__init__()
         self._host = host
         self._port = port
-        self._human = HumanEmulator()
-        self._ctrl = GameController(human=self._human)
+
+        self._human  = HumanEmulator()
+        self._ctrl   = GameController(human=self._human)
         self._engine = DecisionEngine(ctrl=self._ctrl, human=self._human)
         self._session_start = time.monotonic()
-        self._connected = False
-        self._debug_on = True
-        self._last_tick = 0
+        self._connected     = False
+
+        self._build_ui()
+        self._start_ticker()
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick_session_panel)
+        self._timer.start(1000)
 
     # ------------------------------------------------------------------
-    # Compose
+    # UI construction
     # ------------------------------------------------------------------
 
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+    def _build_ui(self) -> None:
+        self.setWindowTitle("GameBridge")
+        self.setMinimumSize(1080, 680)
+        self.resize(1300, 820)
 
-        with Horizontal():
+        root_widget = QWidget()
+        self.setCentralWidget(root_widget)
+        root = QHBoxLayout(root_widget)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
-            # ── Left column ──────────────────────────────────────────
-            with VerticalScroll(id="left"):
+        # ── Left sidebar ─────────────────────────────────────────────
 
-                with Vertical(classes="panel"):
-                    yield Label("PLAYER", classes="panel-title")
-                    yield Static("—", id="player-stats")
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setFixedWidth(274)
 
-                with Vertical(classes="panel"):
-                    yield Label(
-                        "MINIMAP   [bold green]@[/]=you  [bold red]N[/]=npc(visible)  "
-                        "[dim red]n[/]=npc  [yellow]O[/]=object",
-                        classes="panel-title",
-                        markup=True,
-                    )
-                    yield Static("", id="minimap-text")
+        left_host = QWidget()
+        left_host.setStyleSheet("background: transparent;")
+        left = QVBoxLayout(left_host)
+        left.setContentsMargins(0, 0, 4, 0)
+        left.setSpacing(10)
 
-                with Vertical(classes="panel"):
-                    yield Label("INVENTORY", classes="panel-title")
-                    yield Static("—", id="inventory-text")
+        # Player card
+        left.addWidget(self._make_player_card())
 
-                with Vertical(classes="panel"):
-                    yield Label("CAMERA", classes="panel-title")
-                    yield Static("—", id="camera-text")
+        # Minimap card
+        mm_card = Card("Minimap")
+        self._minimap = MinimapWidget()
+        mm_row = QHBoxLayout()
+        mm_row.addStretch()
+        mm_row.addWidget(self._minimap)
+        mm_row.addStretch()
+        mm_card.layout().addLayout(mm_row)
+        legend = QHBoxLayout()
+        legend.setSpacing(6)
+        for color, text in [
+            (C.PLAYER_COLOR, "You"), (C.NPC_VIS, "NPC"), (C.OBJ_VIS, "Object"),
+        ]:
+            dot = QLabel("●")
+            dot.setStyleSheet(f"color: {color}; font-size: 9px;")
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px;")
+            legend.addWidget(dot)
+            legend.addWidget(lbl)
+        legend.addStretch()
+        mm_card.layout().addLayout(legend)
+        left.addWidget(mm_card)
 
-            # ── Right column ─────────────────────────────────────────
-            with Vertical(id="right"):
+        # Inventory card
+        inv_card = Card("Inventory")
+        self._inv_widget = InventoryWidget()
+        inv_row = QHBoxLayout()
+        inv_row.addStretch()
+        inv_row.addWidget(self._inv_widget)
+        inv_row.addStretch()
+        inv_card.layout().addLayout(inv_row)
+        self._inv_slots_lbl = QLabel("—")
+        self._inv_slots_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._inv_slots_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 11px;")
+        inv_card.layout().addWidget(self._inv_slots_lbl)
+        left.addWidget(inv_card)
 
-                # Routine control
-                with Vertical(id="control-panel"):
-                    yield Label("ROUTINE CONTROL", id="control-title")
-                    yield Select(
-                        [(k.replace("_", " ").title(), k) for k in ROUTINES],
-                        id="routine-select",
-                        allow_blank=False,
-                        value=next(iter(ROUTINES)),
-                    )
-                    yield Static("State: —", id="routine-state-label")
-                    with Horizontal(classes="btn-row"):
-                        yield Button("▶ Start", id="btn-start", variant="success")
-                        yield Button("■ Stop",  id="btn-stop",  variant="error")
-                        yield Button("↺ Reset", id="btn-reset")
-                    yield Static("", id="session-stats")
+        # Camera card
+        cam_card = Card("Camera")
+        self._cam_yaw   = QLabel("Yaw: —")
+        self._cam_pitch = QLabel("Pitch: —")
+        self._cam_pos   = QLabel("Pos: —")
+        for lbl in (self._cam_yaw, self._cam_pitch, self._cam_pos):
+            lbl.setStyleSheet(f"color: {C.TEXT}; font-size: 12px;")
+            cam_card.layout().addWidget(lbl)
+        left.addWidget(cam_card)
 
-                # Nearby entities
-                with TabbedContent(id="nearby-tabs"):
-                    with TabPane("NPCs", id="tab-npcs"):
-                        t = DataTable(id="npc-table", zebra_stripes=True)
-                        t.add_columns("Name", "Lvl", "Pos", "Dist", "⊙")
-                        yield t
-                    with TabPane("Objects", id="tab-objects"):
-                        t = DataTable(id="obj-table", zebra_stripes=True)
-                        t.add_columns("Name", "Pos", "Dist", "⊙")
-                        yield t
-                    with TabPane("Skills/XP", id="tab-xp"):
-                        t = DataTable(id="xp-table", zebra_stripes=True)
-                        t.add_columns("Skill", "Lvl", "Boosted", "XP")
-                        yield t
+        left.addStretch()
+        left_scroll.setWidget(left_host)
+        root.addWidget(left_scroll)
 
-                # Debug log (toggle with 'd')
-                yield RichLog(
-                    id="debug-log",
-                    highlight=True,
-                    markup=True,
-                    max_lines=500,
-                )
+        # ── Right panel ───────────────────────────────────────────────
 
-        yield Footer()
+        right = QVBoxLayout()
+        right.setSpacing(10)
+
+        # Top status bar
+        right.addWidget(self._make_status_bar_widget())
+
+        # Routine control
+        right.addWidget(self._make_routine_card())
+
+        # Nearby tabs (expandable)
+        nearby = Card("Nearby Entities")
+        nearby.setSizePolicy(QSizePolicy.Policy.Expanding,
+                             QSizePolicy.Policy.Expanding)
+        self._tabs = QTabWidget()
+
+        self._npc_table = self._make_table(["Name", "Lvl", "Pos", "Dist", "●"])
+        self._tabs.addTab(self._npc_table, "NPCs")
+
+        self._obj_table = self._make_table(["Name", "Pos", "Dist", "●"])
+        self._tabs.addTab(self._obj_table, "Objects")
+
+        self._xp_table = self._make_table(["Skill", "Level", "Boosted", "Total XP"])
+        self._tabs.addTab(self._xp_table, "Skills / XP")
+
+        nearby.layout().addWidget(self._tabs)
+        right.addWidget(nearby, stretch=1)
+
+        # Debug log
+        log_card = Card("Event Log")
+        log_card.setFixedHeight(152)
+        self._debug_log = QTextEdit()
+        self._debug_log.setReadOnly(True)
+        self._debug_log.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self._debug_log.document().setMaximumBlockCount(1000)
+        log_card.layout().addWidget(self._debug_log)
+        right.addWidget(log_card)
+
+        root.addLayout(right, stretch=1)
+
+        # Qt status bar (bottom)
+        status_bar = QStatusBar()
+        self.setStatusBar(status_bar)
+        self._status_msg = QLabel("Waiting for connection…")
+        self._status_msg.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; padding: 0 8px;")
+        status_bar.addWidget(self._status_msg)
+
+    def _make_player_card(self) -> Card:
+        card = Card("Player")
+
+        self._player_name = QLabel("—")
+        self._player_name.setStyleSheet(
+            f"color: {C.TEXT}; font-size: 18px; font-weight: 700;")
+        card.layout().addWidget(self._player_name)
+
+        self._player_pos_lbl = QLabel("Position: —")
+        self._player_pos_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        card.layout().addWidget(self._player_pos_lbl)
+
+        self._player_anim_lbl = QLabel("Animation: idle")
+        self._player_anim_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        card.layout().addWidget(self._player_anim_lbl)
+
+        self._player_target_lbl = QLabel("")
+        self._player_target_lbl.setStyleSheet(
+            f"color: {C.ACCENT}; font-size: 12px;")
+        card.layout().addWidget(self._player_target_lbl)
+
+        card.layout().addWidget(HDivider())
+
+        self._hp_bar     = StatBar("HP",     C.HP,     C.HP_DIM)
+        self._prayer_bar = StatBar("Prayer", C.PRAYER, C.PRAYER_DIM)
+        card.layout().addWidget(self._hp_bar)
+        card.layout().addWidget(self._prayer_bar)
+
+        return card
+
+    def _make_status_bar_widget(self) -> Card:
+        card = Card()
+        card.setFixedHeight(52)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self._conn_dot = ConnectionDot()
+        self._conn_lbl = QLabel("Disconnected")
+        self._conn_lbl.setStyleSheet(
+            f"color: {C.DANGER}; font-weight: 600; font-size: 13px;")
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setStyleSheet(f"color: {C.BORDER};")
+        sep.setFixedWidth(1)
+
+        self._tick_lbl = QLabel("Tick —")
+        self._tick_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+
+        row.addWidget(self._conn_dot)
+        row.addWidget(self._conn_lbl)
+        row.addWidget(sep)
+        row.addWidget(self._tick_lbl)
+        row.addStretch()
+        card.layout().addLayout(row)
+        return card
+
+    def _make_routine_card(self) -> Card:
+        card = Card("Routine Control")
+
+        # Row 1 — dropdown + buttons
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        self._routine_combo = QComboBox()
+        for name in ROUTINES:
+            self._routine_combo.addItem(name)
+        row1.addWidget(self._routine_combo, stretch=1)
+
+        self._btn_start = QPushButton("▶  Start")
+        self._btn_start.setObjectName("btn-start")
+        self._btn_start.setFixedWidth(88)
+        self._btn_start.clicked.connect(self._start_routine)
+
+        self._btn_stop = QPushButton("■  Stop")
+        self._btn_stop.setObjectName("btn-stop")
+        self._btn_stop.setFixedWidth(88)
+        self._btn_stop.clicked.connect(self._stop_routine)
+
+        self._btn_reset = QPushButton("↺  Reset")
+        self._btn_reset.setFixedWidth(78)
+        self._btn_reset.clicked.connect(self._reset_routine)
+
+        row1.addWidget(self._btn_start)
+        row1.addWidget(self._btn_stop)
+        row1.addWidget(self._btn_reset)
+        card.layout().addLayout(row1)
+
+        # Row 2 — state + session
+        row2 = QHBoxLayout()
+        self._routine_state_lbl = QLabel("State: —")
+        self._routine_state_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        self._session_lbl = QLabel("Session: 00m 00s")
+        self._session_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        row2.addWidget(self._routine_state_lbl)
+        row2.addStretch()
+        row2.addWidget(self._session_lbl)
+        card.layout().addLayout(row2)
+
+        # Row 3 — fatigue bar
+        fat_row = QHBoxLayout()
+        fat_lbl = QLabel("Fatigue")
+        fat_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px; min-width: 52px;")
+        self._fatigue_bar = StatBar("", C.FATIGUE, C.FATIGUE_DIM)
+        self._fatigue_bar.set_value(0, 100)
+        fat_row.addWidget(fat_lbl)
+        fat_row.addWidget(self._fatigue_bar, stretch=1)
+        card.layout().addLayout(fat_row)
+
+        return card
+
+    def _make_table(self, columns: list[str]) -> QTableWidget:
+        t = QTableWidget(0, len(columns))
+        t.setHorizontalHeaderLabels(columns)
+        t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        t.setAlternatingRowColors(True)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setStretchLastSection(True)
+        t.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive)
+        t.setShowGrid(False)
+        t.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        return t
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # Thread setup
     # ------------------------------------------------------------------
 
-    def on_mount(self) -> None:
-        self.sub_title = "○ Disconnected"
-        threading.Thread(target=self._background_loop, daemon=True).start()
-        self.set_interval(1.0, self._update_session_panel)
+    def _start_ticker(self) -> None:
+        self._ticker = BridgeTicker(host=self._host, port=self._port)
+        self._ticker.tick_received.connect(self._on_tick)
+        self._ticker.start()
 
     # ------------------------------------------------------------------
-    # Background thread — TCP read + engine execution
+    # Tick handler (runs on main thread via Qt signal)
     # ------------------------------------------------------------------
 
-    def _background_loop(self) -> None:
-        """
-        Daemon thread.  Reads every tick message from the GameBridge plugin,
-        runs the engine (which may perform hardware input actions), then
-        schedules a UI refresh on the main thread.
-        """
-        for msg in tcp_stream(host=self._host, port=self._port):
-            if not self._connected:
-                self._connected = True
-                self.call_from_thread(self._on_connected)
+    @pyqtSlot(dict)
+    def _on_tick(self, msg: dict) -> None:
+        if not self._connected:
+            self._connected = True
+            self._conn_lbl.setText("Connected")
+            self._conn_lbl.setStyleSheet(
+                f"color: {C.SUCCESS}; font-weight: 600; font-size: 13px;")
+            self._conn_dot.set_connected(True)
+            self._status_msg.setText("Connected to RuneLite")
 
-            try:
-                self._engine.process_tick(msg)
-            except Exception:
-                pass  # logged by engine
+        try:
+            self._engine.process_tick(msg)
+        except Exception:
+            pass
 
-            self.call_from_thread(self._refresh_ui, dict(msg))
-
-    # ------------------------------------------------------------------
-    # UI refresh (main thread)
-    # ------------------------------------------------------------------
-
-    def _on_connected(self) -> None:
-        self.sub_title = "● Connected"
-
-    def _refresh_ui(self, raw: dict) -> None:
         g = self._engine.game
-        tick = raw.get("tick", self._last_tick)
-        self._last_tick = tick
-        self.title = f"GameBridge   tick {tick:,}"
+        tick = g.tick
+        self._tick_lbl.setText(f"Tick {tick:,}")
+        self.setWindowTitle(f"GameBridge  —  tick {tick:,}")
 
         # Player
-        p = g.player
-        if p:
+        if g.player:
             px, py = g.player_pos
-            anim = p.get("animation", -1)
-            interacting = (
-                f"\n[dim]→ {g.interacting_with}[/dim]" if g.interacting_with else ""
-            )
-            self.query_one("#player-stats", Static).update(
-                f"[bold]{p.get('name', '—')}[/bold]\n"
-                f"Pos    ({px}, {py})   plane {g.plane}\n"
-                f"HP     {p.get('hp', '—')}      Prayer  {p.get('prayer', '—')}\n"
-                f"Anim   {'idle' if anim == -1 else anim}"
-                + interacting
-            )
-            self.query_one("#minimap-text", Static).update(_minimap(g))
+            anim   = g.player.get("animation", -1)
+            self._player_name.setText(g.player.get("name", "—"))
+            self._player_pos_lbl.setText(
+                f"({px}, {py})   plane {g.plane}")
+            self._player_anim_lbl.setText(
+                f"Animation: {'idle' if anim == -1 else anim}")
+            self._player_target_lbl.setText(
+                f"→ {g.interacting_with}" if g.interacting_with else "")
+            self._hp_bar.set_value(g.player.get("hp", 0))
+            self._prayer_bar.set_value(g.player.get("prayer", 0))
 
-        # Inventory
-        filled = [s for s in g.inventory if s["itemId"] != -1]
-        free = g.inventory_free_slots()
-        if filled:
-            lines = [
-                f"slot {s['slot']:2d}  id {s['itemId']:6d}  ×{s['qty']}"
-                for s in filled[:12]
-            ]
-            more = f"\n[dim]… {len(filled)-12} more[/dim]" if len(filled) > 12 else ""
-            self.query_one("#inventory-text", Static).update(
-                "\n".join(lines) + more + f"\n[dim]{free}/28 free slots[/dim]"
-            )
-        else:
-            self.query_one("#inventory-text", Static).update(
-                f"[dim]empty — {free}/28 free[/dim]"
-            )
+        # Minimap
+        self._minimap.update_state(g)
 
         # Camera
-        cam = g.camera
-        if cam:
-            yaw = cam.get("yaw", 0)
-            self.query_one("#camera-text", Static).update(
-                f"Yaw   {yaw:4d}  ({_yaw_dir(yaw)})\n"
-                f"Pitch {cam.get('pitch', '—')}\n"
-                f"Pos   ({cam.get('x','—')}, {cam.get('y','—')}, {cam.get('z','—')})"
-            )
+        if g.camera:
+            yaw = g.camera.get("yaw", 0)
+            self._cam_yaw.setText(f"Yaw: {yaw}  ({_yaw_dir(yaw)})")
+            self._cam_pitch.setText(f"Pitch: {g.camera.get('pitch', '—')}")
+            cx, cy, cz = (g.camera.get(k, "—") for k in ("x", "y", "z"))
+            self._cam_pos.setText(f"Pos: ({cx}, {cy}, {cz})")
+
+        # Inventory
+        self._inv_widget.set_inventory(g.inventory)
+        used = g.inventory_used_slots()
+        self._inv_slots_lbl.setText(f"{used}/28 slots used")
 
         # Routine state label
         rout = self._engine.routine
         if rout:
             if self._engine.on_break:
-                label = f"[yellow]⏸ break  {_hms(self._engine.break_remaining)}[/yellow]"
+                remain = _hms(self._engine.break_remaining)
+                self._routine_state_lbl.setText(f"⏸ Break — {remain} remaining")
+                self._routine_state_lbl.setStyleSheet(
+                    f"color: {C.WARNING}; font-size: 12px;")
             else:
-                label = f"[green]{rout.current_state}[/green]"
-            self.query_one("#routine-state-label", Static).update(f"State: {label}")
+                self._routine_state_lbl.setText(f"State: {rout.current_state}")
+                self._routine_state_lbl.setStyleSheet(
+                    f"color: {C.SUCCESS}; font-size: 12px;")
 
         # NPC table
-        nt = self.query_one("#npc-table", DataTable)
-        nt.clear()
-        for npc in sorted(g.npcs, key=lambda n: g.distance_to(n))[:30]:
-            nt.add_row(
+        self._npc_table.setUpdatesEnabled(False)
+        self._npc_table.setRowCount(0)
+        for npc in sorted(g.npcs, key=g.distance_to)[:40]:
+            r = self._npc_table.rowCount()
+            self._npc_table.insertRow(r)
+            vis = npc.get("onScreen", False)
+            vals = [
                 npc.get("name", "?"),
                 str(npc.get("combatLevel", "—")),
-                f"{npc['worldX']},{npc['worldY']}",
+                f"{npc['worldX']}, {npc['worldY']}",
                 str(g.distance_to(npc)),
-                "✓" if npc.get("onScreen") else " ",
-            )
+                "●" if vis else "○",
+            ]
+            for col, val in enumerate(vals):
+                item = QTableWidgetItem(val)
+                if col == 4:
+                    item.setForeground(
+                        QBrush(_qc(C.SUCCESS if vis else C.TEXT_DIM)))
+                self._npc_table.setItem(r, col, item)
+        self._npc_table.setUpdatesEnabled(True)
 
         # Object table
-        ot = self.query_one("#obj-table", DataTable)
-        ot.clear()
-        for obj in sorted(g.objects, key=lambda o: g.distance_to(o))[:30]:
-            ot.add_row(
+        self._obj_table.setUpdatesEnabled(False)
+        self._obj_table.setRowCount(0)
+        for obj in sorted(g.objects, key=g.distance_to)[:40]:
+            r = self._obj_table.rowCount()
+            self._obj_table.insertRow(r)
+            vis = obj.get("onScreen", False)
+            vals = [
                 obj.get("name", "?"),
-                f"{obj['worldX']},{obj['worldY']}",
+                f"{obj['worldX']}, {obj['worldY']}",
                 str(g.distance_to(obj)),
-                "✓" if obj.get("onScreen") else " ",
-            )
+                "●" if vis else "○",
+            ]
+            for col, val in enumerate(vals):
+                item = QTableWidgetItem(val)
+                if col == 3:
+                    item.setForeground(
+                        QBrush(_qc(C.SUCCESS if vis else C.TEXT_DIM)))
+                self._obj_table.setItem(r, col, item)
+        self._obj_table.setUpdatesEnabled(True)
 
-        # XP table
-        if g.xp:
-            xt = self.query_one("#xp-table", DataTable)
-            xt.clear()
+        # XP table (only rebuild on xp events to avoid flicker)
+        xp_events = [e for e in msg.get("events", []) if e["type"] == "xp"]
+        if xp_events and g.xp:
+            self._xp_table.setUpdatesEnabled(False)
+            self._xp_table.setRowCount(0)
             for skill in sorted(g.xp):
-                xt.add_row(
-                    skill,
+                r = self._xp_table.rowCount()
+                self._xp_table.insertRow(r)
+                for col, val in enumerate([
+                    skill.title(),
                     str(g.levels.get(skill, "—")),
                     str(g.boosted_levels.get(skill, "—")),
                     f"{g.xp[skill]:,}",
-                )
+                ]):
+                    self._xp_table.setItem(r, col, QTableWidgetItem(val))
+            self._xp_table.setUpdatesEnabled(True)
 
-        # Debug log
-        if self._debug_on:
-            events = raw.get("events", [])
-            ev_parts = []
+        # Event log
+        events = msg.get("events", [])
+        if events:
+            parts: list[str] = []
             for e in events:
                 t = e["type"]
                 if t == "xp":
-                    ev_parts.append(f"[cyan]{t}[/]:{e['skill']}+{e.get('xp',0):,}")
-                elif t == "container":
-                    ev_parts.append(f"[magenta]{t}[/]:{e.get('containerId')}")
+                    parts.append(
+                        f'<span style="color:{C.ACCENT}">{t}</span>'
+                        f':<span style="color:{C.TEXT}">{e["skill"]}</span>')
                 elif t == "chat":
-                    ev_parts.append(f"[yellow]{t}[/]:{e.get('message','')[:30]}")
+                    safe = (e.get("message", "")[:40]
+                            .replace("&", "&amp;").replace("<", "&lt;"))
+                    parts.append(
+                        f'<span style="color:{C.WARNING}">{t}</span>'
+                        f':<span style="color:{C.TEXT_MUTED}">{safe}</span>')
+                elif t == "container":
+                    parts.append(
+                        f'<span style="color:{C.ACCENT2}">{t}</span>'
+                        f':<span style="color:{C.TEXT_MUTED}">'
+                        f'{e.get("containerId")}</span>')
+                elif t == "animation":
+                    parts.append(
+                        f'<span style="color:{C.TEXT_DIM}">{t}</span>'
+                        f':<span style="color:{C.TEXT_DIM}">'
+                        f'{e.get("animId")}</span>')
                 else:
-                    ev_parts.append(f"[dim]{t}[/]")
-            ev_str = "  " + "  ".join(ev_parts) if ev_parts else ""
-            self.query_one("#debug-log", RichLog).write(
-                f"[dim]{tick:7,}[/]  "
-                f"({g.player_pos[0]},{g.player_pos[1]})  "
-                f"npcs={len(g.npcs)}  objs={len(g.objects)}"
-                + ev_str
+                    parts.append(
+                        f'<span style="color:{C.TEXT_DIM}">{t}</span>')
+
+            px2, py2 = g.player_pos
+            line = (
+                f'<span style="color:{C.TEXT_DIM}">{tick:7,}</span>&nbsp;'
+                f'<span style="color:{C.TEXT_MUTED}">({px2},{py2})</span>'
+                f'&nbsp;&nbsp;{"&nbsp;&nbsp;".join(parts)}'
             )
+            self._debug_log.append(line)
+            self._debug_log.moveCursor(QTextCursor.MoveOperation.End)
 
-    def _update_session_panel(self) -> None:
-        """Runs every second to update the session timer and fatigue bar."""
+    # ------------------------------------------------------------------
+    # Per-second timer — session stats
+    # ------------------------------------------------------------------
+
+    def _tick_session_panel(self) -> None:
         elapsed = time.monotonic() - self._session_start
+        self._session_lbl.setText(f"Session: {_hms(elapsed)}")
         f = self._human.fatigue
-        break_line = (
-            f"[yellow]⏸ break — {_hms(self._engine.break_remaining)} remaining[/yellow]"
-            if self._engine.on_break
-            else "[dim]no break active[/dim]"
-        )
-        self.query_one("#session-stats", Static).update(
-            f"Session  {_hms(elapsed)}\n"
-            f"Fatigue  {_fatigue_bar(f)}  {int(f*100)}%\n"
-            + break_line
-        )
+        self._fatigue_bar.set_value(int(f * 100), 100)
 
     # ------------------------------------------------------------------
-    # Button handlers
+    # Routine button handlers
     # ------------------------------------------------------------------
 
-    @on(Button.Pressed, "#btn-start")
-    def _on_start_btn(self) -> None:
-        self.action_start_routine()
-
-    @on(Button.Pressed, "#btn-stop")
-    def _on_stop_btn(self) -> None:
-        self.action_stop_routine()
-
-    @on(Button.Pressed, "#btn-reset")
-    def _on_reset_btn(self) -> None:
-        self.action_reset_routine()
-
-    # ------------------------------------------------------------------
-    # Bound actions
-    # ------------------------------------------------------------------
-
-    def action_start_routine(self) -> None:
-        sel = self.query_one("#routine-select", Select)
-        name = sel.value
-        if not isinstance(name, str) or name not in ROUTINES:
-            self.notify("Select a routine first.", severity="warning")
+    def _start_routine(self) -> None:
+        name = self._routine_combo.currentText()
+        if name not in ROUTINES:
             return
         if not self._ctrl.refresh_window():
-            self.notify("RuneLite window not found — launch the client first.", severity="error")
+            self._status_msg.setText(
+                "⚠  RuneLite window not found — launch the client first.")
             return
         self._engine.set_routine(ROUTINES[name]())
-        self.notify(f"Started: {name.replace('_', ' ').title()}", severity="information")
+        self._status_msg.setText(f"▶  Running: {name}")
 
-    def action_stop_routine(self) -> None:
+    def _stop_routine(self) -> None:
         self._engine.stop()
-        self.query_one("#routine-state-label", Static).update("State: [dim]—[/dim]")
-        self.notify("Routine stopped.", severity="warning")
+        self._routine_state_lbl.setText("State: —")
+        self._routine_state_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        self._status_msg.setText("■  Routine stopped.")
 
-    def action_reset_routine(self) -> None:
+    def _reset_routine(self) -> None:
         if self._engine.routine:
             self._engine.routine.reset()
-            self.notify("Routine reset to initial state.")
+            self._status_msg.setText("↺  Routine reset to initial state.")
 
-    def action_toggle_debug(self) -> None:
-        self._debug_on = not self._debug_on
-        log_w = self.query_one("#debug-log", RichLog)
-        if self._debug_on:
-            log_w.remove_class("hidden")
+    # ------------------------------------------------------------------
+    # Keyboard shortcuts
+    # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event) -> None:
+        k = event.key()
+        if k == Qt.Key.Key_S:
+            self._start_routine()
+        elif k == Qt.Key.Key_X:
+            self._stop_routine()
+        elif k == Qt.Key.Key_R:
+            self._reset_routine()
         else:
-            log_w.add_class("hidden")
-        self.notify(f"Debug log {'shown' if self._debug_on else 'hidden'}.")
+            super().keyPressEvent(event)
 
 
-# Allow running as a script: python -m scripts.gamebridge.dashboard
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def run(host: str = "127.0.0.1", port: int = 7070) -> None:
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyleSheet(STYLESHEET)
+    app.setApplicationName("GameBridge")
+    window = GameBridgeWindow(host=host, port=port)
+    window.show()
+    sys.exit(app.exec())
+
+
 if __name__ == "__main__":
-    GameBridgeApp().run()
+    run()

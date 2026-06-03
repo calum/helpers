@@ -3,8 +3,8 @@
 # Install: pip install -r scripts/gamebridge/requirements.txt
 # Or via mise: mise run gamebridge-setup
 
-# TUI dashboard
-textual>=0.50.0
+# Qt dashboard
+PyQt6>=6.6.0
 
 # Optional — hull polygon hit-testing (GAMEBRIDGE.md "Canvas coordinates" section)
 # shapely>=2.0

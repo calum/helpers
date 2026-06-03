@@ -11,7 +11,7 @@ description = "Install GameBridge Python dependencies"
 run = "python -m pip install -r scripts/gamebridge/requirements.txt"
 
 [tasks.gamebridge]
-description = "Launch the GameBridge TUI dashboard"
+description = "Launch the GameBridge Qt dashboard"
 run = "python -m scripts.gamebridge.main --dashboard"
 
 [tasks.gamebridge-watch]

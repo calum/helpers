@@ -51,8 +51,8 @@ def main() -> None:
 
     # ── Dashboard (default) ──────────────────────────────────────────
     if not args.watch and not args.routine:
-        from .dashboard import GameBridgeApp
-        GameBridgeApp(host=args.host, port=args.port).run()
+        from .dashboard import run as run_dashboard
+        run_dashboard(host=args.host, port=args.port)
         return
 
     # ── Headless watch mode ──────────────────────────────────────────
