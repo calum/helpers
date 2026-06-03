@@ -387,18 +387,31 @@ public class GameBridgePlugin extends Plugin
 				}
 				if (!w.isHidden())
 				{
-					list.add(serializeWidget(groupId, w));
+					list.add(serializeWidget(groupId, childId, w));
+				}
+				// Dynamic children (item slots, bank slots, etc.) live under container widgets
+				// and are not reachable via the flat childId scan above.
+				Widget[] dyn = w.getDynamicChildren();
+				if (dyn != null)
+				{
+					for (Widget dynChild : dyn)
+					{
+						if (dynChild != null && !dynChild.isHidden())
+						{
+							list.add(serializeWidget(groupId, dynChild.getIndex(), dynChild));
+						}
+					}
 				}
 			}
 		}
 		return list;
 	}
 
-	private Map<String, Object> serializeWidget(int groupId, Widget w)
+	private Map<String, Object> serializeWidget(int groupId, int childId, Widget w)
 	{
 		Map<String, Object> m = new LinkedHashMap<>();
 		m.put("groupId", groupId);
-		m.put("childId", w.getIndex());
+		m.put("childId", childId);
 		m.put("itemId", w.getItemId());
 		m.put("quantity", w.getItemQuantity());
 		Rectangle bounds = w.getBounds();
