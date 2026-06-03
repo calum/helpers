@@ -11,7 +11,7 @@ try
     & git fetch origin
     if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
     & git merge origin/master
-    if ($LASTEXITCODE -ne 0) { throw "git merge failed — resolve conflicts then re-run (exit $LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) { throw "git merge failed - resolve conflicts then re-run (exit $LASTEXITCODE)" }
 
     # Fetch the current official plugin hub version so our build is compatible
     Write-Host "Fetching current plugin hub version..."
