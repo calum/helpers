@@ -55,6 +55,7 @@ class IronMiningRoutine(Routine):
 
     ORE_NAME = "Iron rocks"
     BANK_NAME = "Mine cart"
+    CLICK_INTERVAL = 1.5  # casual routine — minimum 1.5 s between entity clicks
 
     # ------------------------------------------------------------------
     # States
@@ -95,8 +96,8 @@ class IronMiningRoutine(Routine):
         if game.inventory_full():
             return "walk_to_bank"
 
-        if not game.player_animating():
-            # Animation ended — ore depleted or click missed
+        if game.player_idle():
+            # Ore depleted or click missed — player has stopped and is on the same tile
             return "find_ore"
 
         return None  # still mining
@@ -106,6 +107,9 @@ class IronMiningRoutine(Routine):
         Click the nearest bank deposit box to walk toward it.
         Transition to deposit once we're adjacent.
         """
+        if game.inventory_empty():
+            return "find_ore"
+
         box = game.nearest_object(self.BANK_NAME)
 
         if box is None:
@@ -124,23 +128,29 @@ class IronMiningRoutine(Routine):
 
     def deposit(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Right-click the deposit box and choose 'Deposit inventory'.
+        Click the Mine cart to open the deposit UI, then click the
+        'Deposit inventory' button (widget 192:31) to empty the pack.
         Returns to find_ore once slots are free.
         """
+        if game.inventory_empty():
+            return "find_ore"
+
         box = game.nearest_object(self.BANK_NAME)
 
         if box is None or not game.player_near(box, tiles=2):
-            # Walked too far or box disappeared — try again
             return "walk_to_bank"
 
-        if box.get("onScreen"):
-            ctrl.right_click_entity(box)
-            # Wait briefly for the context menu / deposit animation
+        deposit_btn = game.find_widget(192, 31)
+        if deposit_btn is not None:
+            # Deposit box UI is open — click 'Deposit inventory'
+            ctrl.click_widget(deposit_btn)
             ctrl.wait(1.2)
+        elif box.get("onScreen"):
+            # UI not open yet — click the Mine cart to open it
+            ctrl.click_entity(box)
 
         if game.inventory_free_slots() > 0:
             log.info("Deposited ores. Free slots: %d", game.inventory_free_slots())
             return "find_ore"
 
-        # Inventory still full — try depositing again next tick
         return None

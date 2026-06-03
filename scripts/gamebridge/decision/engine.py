@@ -57,8 +57,14 @@ class DecisionEngine:
         """Replace the active routine immediately (or pass None to stop)."""
         if routine is None:
             log.info("Routine cleared — engine is idle.")
+            self._ctrl.min_click_interval = 0.0
         else:
-            log.info("Activating routine: %s (state: %s)", routine.name, routine.current_state)
+            interval = getattr(routine, "CLICK_INTERVAL", 0.0)
+            self._ctrl.min_click_interval = interval
+            log.info(
+                "Activating routine: %s (state: %s, click_interval: %.2fs)",
+                routine.name, routine.current_state, interval,
+            )
         self._routine = routine
 
     def stop(self) -> None:

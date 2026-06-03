@@ -36,6 +36,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | Framing | Newline-delimited JSON — one JSON object per line |
 | Rate | One message per game tick (~600 ms, ~1.67 msg/s) |
 | Direction | Server → client only; the plugin never reads from the socket |
+| Init message | On the first game tick after connecting, the client receives one synthetic tick message containing the current inventory/equipment `container` events (if `exposeInventory` is enabled and the data has been seen since login). This ensures `inventory` is populated immediately rather than waiting for the next item change. |
 
 ---
 

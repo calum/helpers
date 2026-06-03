@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
     QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QTextEdit, QToolTip, QVBoxLayout, QWidget,
 )
 
 from .client import stream as tcp_stream
@@ -517,6 +517,37 @@ class InventoryWidget(QWidget):
         th = self._ROWS * self._SZ + (self._ROWS - 1) * self._GAP
         self.setFixedSize(tw, th)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setMouseTracking(True)
+
+    def _slot_at(self, pos) -> int:
+        """Return the slot index (0-27) under pos, or -1 if in a gap."""
+        sz, gap = self._SZ, self._GAP
+        step = sz + gap
+        col = pos.x() // step
+        row = pos.y() // step
+        if not (0 <= col < self._COLS and 0 <= row < self._ROWS):
+            return -1
+        if pos.x() % step >= sz or pos.y() % step >= sz:
+            return -1  # in the gap between cells
+        return row * self._COLS + col
+
+    def mouseMoveEvent(self, event) -> None:
+        slot_idx = self._slot_at(event.pos())
+        if slot_idx < 0:
+            QToolTip.hideText()
+            return
+        by_slot = {s["slot"]: s for s in self._slots}
+        slot = by_slot.get(slot_idx)
+        if slot is None or slot.get("itemId", -1) == -1:
+            tip = f"Slot {slot_idx}:  Empty"
+        else:
+            item_id = slot["itemId"]
+            qty = slot.get("qty", 1)
+            tip = f"Slot {slot_idx}\nItem ID:  {item_id}\nQuantity:  {qty:,}"
+        QToolTip.showText(event.globalPosition().toPoint(), tip, self)
+
+    def leaveEvent(self, event) -> None:
+        QToolTip.hideText()
 
     def set_inventory(self, items: list[dict]) -> None:
         self._slots = items
@@ -1480,8 +1511,11 @@ class GameBridgeWindow(QMainWindow):
 
         # Inventory
         self._inv_widget.set_inventory(g.inventory)
-        used = g.inventory_used_slots()
-        self._inv_slots_lbl.setText(f"{used}/28 slots used")
+        if g.inventory:
+            used = g.inventory_used_slots()
+            self._inv_slots_lbl.setText(f"{used}/28 slots used")
+        else:
+            self._inv_slots_lbl.setText("—")
 
         # Routine state label
         rout = self._engine.routine

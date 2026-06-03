@@ -55,6 +55,7 @@ class BridgeServer
 	private ServerSocket serverSocket;
 	private Thread acceptThread;
 	private final CopyOnWriteArrayList<ClientEntry> clients = new CopyOnWriteArrayList<>();
+	private final CopyOnWriteArrayList<ClientEntry> pendingClients = new CopyOnWriteArrayList<>();
 
 	void start(int port) throws IOException
 	{
@@ -89,6 +90,17 @@ class BridgeServer
 			}
 		}
 		clients.clear();
+		for (ClientEntry entry : pendingClients)
+		{
+			try
+			{
+				entry.socket.close();
+			}
+			catch (IOException ignored)
+			{
+			}
+		}
+		pendingClients.clear();
 	}
 
 	/**
@@ -116,6 +128,43 @@ class BridgeServer
 		}
 	}
 
+	/**
+	 * Sends {@code initJson} (if non-null) to every newly-connected client, then moves
+	 * successful ones into the active client list. Must be called from the game thread.
+	 */
+	void activateNewClients(String initJson)
+	{
+		if (pendingClients.isEmpty())
+		{
+			return;
+		}
+		for (ClientEntry entry : pendingClients)
+		{
+			boolean ok = true;
+			if (initJson != null)
+			{
+				entry.writer.println(initJson);
+				ok = !entry.writer.checkError();
+			}
+			if (ok)
+			{
+				clients.add(entry);
+			}
+			else
+			{
+				log.debug("Game Bridge: new client failed init send, dropping");
+				try
+				{
+					entry.socket.close();
+				}
+				catch (IOException ignored)
+				{
+				}
+			}
+		}
+		pendingClients.clear();
+	}
+
 	private void acceptLoop()
 	{
 		while (!serverSocket.isClosed())
@@ -124,7 +173,7 @@ class BridgeServer
 			{
 				Socket socket = serverSocket.accept();
 				socket.setTcpNoDelay(true);
-				clients.add(new ClientEntry(socket));
+				pendingClients.add(new ClientEntry(socket));
 				log.info("Game Bridge: client connected from {}", socket.getInetAddress());
 			}
 			catch (IOException e)

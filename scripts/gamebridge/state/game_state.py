@@ -36,10 +36,14 @@ class GameState:
     # Rolling chat log (capped)
     chat_log: List[dict] = field(default_factory=list)
 
+    # Widget slots (populated when exposeWidgets is on)
+    widgets: List[dict] = field(default_factory=list)
+
     # Current interacting-with target name, or None
     interacting_with: Optional[str] = None
 
     _prev_animation: int = field(default=-1, repr=False)
+    _prev_pos: Optional[tuple] = field(default=None, repr=False)
     _CHAT_LOG_CAP: int = field(default=200, init=False, repr=False)
 
     # ------------------------------------------------------------------ #
@@ -52,6 +56,7 @@ class GameState:
 
         if "player" in msg:
             self._prev_animation = self.player.get("animation", -1)
+            self._prev_pos = self.player_pos if self.player else None
             self.player = msg["player"]
 
         if "camera" in msg:
@@ -62,6 +67,9 @@ class GameState:
 
         if "objects" in msg:
             self.objects = msg["objects"]
+
+        if "widgets" in msg:
+            self.widgets = msg["widgets"]
 
         for event in msg.get("events", []):
             self._apply_event(event)
@@ -117,6 +125,20 @@ class GameState:
         """True on the first tick an animation ends."""
         return self._prev_animation != -1 and not self.player_animating()
 
+    def player_moving(self) -> bool:
+        """True if the player's world position changed since the last tick."""
+        if self._prev_pos is None:
+            return False
+        return self.player_pos != self._prev_pos
+
+    def player_idle(self) -> bool:
+        """True only when the player has no animation AND did not move this tick.
+
+        Requiring a stable tile prevents the double-click window where the
+        animation briefly reads -1 before the server-queued walk has started.
+        """
+        return not self.player_animating() and not self.player_moving()
+
     def player_hp(self) -> int:
         return self.player.get("hp", 0)
 
@@ -131,16 +153,40 @@ class GameState:
         return sum(s["qty"] for s in self.inventory if s["itemId"] == item_id)
 
     def inventory_free_slots(self) -> int:
-        return sum(1 for s in self.inventory if s["itemId"] == -1)
+        if not self.inventory:
+            return 0
+        # Empty slots arrive as itemId=-1 (explicitly cleared) or itemId=0 (never occupied).
+        # Real items always have itemId >= 1.
+        return sum(1 for s in self.inventory if s["itemId"] <= 0)
 
     def inventory_used_slots(self) -> int:
+        if not self.inventory:
+            return 0
         return 28 - self.inventory_free_slots()
 
     def inventory_full(self) -> bool:
+        if not self.inventory:
+            return False  # no data yet — don't assume full
         return self.inventory_free_slots() == 0
 
     def inventory_has_item(self, item_id: int) -> bool:
         return any(s["itemId"] == item_id for s in self.inventory)
+
+    def inventory_empty(self) -> bool:
+        if not self.inventory:
+            return False  # no data yet — don't assume empty
+        return self.inventory_free_slots() == 28
+
+    # ------------------------------------------------------------------ #
+    # Widgets
+    # ------------------------------------------------------------------ #
+
+    def find_widget(self, group_id: int, child_id: int) -> Optional[dict]:
+        """Return the widget with the given groupId/childId, or None."""
+        for w in self.widgets:
+            if w.get("groupId") == group_id and w.get("childId") == child_id:
+                return w
+        return None
 
     # ------------------------------------------------------------------ #
     # NPCs

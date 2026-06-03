@@ -88,6 +88,8 @@ class GameController:
     def __init__(self, human: Optional[HumanEmulator] = None):
         self._human = human or HumanEmulator()
         self._window: Optional[tuple[int, int, int, int]] = None
+        self.min_click_interval: float = 0.0
+        self._last_entity_click: float = 0.0
 
     # ------------------------------------------------------------------
     # Window management
@@ -131,6 +133,13 @@ class GameController:
         if not entity.get("onScreen"):
             log.debug("click_entity: %s is off-screen", entity.get("name", "?"))
             return
+        now = time.monotonic()
+        if self.min_click_interval > 0 and now - self._last_entity_click < self.min_click_interval:
+            log.debug(
+                "click_entity: throttled — %.2fs since last click (min %.2fs)",
+                now - self._last_entity_click, self.min_click_interval,
+            )
+            return
         sx, sy = self._canvas_to_screen(entity["canvasX"], entity["canvasY"])
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
@@ -144,6 +153,7 @@ class GameController:
             time.sleep(0.055)
             mouse_input.click_left()
 
+        self._last_entity_click = time.monotonic()
         log.debug("Clicked %s at screen (%.0f, %.0f)", entity.get("name", "?"), sx, sy)
 
     def right_click_entity(self, entity: dict) -> None:
@@ -160,6 +170,18 @@ class GameController:
         mouse_input.click_right()
 
         log.debug("Right-clicked %s", entity.get("name", "?"))
+
+    def click_widget(self, widget: dict) -> None:
+        """Left-click the centre of a UI widget slot."""
+        b = widget.get("bounds")
+        if not b:
+            log.debug("click_widget: widget has no bounds")
+            return
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        self.click_at(cx, cy)
+        log.debug("Clicked widget G%d:%d at canvas (%.0f, %.0f)",
+                  widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
 
     def click_at(self, canvas_x: float, canvas_y: float) -> None:
         """Left-click at an absolute canvas coordinate."""

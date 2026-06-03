@@ -93,6 +93,10 @@ public class GameBridgePlugin extends Plugin
 	// key = "varpId,varbitId"; last write within a tick wins
 	private final Map<String, int[]> pendingVarbits = new LinkedHashMap<>();
 
+	// Cached container snapshots for init messages sent to newly-connected clients
+	private List<Map<String, Object>> lastInventoryItems = null;  // container 93
+	private List<Map<String, Object>> lastEquipmentItems = null;  // container 95
+
 	@Provides
 	GameBridgeConfig provideConfig(ConfigManager configManager)
 	{
@@ -113,6 +117,8 @@ public class GameBridgePlugin extends Plugin
 		server.stop();
 		pendingEvents.clear();
 		pendingVarbits.clear();
+		lastInventoryItems = null;
+		lastEquipmentItems = null;
 	}
 
 	@Subscribe
@@ -172,9 +178,18 @@ public class GameBridgePlugin extends Plugin
 			slot.put("qty", items[i].getQuantity());
 			slots.add(slot);
 		}
+		int containerId = event.getContainerId();
+		if (containerId == 93)
+		{
+			lastInventoryItems = new ArrayList<>(slots);
+		}
+		else if (containerId == 95)
+		{
+			lastEquipmentItems = new ArrayList<>(slots);
+		}
 		Map<String, Object> e = new LinkedHashMap<>();
 		e.put("type", "container");
-		e.put("containerId", event.getContainerId());
+		e.put("containerId", containerId);
 		e.put("items", slots);
 		pendingEvents.add(e);
 	}
@@ -219,10 +234,40 @@ public class GameBridgePlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
+		server.activateNewClients(config.exposeInventory() ? buildInitMessage() : null);
 		Map<String, Object> message = buildTickMessage();
 		server.broadcast(gson.toJson(message));
 		pendingEvents.clear();
 		pendingVarbits.clear();
+	}
+
+	private String buildInitMessage()
+	{
+		if (lastInventoryItems == null && lastEquipmentItems == null)
+		{
+			return null;
+		}
+		List<Map<String, Object>> events = new ArrayList<>();
+		if (lastInventoryItems != null)
+		{
+			Map<String, Object> e = new LinkedHashMap<>();
+			e.put("type", "container");
+			e.put("containerId", 93);
+			e.put("items", lastInventoryItems);
+			events.add(e);
+		}
+		if (lastEquipmentItems != null)
+		{
+			Map<String, Object> e = new LinkedHashMap<>();
+			e.put("type", "container");
+			e.put("containerId", 95);
+			e.put("items", lastEquipmentItems);
+			events.add(e);
+		}
+		Map<String, Object> msg = new LinkedHashMap<>();
+		msg.put("tick", client.getTickCount());
+		msg.put("events", events);
+		return gson.toJson(msg);
 	}
 
 	// -------------------------------------------------------------------------
