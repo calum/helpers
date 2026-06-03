@@ -49,6 +49,7 @@ import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
 import net.runelite.api.WallObject;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.widgets.Widget;
 import net.runelite.api.events.AnimationChanged;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
@@ -79,8 +80,13 @@ public class GameBridgePlugin extends Plugin
 	@Inject
 	private Gson gson;
 
+	// Widget groups serialised when exposeWidgets is on.
+	// 149 = Inventory, 12 = Bank, 387 = Equipment (Wornitems), 192 = Deposit box
+	private static final int[] WIDGET_GROUPS = {149, 12, 387, 192};
+
 	private final BridgeServer server = new BridgeServer();
 	private final HullFilter hullFilter = new HullFilter();
+	private final HullFilter objectFilter = new HullFilter();
 
 	// Accumulated between ticks; flushed in onGameTick
 	private final List<Map<String, Object>> pendingEvents = new ArrayList<>();
@@ -97,6 +103,7 @@ public class GameBridgePlugin extends Plugin
 	protected void startUp() throws Exception
 	{
 		hullFilter.parse(config.hullFilter());
+		objectFilter.parse(config.objectFilter());
 		server.start(config.port());
 	}
 
@@ -118,6 +125,10 @@ public class GameBridgePlugin extends Plugin
 		if ("hullFilter".equals(event.getKey()))
 		{
 			hullFilter.parse(config.hullFilter());
+		}
+		else if ("objectFilter".equals(event.getKey()))
+		{
+			objectFilter.parse(config.objectFilter());
 		}
 	}
 
@@ -249,6 +260,11 @@ public class GameBridgePlugin extends Plugin
 			msg.put("objects", buildObjectsList());
 		}
 
+		if (config.exposeWidgets())
+		{
+			msg.put("widgets", buildWidgetsList());
+		}
+
 		// Merge pending events and flushed varbits into a single list
 		List<Map<String, Object>> events = new ArrayList<>(pendingEvents);
 		for (int[] v : pendingVarbits.values())
@@ -307,27 +323,127 @@ public class GameBridgePlugin extends Plugin
 				{
 					if (go != null)
 					{
-						list.add(serializeTileObject(go));
+						addObjectIfIncluded(list, go);
 					}
 				}
 				WallObject wall = tile.getWallObject();
 				if (wall != null)
 				{
-					list.add(serializeTileObject(wall));
+					addObjectIfIncluded(list, wall);
 				}
 				GroundObject ground = tile.getGroundObject();
 				if (ground != null)
 				{
-					list.add(serializeTileObject(ground));
+					addObjectIfIncluded(list, ground);
 				}
 				DecorativeObject deco = tile.getDecorativeObject();
 				if (deco != null)
 				{
-					list.add(serializeTileObject(deco));
+					addObjectIfIncluded(list, deco);
 				}
 			}
 		}
 		return list;
+	}
+
+	private void addObjectIfIncluded(List<Map<String, Object>> list, TileObject obj)
+	{
+		int id = obj.getId();
+		String name = resolveName(id);
+		if (shouldIncludeObject(id, name))
+		{
+			list.add(serializeTileObject(obj, name));
+		}
+	}
+
+	private boolean shouldIncludeObject(int id, String name)
+	{
+		if (config.debugAllObjects())
+		{
+			return true;
+		}
+		if (!objectFilter.isEmpty() && objectFilter.matches(id, name))
+		{
+			return true;
+		}
+		if (config.sendAllNamedObjects())
+		{
+			return name != null && !name.equals("null") && !name.equals("unknown");
+		}
+		return false;
+	}
+
+	private List<Map<String, Object>> buildWidgetsList()
+	{
+		List<Map<String, Object>> list = new ArrayList<>();
+		for (int groupId : WIDGET_GROUPS)
+		{
+			Widget root = client.getWidget(groupId, 0);
+			if (root == null || root.isHidden())
+			{
+				continue;
+			}
+			collectVisibleWidgets(list, groupId, root, 0);
+		}
+		return list;
+	}
+
+	/**
+	 * Walk one widget's dynamic and static children, serialising everything visible.
+	 * Depth is capped at 2 to avoid scanning deeply nested interface trees.
+	 */
+	private void collectVisibleWidgets(List<Map<String, Object>> list, int groupId, Widget parent, int depth)
+	{
+		Widget[] dynamic = parent.getDynamicChildren();
+		if (dynamic != null)
+		{
+			for (Widget child : dynamic)
+			{
+				if (child == null || child.isHidden())
+				{
+					continue;
+				}
+				list.add(serializeWidget(groupId, child));
+			}
+		}
+
+		if (depth >= 2)
+		{
+			return;
+		}
+
+		Widget[] staticChildren = parent.getStaticChildren();
+		if (staticChildren != null)
+		{
+			for (Widget child : staticChildren)
+			{
+				if (child == null || child.isHidden())
+				{
+					continue;
+				}
+				list.add(serializeWidget(groupId, child));
+				collectVisibleWidgets(list, groupId, child, depth + 1);
+			}
+		}
+	}
+
+	private Map<String, Object> serializeWidget(int groupId, Widget w)
+	{
+		Map<String, Object> m = new LinkedHashMap<>();
+		m.put("groupId", groupId);
+		m.put("childId", w.getIndex());
+		m.put("itemId", w.getItemId());
+		m.put("quantity", w.getItemQuantity());
+		Rectangle bounds = w.getBounds();
+		Map<String, Object> b = new LinkedHashMap<>();
+		b.put("x", bounds.x);
+		b.put("y", bounds.y);
+		b.put("width", bounds.width);
+		b.put("height", bounds.height);
+		m.put("bounds", b);
+		String text = w.getText();
+		m.put("text", text != null ? text : "");
+		return m;
 	}
 
 	// -------------------------------------------------------------------------
@@ -365,10 +481,9 @@ public class GameBridgePlugin extends Plugin
 		return m;
 	}
 
-	private Map<String, Object> serializeTileObject(TileObject obj)
+	private Map<String, Object> serializeTileObject(TileObject obj, String name)
 	{
 		int id = obj.getId();
-		String name = resolveName(id);
 
 		Map<String, Object> m = new LinkedHashMap<>();
 		m.put("id", id);
