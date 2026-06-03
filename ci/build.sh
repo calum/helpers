@@ -1,64 +1,27 @@
-#!/usr/bin/env pwsh
+#!/usr/bin/env bash
+set -euo pipefail
 
-<#
-.SYNOPSIS
-    Build and test the GameBridge custom RuneLite client and Python automation layer.
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+    PYTHON=python
+else
+    echo "ERROR: Python is not installed or not on PATH." >&2
+    exit 1
+fi
 
-.DESCRIPTION
-    This script:
-    1. Installs Python and Java dependencies
-    2. Builds the custom RuneLite client
-    3. Runs all unit tests (Python + Java)
-    4. Reports results
+echo "====== GameBridge Build & Test ======"
 
-    Requires: Windows, PowerShell 5.1+, mise
-#>
+echo "\n[1/3] Installing Python test dependencies..."
+$PYTHON -m pip install --upgrade pip setuptools
+$PYTHON -m pip install pytest
 
-param(
-    [switch]$SkipDependencies,
-    [switch]$SkipBuild,
-    [switch]$SkipTests
-)
+echo "[2/3] Running Python unit tests..."
+$PYTHON -m pytest scripts/gamebridge/tests/ -v
 
-$ErrorActionPreference = 'Stop'
-$WarningPreference = 'Continue'
+echo "[3/3] Running Java build and tests..."
+chmod +x ./gradlew
+./gradlew --no-daemon testAll
 
-Write-Host "====== GameBridge Build & Test ======" -ForegroundColor Cyan
-
-# Step 1: Install dependencies
-if (-not $SkipDependencies)
-{
-    Write-Host "`n[1/3] Installing dependencies..." -ForegroundColor Green
-    
-    Write-Host "  - Python packages" -ForegroundColor Gray
-    mise run gamebridge-setup
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install Python dependencies" }
-    
-    Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
-}
-
-# Step 2: Build custom RuneLite client
-if (-not $SkipBuild)
-{
-    Write-Host "`n[2/3] Building custom RuneLite client..." -ForegroundColor Green
-    
-    mise run full-build
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build custom RuneLite client" }
-    
-    Write-Host "  ✓ Build complete" -ForegroundColor Green
-}
-
-# Step 3: Run all tests
-if (-not $SkipTests)
-{
-    Write-Host "`n[3/3] Running unit tests..." -ForegroundColor Green
-    
-    mise run test
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
-    
-    Write-Host "  ✓ All tests passed" -ForegroundColor Green
-}
-
-Write-Host "`n====== Build & Test Complete ======" -ForegroundColor Cyan
-exit 0
+echo "\n====== Build & Test Complete ======"
 
