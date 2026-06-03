@@ -43,6 +43,9 @@ class GameState:
     # Current interacting-with target name, or None
     interacting_with: Optional[str] = None
 
+    # Last tick when we received an XP drop for each skill
+    last_xp_tick: Dict[str, int] = field(default_factory=dict)
+
     _prev_animation: int = field(default=-1, repr=False)
     _prev_pos: Optional[tuple] = field(default=None, repr=False)
 
@@ -88,6 +91,7 @@ class GameState:
             self.xp[skill] = event["xp"]
             self.levels[skill] = event["level"]
             self.boosted_levels[skill] = event["boostedLevel"]
+            self.last_xp_tick[skill] = self.tick
 
         elif t == "container":
             cid = event["containerId"]

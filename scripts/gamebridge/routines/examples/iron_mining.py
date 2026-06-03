@@ -56,6 +56,11 @@ class IronMiningRoutine(Routine):
     ORE_NAME = "Iron rocks"
     BANK_NAME = "Mine cart"
     CLICK_INTERVAL = 1.5  # casual routine — minimum 1.5 s between entity clicks
+    MINING_XP_TIMEOUT_MS = 3000  # max time to wait for mining XP drop before checking idle (3 seconds)
+
+    def __init__(self):
+        super().__init__()
+        self.mining_start_tick: Optional[int] = None
 
     # ------------------------------------------------------------------
     # States
@@ -85,20 +90,43 @@ class IronMiningRoutine(Routine):
             return None
 
         ctrl.click_entity(ore)
+        self.mining_start_tick = game.tick
         return "mining"
 
     def mining(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
         Wait while the player swings their pickaxe.
-        Transition to banking if the inventory fills up,
-        or back to find_ore when the animation ends (ore depleted).
+        Check for a mining XP drop (with 3-second timeout) to detect ore depletion,
+        then verify the player is idle before looking for ore again.
+        Transition to banking if the inventory fills up.
         """
         if game.inventory_full():
             return "walk_to_bank"
 
-        if game.player_idle():
-            # Ore depleted or click missed — player has stopped and is on the same tile
+        if self.mining_start_tick is None:
+            # Safety fallback in case mining_start_tick wasn't set
             return "find_ore"
+
+        # Calculate elapsed time since mining started
+        ticks_elapsed = game.tick - self.mining_start_tick
+        time_elapsed_ms = ticks_elapsed * 600  # ~600ms per game tick
+
+        # Check if we received a mining XP drop since mining started
+        last_mining_xp_tick = game.last_xp_tick.get("MINING", -1)
+        got_xp_drop = last_mining_xp_tick >= self.mining_start_tick
+
+        # Transition to find_ore if either:
+        # 1. We got a mining XP drop and player is idle, OR
+        # 2. 3 seconds have elapsed and player is idle (timeout fallback)
+        if (got_xp_drop or time_elapsed_ms >= self.MINING_XP_TIMEOUT_MS):
+            if game.player_idle():
+                log.debug(
+                    "Mining ended after %.1fs (xp=%s, timeout=%s)",
+                    time_elapsed_ms / 1000.0,
+                    got_xp_drop,
+                    time_elapsed_ms >= self.MINING_XP_TIMEOUT_MS,
+                )
+                return "find_ore"
 
         return None  # still mining
 
