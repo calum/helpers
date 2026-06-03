@@ -4,6 +4,18 @@
 
 After any research session (reading source files, exploring the codebase, investigating APIs), update `PLAN.md` with new findings. Add concrete details: file paths, class names, how mechanisms work, open questions, and next steps. Keep `PLAN.md` as a living document that accumulates knowledge across sessions.
 
+## Game Bridge maintenance rule
+
+`GAMEBRIDGE.md` is the Python developer guide for the Game Bridge plugin. It documents the exact JSON wire format, event types, field names, config keys, and code examples. **Whenever you modify any file in `runelite-client/…/plugins/gamebridge/`, you must also update `GAMEBRIDGE.md`** to keep the two in sync. Specifically:
+
+- Adding or removing a field in a tick message → update the relevant section and its JSON example in `GAMEBRIDGE.md`
+- Adding, removing, or renaming an event type → update the Events section
+- Adding or removing a config item → update the Plugin config reference table
+- Changing the hull filter matching logic → update the Hull filter section
+- Changing the port default or protocol framing → update the Protocol section
+
+The guide is the contract between the Java plugin and any Python tooling built against it. A silent schema change breaks Python consumers without any compile-time warning.
+
 ---
 
 ## Goal
@@ -82,6 +94,16 @@ Entry point: `RuneLite.java` — sets up Guice, loads `RuneLiteModule`, discover
 | `runelite-client/…/client/plugins/` | Drop our new plugin here |
 | `runelite-client/…/client/RuneLite.java` | Main entry point |
 
+### Game Bridge plugin files
+
+| File | Purpose |
+|---|---|
+| `runelite-client/…/plugins/gamebridge/GameBridgePlugin.java` | Plugin entry point — event subscriptions, tick batching, JSON serialisation |
+| `runelite-client/…/plugins/gamebridge/GameBridgeConfig.java` | Config interface (port, category toggles, hull filter) |
+| `runelite-client/…/plugins/gamebridge/BridgeServer.java` | Embedded TCP server — accept loop, broadcast |
+| `runelite-client/…/plugins/gamebridge/HullFilter.java` | Parses ID/name filter CSV; answers `matches(id, name)` |
+| `GAMEBRIDGE.md` | Python developer guide — **keep in sync with any schema changes** |
+
 ---
 
 ## Build & Run
@@ -101,9 +123,28 @@ The shadow jar ends up in `runelite-client/build/libs/`.
 
 ---
 
-## Jagex Launcher Integration (TODO — research in progress)
+## Jagex Launcher Integration
 
-The Jagex Launcher can be pointed at a custom client via its configuration. The exact mechanism (registry key, config file path, launcher arguments) still needs to be confirmed. See PLAN.md for status.
+**`RuneLite.jar` in `%LOCALAPPDATA%\RuneLite\` is not the client** — it is a launcher bootstrap (`net.runelite.launcher.Launcher`). Replacing it with the shaded client jar breaks the launcher.
+
+The launcher downloads all dependencies to `~/.runelite/repository2/` and constructs a classpath. The actual client jar is:
+```
+C:\Users\Calum\.runelite\repository2\client-<version>.jar
+```
+
+To integrate a custom build with the launcher:
+1. Build the client: `mise exec -- .\gradlew.bat :client:shadowJar`
+2. Extract just the client classes into a non-fat jar (or use `:client:jar`), replacing `client-<version>.jar` in `repository2/`.
+3. Launch with `--skip-update` to prevent the launcher re-downloading the original:
+   ```powershell
+   & "C:\Users\Calum\AppData\Local\RuneLite\RuneLite.exe" --skip-update
+   ```
+
+Alternatively, bypass the launcher entirely using the bundled JRE and the shaded jar directly:
+```powershell
+& "C:\Users\Calum\AppData\Local\RuneLite\jre\bin\java.exe" -jar "path\to\client-<version>-shaded.jar"
+```
+This is confirmed working — see PLAN.md for full details.
 
 ---
 

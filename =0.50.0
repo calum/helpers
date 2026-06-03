@@ -1,0 +1,35 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting textual
+  Downloading textual-8.2.7-py3-none-any.whl.metadata (9.1 kB)
+Collecting markdown-it-py>=2.1.0 (from markdown-it-py[linkify]>=2.1.0->textual)
+  Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+Collecting mdit-py-plugins (from textual)
+  Downloading mdit_py_plugins-0.6.1-py3-none-any.whl.metadata (2.9 kB)
+Collecting platformdirs<5,>=3.6.0 (from textual)
+  Downloading platformdirs-4.10.0-py3-none-any.whl.metadata (5.5 kB)
+Requirement already satisfied: pygments<3.0.0,>=2.19.2 in c:\users\calum\appdata\local\packages\pythonsoftwarefoundation.python.3.12_qbz5n2kfra8p0\localcache\local-packages\python312\site-packages (from textual) (2.20.0)
+Collecting rich>=14.2.0 (from textual)
+  Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+Requirement already satisfied: typing-extensions<5.0.0,>=4.4.0 in c:\users\calum\appdata\local\packages\pythonsoftwarefoundation.python.3.12_qbz5n2kfra8p0\localcache\local-packages\python312\site-packages (from textual) (4.15.0)
+Collecting mdurl~=0.1 (from markdown-it-py>=2.1.0->markdown-it-py[linkify]>=2.1.0->textual)
+  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+Collecting linkify-it-py<3,>=1 (from markdown-it-py[linkify]>=2.1.0->textual)
+  Downloading linkify_it_py-2.1.0-py3-none-any.whl.metadata (8.5 kB)
+Collecting uc-micro-py (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual)
+  Downloading uc_micro_py-2.0.0-py3-none-any.whl.metadata (2.2 kB)
+Downloading textual-8.2.7-py3-none-any.whl (731 kB)
+   --------------------------------------- 731.1/731.1 kB 14.7 MB/s eta 0:00:00
+Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+Downloading platformdirs-4.10.0-py3-none-any.whl (22 kB)
+Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+Downloading mdit_py_plugins-0.6.1-py3-none-any.whl (66 kB)
+Downloading linkify_it_py-2.1.0-py3-none-any.whl (19 kB)
+Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+Downloading uc_micro_py-2.0.0-py3-none-any.whl (6.4 kB)
+Installing collected packages: uc-micro-py, platformdirs, mdurl, markdown-it-py, linkify-it-py, rich, mdit-py-plugins, textual
+  WARNING: The script markdown-it.exe is installed in 'C:\Users\Calum\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+Successfully installed linkify-it-py-2.1.0 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 platformdirs-4.10.0 rich-15.0.0 textual-8.2.7 uc-micro-py-2.0.0
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.2
+[notice] To update, run: C:\Users\Calum\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe -m pip install --upgrade pip
