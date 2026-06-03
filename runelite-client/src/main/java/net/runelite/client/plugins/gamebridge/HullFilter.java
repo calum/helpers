@@ -73,6 +73,11 @@ class HullFilter
 		empty = newIds.isEmpty() && newNames.isEmpty();
 	}
 
+	boolean isEmpty()
+	{
+		return empty;
+	}
+
 	/**
 	 * Returns true if this entity should have its hull included.
 	 * When the filter is empty every entity matches.

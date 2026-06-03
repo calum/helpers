@@ -16,6 +16,7 @@ from typing import Callable, Optional
 from ..human.emulator import HumanEmulator
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
+from .. import settings as _settings
 
 log = logging.getLogger(__name__)
 
@@ -24,14 +25,39 @@ log = logging.getLogger(__name__)
 # Window detection
 # ------------------------------------------------------------------ #
 
+def _find_window_by_prefix(prefix: str) -> int:
+    """Return HWND of the first top-level window whose title starts with prefix, or 0."""
+    found = ctypes.c_size_t(0)
+    buf = ctypes.create_unicode_buffer(256)
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_size_t, ctypes.c_size_t)
+    def _cb(hwnd: int, _: int) -> bool:
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+        if buf.value.startswith(prefix):
+            found.value = hwnd
+            return False  # stop enumeration
+        return True
+
+    ctypes.windll.user32.EnumWindows(_cb, 0)
+    return found.value
+
+
 def _find_runelite_window() -> Optional[tuple[int, int, int, int]]:
     """
     Return (left, top, right, bottom) of the RuneLite client area, or None.
 
     We use GetClientRect + ClientToScreen so the coords exclude the window
     chrome — (0, 0) in canvas space maps to (left, top) in screen space.
+
+    The window title is read from ~/.gamebridge/settings.json ("window_name").
+    Update that value from the dashboard Settings tab if the title differs.
     """
-    hwnd = ctypes.windll.user32.FindWindowW(None, "RuneLite")
+    window_name = _settings.get("window_name")
+    hwnd = ctypes.windll.user32.FindWindowW(None, window_name)
+    if not hwnd:
+        # Try prefix-matching: iterate all top-level windows and check startswith
+        hwnd = _find_window_by_prefix(window_name)
+
     if not hwnd:
         return None
     rect = ctypes.wintypes.RECT()
@@ -83,7 +109,8 @@ class GameController:
         if self._window is None:
             raise RuntimeError("RuneLite window not found. Launch the game first.")
         left, top, _, _ = self._window
-        return left + cx, top + cy
+        y_off = int(_settings.get("hull_y_offset") or 0)
+        return left + cx, top + cy - y_off
 
     # ------------------------------------------------------------------
     # Mouse actions

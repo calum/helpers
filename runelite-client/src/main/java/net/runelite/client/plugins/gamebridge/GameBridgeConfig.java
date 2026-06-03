@@ -109,4 +109,52 @@ public interface GameBridgeConfig extends Config
 	{
 		return "";
 	}
+
+	@ConfigItem(
+		keyName = "objectFilter",
+		name = "Object filter",
+		description = "Comma-separated object IDs or names to include in tick messages. "
+			+ "Empty = no objects sent (use 'Send all named objects' or 'Debug: all objects' instead). "
+			+ "Example: Iron rocks,Oak tree,1276",
+		position = 7
+	)
+	default String objectFilter()
+	{
+		return "";
+	}
+
+	@ConfigItem(
+		keyName = "sendAllNamedObjects",
+		name = "Send all named objects",
+		description = "Include every object whose name is not 'null' or 'unknown', regardless of the object filter. "
+			+ "Broader than the filter but avoids unnamed/decorative objects.",
+		position = 8
+	)
+	default boolean sendAllNamedObjects()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "debugAllObjects",
+		name = "Debug: send all objects",
+		description = "Include every tile object in every tick message. "
+			+ "WARNING: can cause lag on large scenes. For development only.",
+		position = 9
+	)
+	default boolean debugAllObjects()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "exposeWidgets",
+		name = "Expose widgets",
+		description = "Include visible UI widget slots (inventory, bank, equipment) with their screen bounds in each tick message.",
+		position = 10
+	)
+	default boolean exposeWidgets()
+	{
+		return false;
+	}
 }

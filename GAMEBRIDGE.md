@@ -48,6 +48,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
   "camera":  { ... },
   "npcs":    [ ... ],
   "objects": [ ... ],
+  "widgets": [ ... ],
   "events":  [ ... ]
 }
 ```
@@ -59,6 +60,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `camera` | yes | `exposeCamera` (default on) |
 | `npcs` | yes | `exposeNpcs` (default on) |
 | `objects` | yes | `exposeObjects` (default on) |
+| `widgets` | no | `exposeWidgets` (default **off**) |
 | `events` | yes (may be `[]`) | — |
 
 ---
@@ -153,7 +155,7 @@ def yaw_delta(current_yaw, target_yaw):
 
 ## Objects
 
-Same shape as NPCs minus `combatLevel`. Object names are impostor-resolved: a door that changes appearance based on a varbit shows its current name (e.g. `"Door"` not `"null"`).
+Same shape as NPCs minus `combatLevel` and `animation`. Object names are impostor-resolved: a door that changes appearance based on a varbit shows its current name (e.g. `"Door"` not `"null"`).
 
 The `objects` list includes all four RuneScape tile object categories:
 
@@ -163,6 +165,66 @@ The `objects` list includes all four RuneScape tile object categories:
 | `WallObject` | Doors, gates, fences |
 | `GroundObject` | Floor tiles, rugs |
 | `DecorativeObject` | Cosmetic scenery |
+
+### Object filtering
+
+By default the `objects` array is **empty** to avoid the performance penalty of serialising every tile object on every tick. Use the plugin config to control what is included:
+
+| Config key | Default | Effect |
+|---|---|---|
+| `objectFilter` | `""` | Comma-separated IDs/names (same format as hull filter). Only matching objects are included. |
+| `sendAllNamedObjects` | `false` | Include any object whose resolved name is not `"null"` or `"unknown"`, in addition to filter matches. |
+| `debugAllObjects` | `false` | Include every object unconditionally. ⚠ Can cause lag on large scenes — development only. |
+
+The three rules are evaluated in priority order: `debugAllObjects` → filter match → `sendAllNamedObjects`.
+
+```python
+# Example: only care about iron rocks and the mine cart deposit box
+# Set objectFilter = "Iron rocks,Mine cart" in the plugin config panel.
+iron = state.nearest_object("Iron rocks")
+cart = state.nearest_object("Mine cart")
+```
+
+---
+
+## Widgets
+
+When `exposeWidgets` is enabled the tick message includes a `widgets` array with visible UI slot data. This is useful for knowing the screen coordinates of specific inventory slots, bank slots, or equipment slots.
+
+```json
+{
+  "groupId":  149,
+  "childId":  0,
+  "itemId":   995,
+  "quantity": 1000,
+  "bounds":   { "x": 560, "y": 210, "width": 32, "height": 32 },
+  "text":     ""
+}
+```
+
+| Field | Notes |
+|---|---|
+| `groupId` | Widget group ID. Known groups: `149` = Inventory, `12` = Bank, `387` = Equipment, `192` = Deposit box |
+| `childId` | Slot index within the group's dynamic children |
+| `itemId` | Item ID; `-1` if the slot is empty |
+| `quantity` | Stack size |
+| `bounds` | Screen-pixel rectangle of the slot (top-left origin, excludes window chrome) |
+| `text` | Widget text, omitted when empty |
+
+Only groups `149`, `12`, `387`, and `192` are serialised. Only non-hidden children are included.
+
+```python
+# Click the first inventory slot that holds a specific item
+def click_inventory_item(ctrl, game, item_id):
+    for w in game.widgets:
+        if w["groupId"] == 149 and w["itemId"] == item_id:
+            b = w["bounds"]
+            cx = b["x"] + b["width"] // 2
+            cy = b["y"] + b["height"] // 2
+            ctrl.click_at(cx, cy)
+            return True
+    return False
+```
 
 ---
 
@@ -402,11 +464,15 @@ def stream_with_reconnect(host='127.0.0.1', port=7070, retry_delay=5.0):
 |---|---|---|---|
 | `port` | int | 7070 | Listening port; restart plugin to apply |
 | `exposeNpcs` | bool | true | Include `npcs` array in tick messages |
-| `exposeObjects` | bool | true | Include `objects` array in tick messages |
+| `exposeObjects` | bool | true | Include `objects` array in tick messages (see Object filtering) |
 | `exposeInventory` | bool | true | Emit `container` events |
 | `exposeVarbits` | bool | true | Emit `varbit` events |
 | `exposeCamera` | bool | true | Include `camera` object in tick messages |
-| `hullFilter` | string | `""` | Comma-separated IDs/names; empty = all hulls |
+| `hullFilter` | string | `""` | Comma-separated IDs/names for hull inclusion; empty = all hulls |
+| `objectFilter` | string | `""` | Comma-separated IDs/names to include in `objects`; empty = none |
+| `sendAllNamedObjects` | bool | false | Also include objects with a real (non-null) name |
+| `debugAllObjects` | bool | false | Include all objects unconditionally — dev/debug only |
+| `exposeWidgets` | bool | false | Include `widgets` array (inventory/bank/equipment slot bounds) |
 
 ---
 

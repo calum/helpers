@@ -144,7 +144,7 @@ Alternatively, bypass the launcher entirely using the bundled JRE and the shaded
 ```powershell
 & "C:\Users\Calum\AppData\Local\RuneLite\jre\bin\java.exe" -jar "path\to\client-<version>-shaded.jar"
 ```
-This is confirmed working — see PLAN.md for full details.
+This is confirmed working — see ARCHITECTURE.md for full details.
 
 ---
 

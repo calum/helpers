@@ -11,32 +11,36 @@ Usage
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import math
+import os
 import sys
+import threading
 import time
-from datetime import timedelta
 from typing import Optional, Type
 
 from PyQt6.QtCore import (
     Qt, QThread, QTimer, QRectF, QPointF, pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QTextCursor,
+    QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QTextCursor,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
-    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
+    QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
+    QSpinBox, QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .client import stream as tcp_stream
 from .state.game_state import GameState
 from .human.emulator import HumanEmulator
-from .controller.controller import GameController
+from .controller.controller import GameController, _find_window_by_prefix
 from .decision.engine import DecisionEngine
 from .routines.base import Routine
 from .routines.examples.iron_mining import IronMiningRoutine
+from . import settings as _settings
 
 # ---------------------------------------------------------------------------
 # Routine registry — add entries here to expose them in the dropdown
@@ -607,6 +611,60 @@ class ConnectionDot(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Global hotkey monitor (polls GetAsyncKeyState in a daemon thread)
+# F10            → stop the running routine cleanly
+# Ctrl+Shift+Q   → hard-kill the entire dashboard process
+# ---------------------------------------------------------------------------
+
+_VK_F10    = 0x79
+_VK_CTRL   = 0x11
+_VK_SHIFT  = 0x10
+_VK_Q      = 0x51
+
+HOTKEY_STOP      = "F10"
+HOTKEY_KILL      = "Ctrl+Shift+Q"
+
+
+def _start_hotkey_monitor(stop_cb, kill_cb) -> threading.Thread:
+    """
+    Start a daemon thread that polls for global hotkeys.
+    stop_cb is called when F10 is pressed.
+    kill_cb is called when Ctrl+Shift+Q is pressed.
+    """
+    def _loop():
+        active: set[str] = set()
+        while True:
+            f10    = bool(ctypes.windll.user32.GetAsyncKeyState(_VK_F10)  & 0x8000)
+            q      = bool(ctypes.windll.user32.GetAsyncKeyState(_VK_Q)    & 0x8000)
+            ctrl   = bool(ctypes.windll.user32.GetAsyncKeyState(_VK_CTRL) & 0x8000)
+            shift  = bool(ctypes.windll.user32.GetAsyncKeyState(_VK_SHIFT)& 0x8000)
+
+            if f10 and "f10" not in active:
+                active.add("f10")
+                try:
+                    stop_cb()
+                except Exception:
+                    pass
+            elif not f10:
+                active.discard("f10")
+
+            if ctrl and shift and q and "csq" not in active:
+                active.add("csq")
+                try:
+                    kill_cb()
+                except Exception:
+                    pass
+            elif not (ctrl and shift and q):
+                active.discard("csq")
+
+            time.sleep(0.05)
+
+    t = threading.Thread(target=_loop, daemon=True, name="hotkey-monitor")
+    t.start()
+    return t
+
+
+# ---------------------------------------------------------------------------
 # Background TCP thread
 # ---------------------------------------------------------------------------
 
@@ -639,6 +697,7 @@ class GameBridgeWindow(QMainWindow):
         self._engine = DecisionEngine(ctrl=self._ctrl, human=self._human)
         self._session_start = time.monotonic()
         self._connected     = False
+        self._hull_last_widgets: list[dict] = []
 
         self._build_ui()
         self._start_ticker()
@@ -646,6 +705,12 @@ class GameBridgeWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick_session_panel)
         self._timer.start(1000)
+
+        # Global hotkeys — work even when the game window has focus
+        _start_hotkey_monitor(
+            stop_cb=self._stop_routine,
+            kill_cb=lambda: os._exit(0),
+        )
 
     # ------------------------------------------------------------------
     # UI construction
@@ -754,8 +819,14 @@ class GameBridgeWindow(QMainWindow):
         self._obj_table = self._make_table(["Name", "Pos", "Dist", "●"])
         self._tabs.addTab(self._obj_table, "Objects")
 
+        self._widget_table = self._make_table(["Group", "Child", "Item ID", "Text", "Bounds"])
+        self._tabs.addTab(self._widget_table, "Widgets")
+
         self._xp_table = self._make_table(["Skill", "Level", "Boosted", "Total XP"])
         self._tabs.addTab(self._xp_table, "Skills / XP")
+
+        self._tabs.addTab(self._make_hull_debug_tab(), "Hull Debug")
+        self._tabs.addTab(self._make_settings_tab(), "Settings")
 
         nearby.layout().addWidget(self._tabs)
         right.addWidget(nearby, stretch=1)
@@ -779,6 +850,10 @@ class GameBridgeWindow(QMainWindow):
         self._status_msg.setStyleSheet(
             f"color: {C.TEXT_MUTED}; padding: 0 8px;")
         status_bar.addWidget(self._status_msg)
+        hk_hint = QLabel(f"{HOTKEY_STOP} stop  ·  {HOTKEY_KILL} kill")
+        hk_hint.setStyleSheet(
+            f"color: {C.TEXT_DIM}; font-size: 11px; padding: 0 8px;")
+        status_bar.addPermanentWidget(hk_hint)
 
     def _make_player_card(self) -> Card:
         card = Card("Player")
@@ -895,6 +970,441 @@ class GameBridgeWindow(QMainWindow):
         card.layout().addLayout(fat_row)
 
         return card
+
+    def _make_settings_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        # Window name
+        lbl_wn = QLabel("RuneLite window title")
+        lbl_wn.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        layout.addWidget(lbl_wn)
+
+        wn_row = QHBoxLayout()
+        self._wn_input = QLineEdit(_settings.get("window_name") or "")
+        self._wn_input.setPlaceholderText("e.g. RuneLite - PlayerName")
+        self._wn_input.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 5px 10px; color: {C.TEXT};"
+        )
+        btn_save = QPushButton("Save")
+        btn_save.setFixedWidth(70)
+        btn_save.clicked.connect(self._save_window_name)
+        wn_row.addWidget(self._wn_input, stretch=1)
+        wn_row.addWidget(btn_save)
+        layout.addLayout(wn_row)
+
+        hint_wn = QLabel(
+            "The exact window title shown in the title bar of the RuneLite client.\n"
+            "A prefix is also accepted — e.g. 'RuneLite' matches 'RuneLite - Any Name'."
+        )
+        hint_wn.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px;")
+        hint_wn.setWordWrap(True)
+        layout.addWidget(hint_wn)
+
+        layout.addWidget(HDivider())
+
+        # Hull Y offset
+        lbl_hull = QLabel("Hull debug Y offset (px)")
+        lbl_hull.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        layout.addWidget(lbl_hull)
+
+        hull_row = QHBoxLayout()
+        self._hull_y_spin = QSpinBox()
+        self._hull_y_spin.setRange(-200, 200)
+        self._hull_y_spin.setValue(int(_settings.get("hull_y_offset") or 0))
+        self._hull_y_spin.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 4px 8px; color: {C.TEXT};"
+        )
+        btn_hull_save = QPushButton("Save")
+        btn_hull_save.setFixedWidth(70)
+        btn_hull_save.clicked.connect(self._save_hull_y_offset)
+        hull_row.addWidget(self._hull_y_spin)
+        hull_row.addWidget(btn_hull_save)
+        hull_row.addStretch()
+        layout.addLayout(hull_row)
+
+        hint_hull = QLabel(
+            "Pixels subtracted from every hull point's Y coordinate before drawing.\n"
+            "Increase if the hull appears too high; decrease (negative) if too low."
+        )
+        hint_hull.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px;")
+        hint_hull.setWordWrap(True)
+        layout.addWidget(hint_hull)
+
+        layout.addWidget(HDivider())
+
+        # Hotkey reference
+        hk_lbl = QLabel("Global hotkeys")
+        hk_lbl.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        layout.addWidget(hk_lbl)
+
+        for key, desc in [
+            (HOTKEY_STOP, "Stop the running routine cleanly"),
+            (HOTKEY_KILL, "Hard-kill the dashboard (use if frozen)"),
+            ("S / X / R", "Start / Stop / Reset (dashboard window must have focus)"),
+        ]:
+            row = QHBoxLayout()
+            k = QLabel(key)
+            k.setStyleSheet(
+                f"color: {C.ACCENT}; font-family: 'Cascadia Code', monospace; "
+                f"font-size: 12px; font-weight: 600; min-width: 140px;"
+            )
+            d = QLabel(desc)
+            d.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 12px;")
+            row.addWidget(k)
+            row.addWidget(d)
+            row.addStretch()
+            layout.addLayout(row)
+
+        layout.addStretch()
+        return w
+
+    def _save_window_name(self) -> None:
+        name = self._wn_input.text().strip()
+        if name:
+            _settings.set("window_name", name)
+            self._status_msg.setText(f"✓ Window name saved: {name}")
+
+    def _save_hull_y_offset(self) -> None:
+        val = self._hull_y_spin.value()
+        _settings.set("hull_y_offset", val)
+        self._status_msg.setText(f"✓ Hull Y offset saved: {val:+d} px")
+
+    def _make_hull_debug_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Dropdowns — one row per entity type
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(1, 1)
+        for row_idx, (lbl_text, attr) in enumerate([
+            ("NPC",    "_hull_npc_combo"),
+            ("Object", "_hull_obj_combo"),
+            ("Widget", "_hull_widget_combo"),
+        ]):
+            lbl = QLabel(lbl_text)
+            lbl.setStyleSheet(
+                f"color: {C.TEXT_MUTED}; font-size: 12px; min-width: 48px;")
+            combo = QComboBox()
+            combo.addItem("— none —", None)
+            combo.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            grid.addWidget(lbl, row_idx, 0)
+            grid.addWidget(combo, row_idx, 1)
+            setattr(self, attr, combo)
+        layout.addLayout(grid)
+        layout.addWidget(HDivider())
+
+        # Controls row
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(8)
+        btn_capture = QPushButton("📷  Capture Hull")
+        btn_capture.setFixedWidth(130)
+        btn_capture.clicked.connect(self._capture_hull_debug)
+
+        self._hull_freeze_btn = QPushButton("❄  Freeze")
+        self._hull_freeze_btn.setCheckable(True)
+        self._hull_freeze_btn.setFixedWidth(90)
+        self._hull_freeze_btn.toggled.connect(self._on_hull_freeze_toggled)
+
+        self._hull_show_all_btn = QPushButton("☐  Show All Widgets")
+        self._hull_show_all_btn.setCheckable(True)
+        self._hull_show_all_btn.setFixedWidth(160)
+        self._hull_show_all_btn.toggled.connect(self._on_hull_show_all_toggled)
+
+        self._hull_status = QLabel("")
+        self._hull_status.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 11px;")
+
+        ctrl_row.addWidget(btn_capture)
+        ctrl_row.addWidget(self._hull_freeze_btn)
+        ctrl_row.addWidget(self._hull_show_all_btn)
+        ctrl_row.addWidget(self._hull_status, stretch=1)
+        layout.addLayout(ctrl_row)
+
+        # Preview image
+        self._hull_preview = QLabel()
+        self._hull_preview.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._hull_preview.setStyleSheet(
+            f"background: {C.BG}; border: 1px solid {C.BORDER};")
+        self._hull_preview.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._hull_preview.setMinimumHeight(200)
+        layout.addWidget(self._hull_preview, stretch=1)
+
+        return w
+
+    def _on_hull_freeze_toggled(self, checked: bool) -> None:
+        if checked:
+            self._hull_freeze_btn.setText("▶  Live")
+            self._hull_freeze_btn.setStyleSheet(
+                f"background-color: {C.FATIGUE_DIM}; "
+                f"border-color: {C.WARNING}; color: {C.WARNING};"
+            )
+        else:
+            self._hull_freeze_btn.setText("❄  Freeze")
+            self._hull_freeze_btn.setStyleSheet("")
+
+    def _on_hull_show_all_toggled(self, checked: bool) -> None:
+        if checked:
+            self._hull_show_all_btn.setText("☑  Show All Widgets")
+            self._hull_show_all_btn.setStyleSheet(
+                f"background-color: {C.ACCENT_DIM}; "
+                f"border-color: {C.ACCENT}; color: {C.ACCENT};"
+            )
+        else:
+            self._hull_show_all_btn.setText("☐  Show All Widgets")
+            self._hull_show_all_btn.setStyleSheet("")
+
+    def _refresh_hull_combos(self, g, widgets: list[dict]) -> None:
+        """Repopulate the three hull-debug dropdowns, preserving the current selection."""
+        def _update(combo: QComboBox, items: list[tuple[str, dict]]) -> None:
+            current_text = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("— none —", None)
+            for text, data in items:
+                combo.addItem(text, data)
+            idx = combo.findText(current_text)
+            combo.setCurrentIndex(max(0, idx))
+            combo.blockSignals(False)
+
+        px, py = g.player_pos if g.player else (0, 0)
+
+        def dist(e: dict) -> int:
+            return abs(e.get("worldX", 0) - px) + abs(e.get("worldY", 0) - py)
+
+        npc_items = []
+        for npc in sorted(g.npcs, key=dist)[:40]:
+            on = npc.get("onScreen", False)
+            label = (
+                f"{npc.get('name','?')}  "
+                f"lvl {npc.get('combatLevel','?')}  "
+                f"dist {dist(npc)}  {'●' if on else '○'}"
+            )
+            npc_items.append((label, npc))
+        _update(self._hull_npc_combo, npc_items)
+
+        obj_items = []
+        for obj in sorted(g.objects, key=dist)[:40]:
+            on = obj.get("onScreen", False)
+            label = (
+                f"{obj.get('name','?')}  "
+                f"dist {dist(obj)}  {'●' if on else '○'}"
+            )
+            obj_items.append((label, obj))
+        _update(self._hull_obj_combo, obj_items)
+
+        widget_items = []
+        for wg in sorted(
+            widgets, key=lambda x: (x.get("groupId", 0), x.get("childId", 0))
+        ):
+            gid = wg.get("groupId", "?")
+            cid = wg.get("childId", "?")
+            item_id = wg.get("itemId", -1)
+            txt = wg.get("text", "")
+            label = f"G{gid}:{cid}  item={item_id}" + (
+                f"  '{txt[:20]}'" if txt else "")
+            widget_items.append((label, wg))
+        _update(self._hull_widget_combo, widget_items)
+
+    def _capture_hull_debug(self) -> None:
+        y_off = int(_settings.get("hull_y_offset") or 0)
+        g = self._engine.game
+
+        target_widget: Optional[dict] = self._hull_widget_combo.currentData(
+            Qt.ItemDataRole.UserRole)
+        target_obj:    Optional[dict] = self._hull_obj_combo.currentData(
+            Qt.ItemDataRole.UserRole)
+        target_npc:    Optional[dict] = self._hull_npc_combo.currentData(
+            Qt.ItemDataRole.UserRole)
+        show_all = self._hull_show_all_btn.isChecked()
+
+        # Auto-fallback when nothing is explicitly selected
+        if target_widget is None and target_obj is None and target_npc is None and not show_all:
+            on_objs = [o for o in g.objects if o.get("onScreen") and o.get("hull")]
+            if on_objs:
+                target_obj = min(on_objs, key=g.distance_to)
+            else:
+                on_npcs = [n for n in g.npcs if n.get("onScreen") and n.get("hull")]
+                if on_npcs:
+                    target_npc = min(on_npcs, key=g.distance_to)
+
+        # Find the game window HWND
+        window_name = _settings.get("window_name") or "RuneLite"
+        hwnd = ctypes.windll.user32.FindWindowW(None, window_name)
+        if not hwnd:
+            hwnd = _find_window_by_prefix(window_name)
+        if not hwnd:
+            self._hull_status.setText(
+                "⚠  RuneLite window not found — launch the client first.")
+            return
+
+        # Crop captured image to the client area so canvas coordinates align.
+        win_rc = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(win_rc))
+        cli_rc = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(cli_rc))
+        cli_origin = ctypes.wintypes.POINT()
+        cli_origin.x = 0
+        cli_origin.y = 0
+        ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(cli_origin))
+        chrome_x = cli_origin.x - win_rc.left
+        chrome_y = cli_origin.y - win_rc.top
+        client_w = cli_rc.right - cli_rc.left
+        client_h = cli_rc.bottom - cli_rc.top
+
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self._hull_status.setText("⚠  No screen available.")
+            return
+        raw: QPixmap = screen.grabWindow(hwnd)
+        if raw.isNull():
+            self._hull_status.setText("⚠  Screenshot capture failed.")
+            return
+        if client_w > 0 and client_h > 0:
+            raw = raw.copy(chrome_x, chrome_y, client_w, client_h)
+
+        painter = QPainter(raw)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # --- Layer 1: "show all widgets" overlay ---
+        if show_all:
+            group_colors = {
+                149: "#58a6ff", 12: "#3fb950",
+                387: "#e3b341", 192: "#bc8cff",
+            }
+            sel_gid = target_widget.get("groupId") if target_widget else None
+            sel_cid = target_widget.get("childId") if target_widget else None
+            for wg in self._hull_last_widgets:
+                b = wg.get("bounds")
+                if not b or b.get("width", 0) <= 0 or b.get("height", 0) <= 0:
+                    continue
+                gid = wg.get("groupId", 0)
+                cid = wg.get("childId", "?")
+                is_sel = (gid == sel_gid and wg.get("childId") == sel_cid)
+                rx = float(b["x"])
+                ry = float(b["y"]) - y_off
+                rw = float(b["width"])
+                rh = float(b["height"])
+                color = QColor(group_colors.get(gid, "#8b949e"))
+                fill = QColor(color)
+                fill.setAlpha(100 if is_sel else 30)
+                painter.setPen(QPen(color, 2 if is_sel else 1))
+                painter.fillRect(QRectF(rx, ry, rw, rh), fill)
+                painter.drawRect(QRectF(rx, ry, rw, rh))
+                font = QFont("Segoe UI", 7)
+                font.setBold(is_sel)
+                painter.setFont(font)
+                painter.setPen(color)
+                painter.drawText(QPointF(rx + 2, ry + 9), f"G{gid}:{cid}")
+
+        # --- Layer 2: focused entity ---
+        status_text = ""
+        if target_widget is not None and not show_all:
+            b = target_widget.get("bounds")
+            if b:
+                rx = float(b["x"])
+                ry = float(b["y"]) - y_off
+                rw = float(b["width"])
+                rh = float(b["height"])
+                painter.setPen(QPen(QColor("#58a6ff"), 2))
+                painter.fillRect(QRectF(rx, ry, rw, rh), QColor(88, 166, 255, 55))
+                painter.drawRect(QRectF(rx, ry, rw, rh))
+                painter.setBrush(QColor("#58a6ff"))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(rx + rw / 2, ry + rh / 2), 5, 5)
+                gid = target_widget.get("groupId", "?")
+                cid = target_widget.get("childId", "?")
+                txt = target_widget.get("text", "")
+                status_text = (
+                    f"Widget G{gid}:{cid}  text='{txt}'  "
+                    f"bounds ({int(b['x'])}, {int(b['y'])}) {int(rw)}×{int(rh)}"
+                )
+            else:
+                status_text = "No bounds data for selected widget."
+
+        elif target_obj is not None:
+            hull = target_obj.get("hull")
+            if hull:
+                path = QPainterPath()
+                path.moveTo(hull[0][0], hull[0][1] - y_off)
+                for pt in hull[1:]:
+                    path.lineTo(pt[0], pt[1] - y_off)
+                path.closeSubpath()
+                painter.setPen(QPen(QColor("#ff6b6b"), 2))
+                painter.fillPath(path, QColor(255, 107, 107, 55))
+                painter.drawPath(path)
+                cx = sum(p[0] for p in hull) / len(hull)
+                cy = sum(p[1] for p in hull) / len(hull) - y_off
+                painter.setBrush(QColor("#ff6b6b"))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(cx, cy), 5, 5)
+                name_str = target_obj.get("name", "?")
+                status_text = (
+                    f"Object '{name_str}'  {len(hull)} pts  "
+                    f"centroid ({cx:.0f}, {cy:.0f})"
+                )
+            else:
+                status_text = (
+                    f"Object '{target_obj.get('name','?')}' has no hull "
+                    f"(off-screen or hull-filtered)."
+                )
+
+        elif target_npc is not None:
+            hull = target_npc.get("hull")
+            if hull:
+                path = QPainterPath()
+                path.moveTo(hull[0][0], hull[0][1] - y_off)
+                for pt in hull[1:]:
+                    path.lineTo(pt[0], pt[1] - y_off)
+                path.closeSubpath()
+                painter.setPen(QPen(QColor("#3fb950"), 2))
+                painter.fillPath(path, QColor(63, 185, 80, 55))
+                painter.drawPath(path)
+                cx = sum(p[0] for p in hull) / len(hull)
+                cy = sum(p[1] for p in hull) / len(hull) - y_off
+                painter.setBrush(QColor("#3fb950"))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(cx, cy), 5, 5)
+                name_str = target_npc.get("name", "?")
+                status_text = (
+                    f"NPC '{name_str}'  {len(hull)} pts  "
+                    f"centroid ({cx:.0f}, {cy:.0f})"
+                )
+            else:
+                status_text = (
+                    f"NPC '{target_npc.get('name','?')}' has no hull "
+                    f"(off-screen or hull-filtered)."
+                )
+
+        elif show_all:
+            status_text = f"Showing all {len(self._hull_last_widgets)} widgets."
+        else:
+            status_text = (
+                "No selection — choose an entity from a dropdown, "
+                "or move on-screen entities into view."
+            )
+
+        painter.end()
+        self._hull_status.setText(status_text)
+
+        scaled = raw.scaled(
+            self._hull_preview.width() or 800,
+            self._hull_preview.height() or 500,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._hull_preview.setPixmap(scaled)
 
     def _make_table(self, columns: list[str]) -> QTableWidget:
         t = QTableWidget(0, len(columns))
@@ -1028,6 +1538,36 @@ class GameBridgeWindow(QMainWindow):
                         QBrush(_qc(C.SUCCESS if vis else C.TEXT_DIM)))
                 self._obj_table.setItem(r, col, item)
         self._obj_table.setUpdatesEnabled(True)
+
+        # Widget table
+        widgets = msg.get("widgets", [])
+        self._widget_table.setUpdatesEnabled(False)
+        self._widget_table.setRowCount(0)
+        for w in sorted(widgets, key=lambda x: (x.get("groupId", 0), x.get("childId", 0))):
+            r = self._widget_table.rowCount()
+            self._widget_table.insertRow(r)
+            b = w.get("bounds") or {}
+            bounds_str = (
+                f"({b.get('x',0)}, {b.get('y',0)})  {b.get('width',0)}×{b.get('height',0)}"
+                if b else "—"
+            )
+            vals = [
+                str(w.get("groupId", "?")),
+                str(w.get("childId", "?")),
+                str(w.get("itemId", -1)),
+                w.get("text", ""),
+                bounds_str,
+            ]
+            for col, val in enumerate(vals):
+                self._widget_table.setItem(r, col, QTableWidgetItem(val))
+            # Store full widget dict for hull debug retrieval
+            self._widget_table.item(r, 0).setData(Qt.ItemDataRole.UserRole, w)
+        self._widget_table.setUpdatesEnabled(True)
+
+        # Hull debug dropdowns — skip refresh when frozen
+        self._hull_last_widgets = widgets
+        if not self._hull_freeze_btn.isChecked():
+            self._refresh_hull_combos(g, widgets)
 
         # XP table (only rebuild on xp events to avoid flicker)
         xp_events = [e for e in msg.get("events", []) if e["type"] == "xp"]

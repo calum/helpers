@@ -53,8 +53,8 @@ log = logging.getLogger(__name__)
 class IronMiningRoutine(Routine):
     """Mine iron ore rocks, bank when full, repeat."""
 
-    ORE_NAME = "Iron ore"
-    BANK_NAME = "Bank deposit box"
+    ORE_NAME = "Iron rocks"
+    BANK_NAME = "Mine cart"
 
     # ------------------------------------------------------------------
     # States
