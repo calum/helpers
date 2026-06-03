@@ -378,53 +378,20 @@ public class GameBridgePlugin extends Plugin
 		List<Map<String, Object>> list = new ArrayList<>();
 		for (int groupId : WIDGET_GROUPS)
 		{
-			Widget root = client.getWidget(groupId, 0);
-			if (root == null || root.isHidden())
+			for (int childId = 0; childId < 512; childId++)
 			{
-				continue;
+				Widget w = client.getWidget(groupId, childId);
+				if (w == null)
+				{
+					break;
+				}
+				if (!w.isHidden())
+				{
+					list.add(serializeWidget(groupId, w));
+				}
 			}
-			collectVisibleWidgets(list, groupId, root, 0);
 		}
 		return list;
-	}
-
-	/**
-	 * Walk one widget's dynamic and static children, serialising everything visible.
-	 * Depth is capped at 2 to avoid scanning deeply nested interface trees.
-	 */
-	private void collectVisibleWidgets(List<Map<String, Object>> list, int groupId, Widget parent, int depth)
-	{
-		Widget[] dynamic = parent.getDynamicChildren();
-		if (dynamic != null)
-		{
-			for (Widget child : dynamic)
-			{
-				if (child == null || child.isHidden())
-				{
-					continue;
-				}
-				list.add(serializeWidget(groupId, child));
-			}
-		}
-
-		if (depth >= 2)
-		{
-			return;
-		}
-
-		Widget[] staticChildren = parent.getStaticChildren();
-		if (staticChildren != null)
-		{
-			for (Widget child : staticChildren)
-			{
-				if (child == null || child.isHidden())
-				{
-					continue;
-				}
-				list.add(serializeWidget(groupId, child));
-				collectVisibleWidgets(list, groupId, child, depth + 1);
-			}
-		}
 	}
 
 	private Map<String, Object> serializeWidget(int groupId, Widget w)
