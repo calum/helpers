@@ -14,7 +14,7 @@ echo "====== GameBridge Build & Test ======"
 
 echo "\n[1/3] Installing Python test dependencies..."
 $PYTHON -m pip install --upgrade pip setuptools
-$PYTHON -m pip install pytest
+$PYTHON -m pip install -r scripts/gamebridge/requirements.txt
 
 echo "[2/3] Running Python unit tests..."
 $PYTHON -m pytest scripts/gamebridge/tests/ -v
