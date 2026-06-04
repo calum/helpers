@@ -161,7 +161,13 @@ class IronMiningRoutine(Routine):
         'Deposit inventory' button (widget 192:31) to empty the pack.
         Returns to find_ore once slots are free.
         """
-        if game.inventory_empty():
+        deposit_btn = game.find_widget(*BankDepositBox.DEPOSIT_INV)
+
+        if game.inventory_empty() and deposit_btn is None:
+            return "find_ore"
+        elif game.inventory_empty() and deposit_btn is not None:
+            # Inventory is already empty but deposit UI is still open — close it
+            ctrl.press_key("esc")
             return "find_ore"
 
         box = game.nearest_object(self.BANK_NAME)
@@ -169,7 +175,6 @@ class IronMiningRoutine(Routine):
         if box is None or not game.player_near(box, tiles=2):
             return "walk_to_bank"
 
-        deposit_btn = game.find_widget(*BankDepositBox.DEPOSIT_INV)
         if deposit_btn is not None:
             # Deposit box UI is open — click 'Deposit inventory'
             ctrl.click_widget(deposit_btn)
