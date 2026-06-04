@@ -42,9 +42,9 @@ def _find_window_by_prefix(prefix: str) -> int:
     return found.value
 
 
-def _find_runelite_window() -> Optional[tuple[int, int, int, int, int]]:
+def _find_runelite_window() -> Optional[tuple[int, int, int, int]]:
     """
-    Return (left, top, right, bottom, hwnd) of the RuneLite client area, or None.
+    Return (left, top, right, bottom) of the RuneLite client area, or None.
 
     We use GetClientRect + ClientToScreen so the coords exclude the window
     chrome — (0, 0) in canvas space maps to (left, top) in screen space.
@@ -67,7 +67,7 @@ def _find_runelite_window() -> Optional[tuple[int, int, int, int, int]]:
     ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
     w = rect.right - rect.left
     h = rect.bottom - rect.top
-    return pt.x, pt.y, pt.x + w, pt.y + h, hwnd
+    return pt.x, pt.y, pt.x + w, pt.y + h
 
 
 # ------------------------------------------------------------------ #
@@ -88,7 +88,6 @@ class GameController:
     def __init__(self, human: Optional[HumanEmulator] = None):
         self._human = human or HumanEmulator()
         self._window: Optional[tuple[int, int, int, int]] = None
-        self._hwnd: int = 0
         self.min_click_interval: float = 0.0
         self._last_entity_click: float = 0.0
         self._session_start: float = time.monotonic()
@@ -99,15 +98,11 @@ class GameController:
 
     def refresh_window(self) -> bool:
         """Re-detect the RuneLite window. Returns True if found."""
-        result = _find_runelite_window()
-        if result is None:
-            self._window = None
-            self._hwnd = 0
+        self._window = _find_runelite_window()
+        if self._window is None:
             log.warning("RuneLite window not found — is the client running?")
         else:
-            l, t, r, b, hwnd = result
-            self._window = (l, t, r, b)
-            self._hwnd = hwnd
+            l, t, r, b = self._window
             log.info("RuneLite window: (%d, %d) – (%d, %d)", l, t, r, b)
         return self._window is not None
 
@@ -269,28 +264,13 @@ class GameController:
     # Keyboard actions
     # ------------------------------------------------------------------
 
-    def _focus_game_window(self) -> None:
-        """Bring the RuneLite window to the foreground before sending key events.
-
-        SendInput delivers keyboard input to whichever window has focus.
-        Without this, keys sent between game ticks may land in the terminal
-        or IDE that has focus rather than in RuneLite.
-        """
-        if not self._hwnd:
-            self.refresh_window()
-        if self._hwnd:
-            ctypes.windll.user32.SetForegroundWindow(self._hwnd)
-            time.sleep(0.05)  # give the OS time to switch focus
-
     def type_text(self, text: str) -> None:
         """Type text with human-like inter-key delays."""
-        self._focus_game_window()
         intent = self._human.plan_typing(text)
         kb_input.type_text(intent.text, intent.key_delays)
 
     def press_key(self, key: str) -> None:
         """Press a named key (Key constant, named string, or single character)."""
-        self._focus_game_window()
         time.sleep(self._human.random_pause(0.02, 0.08))
         kb_input.press_key(key)
         log.debug("Pressed key '%s'", key)

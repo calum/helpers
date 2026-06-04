@@ -6,6 +6,9 @@
 # Qt dashboard
 PyQt6>=6.6.0
 
+# Keyboard / mouse input
+pynput>=1.7
+
 # Testing
 pytest>=7.0
 
