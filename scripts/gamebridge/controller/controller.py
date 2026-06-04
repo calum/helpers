@@ -115,6 +115,26 @@ class GameController:
         y_off = int(_settings.get("hull_y_offset") or 0)
         return left + cx, top + cy - y_off
 
+    def _is_canvas_coord_valid(self, cx: float, cy: float) -> bool:
+        """Return True only if the canvas coordinate lies within the game viewport."""
+        if self._window is None:
+            self.refresh_window()
+        if self._window is None:
+            return False
+        left, top, right, bottom = self._window
+        return 0 <= cx < (right - left) and 0 <= cy < (bottom - top)
+
+    def _clamp_to_window(self, sx: float, sy: float) -> tuple[float, float]:
+        """Clamp a screen coordinate to lie strictly inside the game window.
+
+        Applied to the human-emulator's actual_x/y so that Gaussian click error
+        never carries the cursor outside the game window.
+        """
+        if self._window is None:
+            return sx, sy
+        left, top, right, bottom = self._window
+        return max(left, min(sx, right - 1)), max(top, min(sy, bottom - 1))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -140,16 +160,30 @@ class GameController:
         """Move the mouse to an on-screen entity with WindMouse movement."""
         if not entity.get("onScreen"):
             return
-        sx, sy = self._canvas_to_screen(entity["canvasX"], entity["canvasY"])
+        cx, cy = entity["canvasX"], entity["canvasY"]
+        if not self._is_canvas_coord_valid(cx, cy):
+            log.warning("move_to_entity: %s canvas (%d, %d) outside viewport — skipping",
+                        entity.get("name", "?"), cx, cy)
+            return
+        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
 
     def click_entity(self, entity: dict) -> None:
         """Left-click an on-screen entity."""
         if not entity.get("onScreen"):
             log.debug("click_entity: %s is off-screen", entity.get("name", "?"))
+            return
+        cx, cy = entity["canvasX"], entity["canvasY"]
+        if not self._is_canvas_coord_valid(cx, cy):
+            log.warning(
+                "click_entity: %s canvas (%d, %d) outside viewport — skipping "
+                "(plugin reported onScreen=true but hull projects outside canvas bounds)",
+                entity.get("name", "?"), cx, cy,
+            )
             return
         now = time.monotonic()
         if self.min_click_interval > 0 and now - self._last_entity_click < self.min_click_interval:
@@ -158,12 +192,13 @@ class GameController:
                 now - self._last_entity_click, self.min_click_interval,
             )
             return
-        sx, sy = self._canvas_to_screen(entity["canvasX"], entity["canvasY"])
+        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_left()
 
@@ -179,12 +214,18 @@ class GameController:
         """Right-click an on-screen entity."""
         if not entity.get("onScreen"):
             return
-        sx, sy = self._canvas_to_screen(entity["canvasX"], entity["canvasY"])
+        cx, cy = entity["canvasX"], entity["canvasY"]
+        if not self._is_canvas_coord_valid(cx, cy):
+            log.warning("right_click_entity: %s canvas (%d, %d) outside viewport — skipping",
+                        entity.get("name", "?"), cx, cy)
+            return
+        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_right()
 
@@ -205,11 +246,16 @@ class GameController:
 
     def click_at(self, canvas_x: float, canvas_y: float) -> None:
         """Left-click at an absolute canvas coordinate."""
+        if not self._is_canvas_coord_valid(canvas_x, canvas_y):
+            log.warning("click_at: canvas (%.0f, %.0f) outside viewport — skipping",
+                        canvas_x, canvas_y)
+            return
         sx, sy = self._canvas_to_screen(canvas_x, canvas_y)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, intent.actual_x, intent.actual_y, move_speed=intent.move_speed)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_left()
         self._after_click()

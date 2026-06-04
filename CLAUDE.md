@@ -1,5 +1,25 @@
 # RuneLite Client — CLAUDE.md
 
+## Testing Requirements
+
+Every code change — bug fix, new feature, or refactor — must include new or updated tests. A change is not complete until the relevant tests pass.
+
+**Rules:**
+- Any new public method, function, or behaviour gets at least one test covering the happy path and one covering each failure/edge case.
+- Any modified behaviour must have its existing tests updated to match and new tests added for the changed logic.
+- Tests must pass locally before considering the task done. Run with:
+  ```powershell
+  # Python (gamebridge scripts)
+  python -m pytest scripts/gamebridge/tests/ -v
+
+  # Java (RuneLite client)
+  ./gradlew.bat :runelite-client:test
+  ```
+- Do not skip or comment out failing tests to make the suite green — fix the code or the test.
+- Test the actual behaviour, not implementation details: assert on observable outputs (return values, logged messages, mock call counts/args), not on internal state.
+
+---
+
 ## Research Protocol
 
 After any research session (reading source files, exploring the codebase, investigating APIs), update `PLAN.md` with new findings. Add concrete details: file paths, class names, how mechanisms work, open questions, and next steps. Keep `PLAN.md` as a living document that accumulates knowledge across sessions.

@@ -726,3 +726,76 @@ class TestInventoryItemHelpers:
         g = GameState()
         g.inventory = _full_empty_inventory()
         assert g.inventory_has_item(1440) is False
+
+
+# ---------------------------------------------------------------------------
+# Widget constants (scripts/gamebridge/ui/widgets.py)
+# ---------------------------------------------------------------------------
+
+class TestWidgetConstants:
+    """
+    Verify that the named widget constants in widgets.py decode to the correct
+    (group_id, child_id) pairs, and that find_widget locates them correctly.
+
+    These tests guard against a silent ID mismatch when constants are updated
+    after a RuneLite version bump.
+    """
+
+    def test_bank_deposit_box_deposit_inv_tuple(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox
+        assert BankDepositBox.DEPOSIT_INV == (192, 31)
+
+    def test_bank_deposit_box_deposit_worn_tuple(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox
+        assert BankDepositBox.DEPOSIT_WORN == (192, 30)
+
+    def test_bank_deposit_box_deposit_lootingbag_tuple(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox
+        assert BankDepositBox.DEPOSIT_LOOTINGBAG == (192, 32)
+
+    def test_bankmain_depositinv_tuple(self):
+        from scripts.gamebridge.ui.widgets import Bankmain
+        assert Bankmain.DEPOSITINV == (12, 41)
+
+    def test_bankmain_depositworn_tuple(self):
+        from scripts.gamebridge.ui.widgets import Bankmain
+        assert Bankmain.DEPOSITWORN == (12, 43)
+
+    def test_inventory_items_tuple(self):
+        from scripts.gamebridge.ui.widgets import Inventory
+        assert Inventory.ITEMS == (149, 0)
+
+    def test_find_widget_via_named_constant(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox
+        g = GameState()
+        w = _widget(group_id=192, child_id=31, item_id=-1, qty=0)
+        g.update(_base_msg(widgets=[w]))
+        result = g.find_widget(*BankDepositBox.DEPOSIT_INV)
+        assert result is not None
+        assert result["groupId"] == 192
+        assert result["childId"] == 31
+
+    def test_find_widget_via_bankmain_constant(self):
+        from scripts.gamebridge.ui.widgets import Bankmain
+        g = GameState()
+        w = _widget(group_id=12, child_id=41, item_id=-1, qty=0)
+        g.update(_base_msg(widgets=[w]))
+        result = g.find_widget(*Bankmain.DEPOSITINV)
+        assert result is not None
+        assert result["groupId"] == 12
+        assert result["childId"] == 41
+
+    def test_find_widget_returns_none_when_absent(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox
+        g = GameState()
+        g.update(_base_msg(widgets=[]))
+        assert g.find_widget(*BankDepositBox.DEPOSIT_INV) is None
+
+    def test_group_constants_match_tuple_group(self):
+        from scripts.gamebridge.ui.widgets import BankDepositBox, Bankmain, Inventory, Wornitems
+        for cls in (BankDepositBox, Bankmain, Inventory, Wornitems):
+            for attr, value in vars(cls).items():
+                if isinstance(value, tuple):
+                    assert value[0] == cls.GROUP, (
+                        f"{cls.__name__}.{attr} group {value[0]} != GROUP {cls.GROUP}"
+                    )

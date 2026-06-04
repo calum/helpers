@@ -42,6 +42,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from ..base import Routine, initial_state
+from ...ui.widgets import BankDepositBox
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -168,7 +169,7 @@ class IronMiningRoutine(Routine):
         if box is None or not game.player_near(box, tiles=2):
             return "walk_to_bank"
 
-        deposit_btn = game.find_widget(192, 31)
+        deposit_btn = game.find_widget(*BankDepositBox.DEPOSIT_INV)
         if deposit_btn is not None:
             # Deposit box UI is open — click 'Deposit inventory'
             ctrl.click_widget(deposit_btn)

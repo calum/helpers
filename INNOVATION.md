@@ -226,3 +226,64 @@ Run two game clients on the same machine. The plugin already handles multiple TC
 (`CopyOnWriteArrayList<ClientEntry>`). The Python side needs a `MultiAccountEngine` that maps
 each connection to its own `GameState + Routine` pair and ticks them independently.
 Primary use case: one account mines, another banks.
+
+---
+
+## Game Logic Integration
+
+### Varbit-Driven Activity Automation
+The `varbit` event stream exposes the same low-level signals RuneLite plugins use internally to
+track minigame and skilling-activity state (Giant's Foundry, Blast Furnace, Wintertodt, etc.).
+Rather than reimplementing the visual pattern-matching those plugins do, capture the relevant
+varbit IDs for an activity and build a minimal Python state machine that mirrors the plugin's
+logic:
+
+```python
+# Giant's Foundry: varbit 13948 tracks the current stage (0=start, 1=trip, 2=pour, ...)
+def foundry_stage(game: GameState) -> int:
+    return game.get_varbit(varp_id=0, varbit_id=13948) or 0
+```
+
+Use the RuneLite **Devtools** plugin to read varbit IDs live while playing the activity.
+No Java changes required — the plugin already emits every varbit change when `exposeVarbits` is on.
+
+---
+
+### Chat-Pattern Confirmation Signals
+Use `game.last_chat_matching(substring)` within routines as a lightweight confirmation that a
+game action succeeded, rather than relying purely on animation or position state:
+
+- `"You chop some logs."` → woodcutting click was accepted by the server
+- `"You've been poisoned."` → trigger antidote sub-routine
+- `"You do not have enough"` → inventory/rune check failed; abort and restock
+- `"Welcome to"` → world-hop or login just completed; delay next action
+
+This is complementary to `animation_started()` / `player_idle()` — chat confirms the server
+processed the action, not just that the client played an animation. Cap lookback with
+`game.chat_since_tick(game.tick - 5)` to avoid false positives from old messages.
+
+---
+
+### Routine State Persistence (Crash Recovery)
+If the Python process crashes mid-run, the routine always restarts from its `@initial_state`.
+For long loops (e.g., a 2-hour mining session with 40 bank trips), this can waste significant
+setup time.
+
+On every state transition, serialize `{routine_class, current_state, state_enter_tick, custom_vars}`
+to `~/.gamebridge/routine_state.json`. On startup, offer to restore from this file if it exists
+and is less than N minutes old:
+
+```python
+# routines/base.py addition
+def save_checkpoint(self, game: GameState, extra: dict = {}):
+    path = Path.home() / ".gamebridge" / "routine_state.json"
+    path.write_text(json.dumps({
+        "routine": self.name,
+        "state": self.current_state,
+        "tick": game.tick,
+        **extra,
+    }))
+```
+
+The engine checks for a checkpoint file at startup and restores state if the user confirms.
+Particularly useful when the break timer fires a Ctrl+Shift+Q and the session was almost done.

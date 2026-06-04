@@ -491,11 +491,22 @@ public class GameBridgePlugin extends Plugin
 
 	private void applyHullFields(Map<String, Object> m, Shape hull, int id, String name)
 	{
-		boolean onScreen = hull != null;
+		// hull != null is not sufficient: getConvexHull() returns a non-null Shape for
+		// objects that are in the loaded scene tile array but projected outside the visible
+		// canvas area (negative or > canvas dimensions). We must intersect with the
+		// actual canvas viewport before declaring an entity "on screen".
+		boolean onScreen = false;
+		Rectangle b = null;
+		if (hull != null)
+		{
+			b = hull.getBounds();
+			Rectangle viewport = new Rectangle(0, 0,
+				client.getCanvas().getWidth(), client.getCanvas().getHeight());
+			onScreen = viewport.intersects(b);
+		}
 		m.put("onScreen", onScreen);
 		if (onScreen)
 		{
-			Rectangle b = hull.getBounds();
 			m.put("canvasX", b.x + b.width / 2);
 			m.put("canvasY", b.y + b.height / 2);
 			m.put("hull", hullFilter.matches(id, name) ? hullPoints(hull) : null);
