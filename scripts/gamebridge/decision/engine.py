@@ -39,12 +39,14 @@ class DecisionEngine:
     def __init__(
         self,
         ctrl: GameController,
-        human=None,   # HumanEmulator | None
+        human=None,       # HumanEmulator | None
+        scheduler=None,   # InterruptionScheduler | None
     ):
         self._ctrl = ctrl
         self._game = GameState()
         self._routine: Optional[Routine] = None
         self._human = human
+        self._scheduler = scheduler
         self._session_start = time.monotonic()
         self._on_break = False
         self._break_until: float = 0.0
@@ -85,6 +87,18 @@ class DecisionEngine:
 
         if self._routine is None:
             return
+
+        # Interruption management — apply mood multipliers and pause when away
+        if self._scheduler is not None:
+            session_s = time.monotonic() - self._session_start
+            self._scheduler.tick(session_s)
+            if self._human is not None:
+                self._human.set_interruption_multipliers(
+                    reaction=self._scheduler.reaction_multiplier(),
+                    click_error=self._scheduler.click_error_multiplier(),
+                )
+            if self._scheduler.away:
+                return  # player is away from desk
 
         # Break management — non-blocking: check timestamps rather than sleeping
         if self._human is not None:
@@ -133,3 +147,15 @@ class DecisionEngine:
         if not self._on_break:
             return 0.0
         return max(0.0, self._break_until - time.monotonic())
+
+    @property
+    def interruption_active(self) -> bool:
+        """True when an interruption is currently in any phase."""
+        return self._scheduler is not None and self._scheduler.active is not None
+
+    @property
+    def interruption_type(self) -> Optional[str]:
+        """The active interruption type name, or None."""
+        if self._scheduler is not None and self._scheduler.active is not None:
+            return self._scheduler.active.config.type.value
+        return None

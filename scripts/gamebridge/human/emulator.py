@@ -73,6 +73,42 @@ class HumanEmulator:
         self.wpm = wpm
         self.fatigue = fatigue
         self._rng = random.Random(rng_seed)
+        # Multiplier layer — mood sets baseline at startup; interruptions add temporary overrides
+        self._reaction_mult: float = 1.0
+        self._error_mult: float = 1.0
+        self._fatigue_rate_mult: float = 1.0
+        self._break_freq_mult: float = 1.0
+
+    # ------------------------------------------------------------------
+    # Mood and interruption multipliers
+    # ------------------------------------------------------------------
+
+    def apply_mood(self, profile: "MoodProfile") -> None:  # type: ignore[name-defined]
+        """
+        Scale base emulator parameters by the session's MoodProfile.
+
+        Called once at session startup after the mood is seeded. Permanently
+        adjusts reaction_mean and click_error_px so all subsequent sampling
+        reflects the player's emotional state for the day.
+        """
+        self.reaction_mean *= profile.reaction_multiplier
+        self.click_error_px *= profile.click_error_multiplier
+        self._fatigue_rate_mult = profile.fatigue_rate_multiplier
+        self._break_freq_mult = profile.break_frequency_multiplier
+
+    def set_interruption_multipliers(
+        self,
+        reaction: float = 1.0,
+        click_error: float = 1.0,
+    ) -> None:
+        """
+        Apply temporary per-tick overrides while an interruption is active.
+
+        Called by the DecisionEngine each tick based on InterruptionScheduler
+        state. Pass 1.0 for both to clear any active override.
+        """
+        self._reaction_mult = reaction
+        self._error_mult = click_error
 
     # ------------------------------------------------------------------
     # Fatigue management
@@ -80,7 +116,7 @@ class HumanEmulator:
 
     def accumulate_fatigue(self, delta: float = 0.0001) -> None:
         """Small incremental fatigue added each tick / action."""
-        self.fatigue = min(1.0, self.fatigue + delta)
+        self.fatigue = min(1.0, self.fatigue + delta * self._fatigue_rate_mult)
 
     def rest(self, duration_s: float) -> None:
         """Reduce fatigue proportional to break length."""
@@ -96,7 +132,7 @@ class HumanEmulator:
         Sample a reaction time from a log-normal distribution.
         Fatigue inflates the mean; still clamped to a floor of 80 ms.
         """
-        mean = self.reaction_mean * (1.0 + self.fatigue * 0.6)
+        mean = self.reaction_mean * self._reaction_mult * (1.0 + self.fatigue * 0.6)
         raw = self._rng.gauss(mean, self.reaction_std)
         return max(0.08, raw)
 
@@ -123,7 +159,7 @@ class HumanEmulator:
         """
         dist = math.hypot(canvas_x - current_mouse_x, canvas_y - current_mouse_y)
 
-        err = self.click_error_px * (1.0 + self.fatigue * 0.5)
+        err = self.click_error_px * self._error_mult * (1.0 + self.fatigue * 0.5)
         actual_x = canvas_x + self._rng.gauss(0.0, err)
         actual_y = canvas_y + self._rng.gauss(0.0, err)
 
@@ -186,7 +222,7 @@ class HumanEmulator:
         Threshold drops from 30 min to ~20 min as fatigue climbs.
         A small random roll prevents completely predictable behaviour.
         """
-        threshold = 1800.0 - self.fatigue * 600.0
+        threshold = (1800.0 - self.fatigue * 600.0) / self._break_freq_mult
         if session_duration_s < threshold:
             return False
         # 5 % chance per tick once over the threshold

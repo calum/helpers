@@ -20,6 +20,16 @@ _DEFAULTS: dict[str, Any] = {
     "port": 7070,
     "host": "127.0.0.1",
     "hull_y_offset": 0,
+    "human_behaviour": {
+        # Location passed to wttr.in — "auto" uses IP geolocation, or set e.g. "London"
+        "weather_location": "auto",
+        # Set to false to disable all interruptions (mood seeding still applies)
+        "enable_interruptions": True,
+        # Override individual interruption fields here. Example:
+        #   "interruptions": {"discord_message": {"prob_per_hour": 3.0}}
+        # Unknown keys are logged as warnings and ignored.
+        "interruptions": {},
+    },
 }
 
 _cache: dict[str, Any] | None = None

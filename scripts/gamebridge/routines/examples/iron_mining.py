@@ -180,6 +180,7 @@ class IronMiningRoutine(Routine):
 
         if game.inventory_free_slots() > 0:
             log.info("Deposited ores. Free slots: %d", game.inventory_free_slots())
+            ctrl.press_key("esc")  # close bank UI
             return "find_ore"
 
         return None

@@ -82,9 +82,12 @@ def main() -> None:
     # ── Headless routine mode ────────────────────────────────────────
     from .client import stream
     from .human.emulator import HumanEmulator
+    from .human.mood import WeatherMoodSeeder
+    from .human.interruptions import InterruptionScheduler, build_configs_from_settings
     from .controller.controller import GameController
     from .decision.engine import DecisionEngine
     from .routines.examples.iron_mining import IronMiningRoutine
+    from . import settings as _settings
 
     ROUTINES = {
         "iron_mining": IronMiningRoutine,
@@ -93,14 +96,27 @@ def main() -> None:
     if args.routine not in ROUTINES:
         parser.error(f"Unknown routine '{args.routine}'. Choices: {list(ROUTINES)}")
 
+    hb = _settings.get("human_behaviour") or {}
+    location = hb.get("weather_location", "auto")
+    mood_profile = WeatherMoodSeeder().seed(location=location)
+
     human = HumanEmulator()
+    human.apply_mood(mood_profile)
+    log.info("Session mood: %s (cold_hands=%s)", mood_profile.mood.value, mood_profile.cold_hands)
+
+    interruptions_enabled = hb.get("enable_interruptions", True)
+    configs = build_configs_from_settings(hb.get("interruptions", {}))
+    scheduler = InterruptionScheduler(configs=configs) if interruptions_enabled else None
+    if scheduler is not None and mood_profile.cold_hands:
+        scheduler.prime_cold_hands(mood_profile.cold_hands_duration_s)
+
     ctrl = GameController(human=human)
 
     if not ctrl.refresh_window():
         log.error("RuneLite window not found. Launch the client first.")
         sys.exit(1)
 
-    engine = DecisionEngine(ctrl=ctrl, human=human)
+    engine = DecisionEngine(ctrl=ctrl, human=human, scheduler=scheduler)
     engine.set_routine(ROUTINES[args.routine]())
     log.info("Running '%s' headlessly — Ctrl-C to stop.", args.routine)
 
