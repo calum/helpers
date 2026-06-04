@@ -11,12 +11,12 @@ description = "Install GameBridge Python dependencies"
 run = "python -m pip install -r scripts/gamebridge/requirements.txt"
 
 [tasks.gamebridge]
-description = "Launch the GameBridge Qt dashboard"
-run = "python -m scripts.gamebridge.main --dashboard"
+description = "Launch the GameBridge Qt dashboard (debug logging to ~/.gamebridge/gamebridge.log)"
+run = "python -m scripts.gamebridge.main --dashboard --debug"
 
 [tasks.gamebridge-watch]
 description = "Watch live game state in the terminal (no routine, no input)"
-run = "python -m scripts.gamebridge.main --watch"
+run = "python -m scripts.gamebridge.main --watch --debug"
 
 [tasks.test]
 description = "Run all tests (Python GameBridge + Java RuneLite)"

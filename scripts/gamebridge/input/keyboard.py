@@ -12,6 +12,7 @@ import time
 from typing import List, Optional
 
 INPUT_KEYBOARD = 1
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 
@@ -22,7 +23,6 @@ _VK: dict[str, int] = {
     "backspace": 0x08,
     "tab": 0x09,
     "escape": 0x1B,
-    "esc": 0x1B,
     "space": 0x20,
     "shift": 0x10,
     "ctrl": 0x11,
@@ -39,6 +39,56 @@ _VK: dict[str, int] = {
     "down": 0x28,
     **{f"f{i}": 0x6F + i for i in range(1, 13)},  # F1–F12
 }
+
+# These keys live on the extended part of the keyboard (not numpad).
+# SendInput requires KEYEVENTF_EXTENDEDKEY so the OS generates the right
+# scan-code translation; without it some applications receive the wrong key.
+_EXTENDED_KEYS = frozenset({
+    "delete", "home", "end", "pageup", "pagedown",
+    "left", "right", "up", "down",
+})
+
+
+class Key:
+    """Named key constants for use with press_key() / GameController.press_key().
+
+    Use these instead of bare strings to catch typos at import time and
+    to get IDE completion:
+
+        ctrl.press_key(Key.ESCAPE)   # close a dialog
+        ctrl.press_key(Key.ENTER)    # confirm a prompt
+        ctrl.press_key(Key.F1)       # function key
+    """
+    ESCAPE = "escape"
+    ENTER = "enter"
+    BACKSPACE = "backspace"
+    TAB = "tab"
+    SPACE = "space"
+    SHIFT = "shift"
+    CTRL = "ctrl"
+    ALT = "alt"
+    CAPSLOCK = "capslock"
+    DELETE = "delete"
+    HOME = "home"
+    END = "end"
+    PAGE_UP = "pageup"
+    PAGE_DOWN = "pagedown"
+    LEFT = "left"
+    RIGHT = "right"
+    UP = "up"
+    DOWN = "down"
+    F1 = "f1"
+    F2 = "f2"
+    F3 = "f3"
+    F4 = "f4"
+    F5 = "f5"
+    F6 = "f6"
+    F7 = "f7"
+    F8 = "f8"
+    F9 = "f9"
+    F10 = "f10"
+    F11 = "f11"
+    F12 = "f12"
 
 
 class _KEYBDINPUT(ctypes.Structure):
@@ -71,12 +121,15 @@ def _send_unicode(char: str, key_up: bool = False) -> None:
     ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
 
-def _send_vk(vk: int, key_up: bool = False) -> None:
+def _send_vk(vk: int, key_up: bool = False, extended: bool = False) -> None:
     inp = _INPUT()
     inp.type = INPUT_KEYBOARD
     inp.ki.wVk = vk
     inp.ki.wScan = 0
-    inp.ki.dwFlags = KEYEVENTF_KEYUP if key_up else 0
+    flags = KEYEVENTF_KEYUP if key_up else 0
+    if extended:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    inp.ki.dwFlags = flags
     inp.ki.time = 0
     inp.ki.dwExtraInfo = None
     ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
@@ -90,14 +143,17 @@ def press_key(key: str, hold_ms: float = 50.0) -> None:
     """
     Press and release a key.
 
-    key: a named key ("enter", "escape", "f1", …) or a single character.
+    key: a Key constant, a named key string ("enter", "escape", "f1", …),
+         or a single character.
     hold_ms: how long to hold the key down (milliseconds).
     """
-    vk = _VK.get(key.lower())
+    k = key.lower()
+    vk = _VK.get(k)
     if vk is not None:
-        _send_vk(vk, key_up=False)
+        extended = k in _EXTENDED_KEYS
+        _send_vk(vk, key_up=False, extended=extended)
         time.sleep(hold_ms / 1000.0)
-        _send_vk(vk, key_up=True)
+        _send_vk(vk, key_up=True, extended=extended)
     else:
         ch = key[0]
         _send_unicode(ch, key_up=False)

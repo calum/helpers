@@ -14,20 +14,50 @@ Examples
     python -m scripts.gamebridge.main --watch
     python -m scripts.gamebridge.main --routine iron_mining
     python -m scripts.gamebridge.main --routine iron_mining --port 7071
+    python -m scripts.gamebridge.main --debug
 """
 from __future__ import annotations
 
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+_LOG_FILE = Path.home() / ".gamebridge" / "gamebridge.log"
+_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+_LOG_DATEFMT = "%H:%M:%S"
+
+
+def _configure_logging(debug: bool = False) -> None:
+    """Set up console (INFO) and optional file (DEBUG) handlers on the root logger."""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    root.addHandler(console)
+
+    if debug:
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        root.addHandler(fh)
+        log.debug("Debug logging enabled → %s", _LOG_FILE)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="GameBridge Python client")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7070)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=f"Enable DEBUG-level logging to {_LOG_FILE}",
+    )
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -49,18 +79,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    _configure_logging(debug=args.debug)
+
     # ── Dashboard (default) ──────────────────────────────────────────
     if not args.watch and not args.routine:
         from .dashboard import run as run_dashboard
         run_dashboard(host=args.host, port=args.port)
         return
-
-    # ── Headless watch mode ──────────────────────────────────────────
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
     if args.watch:
         from .client import stream

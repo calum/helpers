@@ -29,7 +29,7 @@ The following resources are useful:
 
 As a beginner solution, we could have some predifined routes for each routine based on pre-calculated paths.
 
-## More Human Behaviour
+## More Human Behaviour (DONE)
 
 We need more human behaviour. It's much more important to seem human than it is to play optimally. I'd rather the routines worked 50% the speed if it means looking more human-like.
 
@@ -51,6 +51,21 @@ Other scenarios that make sense to incorporate, somehow:
 There are so many things we can incorporate into the human model to make it more realistic.
 
 A stretch goal here would be to call off to an LLM when chat messages are coming in from other players that may be directed at the human model. These should not be encouraged to continue a conversation, but to be polite and respond with the context of what the controller is currently doing in the current routine.
+
+## Mouse movement
+
+I noticed the mouse movement still seems robotic. I think that after clicking, the mouse should have a high probability to "drift". I noticed that when I play, I will click an iron rock and then move my mouse away slightly, almost to keep my reactions ready to go again. It's rare that I click and then stay stationary.
+
+The second improvement is a "pre-emptive" movement. So for something like mining, we know that after a click, we would pre-emtpively move the mouse to the next thing, but not click it. 
+e.g.
+```
+Click iron rock
+move mouse to next closest iron rock
+wait for mine
+if it messes up, click original rock again
+if it works, click closest iron rock (which may not be the one we pre-empted but thats okay)
+```
+
 
 ## More Routines
 

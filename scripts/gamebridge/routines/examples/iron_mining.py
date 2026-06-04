@@ -42,6 +42,7 @@ import logging
 from typing import Optional, TYPE_CHECKING
 
 from ..base import Routine, initial_state
+from ...input.keyboard import Key
 from ...ui.widgets import BankDepositBox
 
 if TYPE_CHECKING:
@@ -62,6 +63,7 @@ class IronMiningRoutine(Routine):
     def __init__(self):
         super().__init__()
         self.mining_start_tick: Optional[int] = None
+        self._deposit_clicked_tick: int = -99
 
     # ------------------------------------------------------------------
     # States
@@ -160,14 +162,19 @@ class IronMiningRoutine(Routine):
         Click the Mine cart to open the deposit UI, then click the
         'Deposit inventory' button (widget 192:31) to empty the pack.
         Returns to find_ore once slots are free.
+
+        Uses tick-based polling rather than blocking sleeps so the game state
+        stays live between deposit click and confirmation.  We always press Esc
+        on exit to close the deposit box — pressing Esc when nothing is open is
+        a harmless no-op.  We throttle clicks to one per 8 ticks (~4.8 s) so a
+        single deposit attempt can fully process before we retry.
         """
         deposit_btn = game.find_widget(*BankDepositBox.DEPOSIT_INV)
 
-        if game.inventory_empty() and deposit_btn is None:
-            return "find_ore"
-        elif game.inventory_empty() and deposit_btn is not None:
-            # Inventory is already empty but deposit UI is still open — close it
-            ctrl.press_key("esc")
+        if game.inventory_free_slots() > 0:
+            # Always close the deposit box before returning — Esc is a no-op if
+            # the interface already closed, and avoids leaving it open on screen.
+            ctrl.press_key(Key.ESCAPE)
             return "find_ore"
 
         box = game.nearest_object(self.BANK_NAME)
@@ -176,16 +183,13 @@ class IronMiningRoutine(Routine):
             return "walk_to_bank"
 
         if deposit_btn is not None:
-            # Deposit box UI is open — click 'Deposit inventory'
-            ctrl.click_widget(deposit_btn)
-            ctrl.wait(1.2)
+            # One click per 8 ticks — the server takes ~2-3 ticks to process a
+            # deposit, so 8 ticks gives plenty of headroom before we retry.
+            if game.tick - self._deposit_clicked_tick >= 8:
+                ctrl.click_widget(deposit_btn)
+                self._deposit_clicked_tick = game.tick
         elif box.get("onScreen"):
             # UI not open yet — click the Mine cart to open it
             ctrl.click_entity(box)
-
-        if game.inventory_free_slots() > 0:
-            log.info("Deposited ores. Free slots: %d", game.inventory_free_slots())
-            ctrl.press_key("esc")  # close bank UI
-            return "find_ore"
 
         return None
