@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.gamebridge.human.emulator import HumanEmulator
+from scripts.gamebridge.human.emulator import HumanEmulator, KeyHoldIntent
 from scripts.gamebridge.human.mood import MOOD_PROFILES, MoodType
 
 
@@ -144,3 +144,48 @@ def test_new_multiplier_defaults_are_one():
 	assert human._error_mult == pytest.approx(1.0)
 	assert human._fatigue_rate_mult == pytest.approx(1.0)
 	assert human._break_freq_mult == pytest.approx(1.0)
+
+
+# ------------------------------------------------------------------ #
+# plan_key_hold
+# ------------------------------------------------------------------ #
+
+class TestPlanKeyHold:
+	def test_returns_key_hold_intent(self):
+		human = HumanEmulator(rng_seed=0)
+		result = human.plan_key_hold(500.0)
+		assert isinstance(result, KeyHoldIntent)
+
+	def test_hold_ms_within_jitter_bounds(self):
+		"""hold_ms must stay within ±30% of intended (jitter clamped to [0.7, 1.3])."""
+		human = HumanEmulator(rng_seed=0)
+		for _ in range(100):
+			result = human.plan_key_hold(500.0)
+			assert 350.0 <= result.hold_ms <= 650.0
+
+	def test_hold_ms_floor_at_20ms(self):
+		"""Very small intended durations must be floored at 20 ms."""
+		human = HumanEmulator(rng_seed=0)
+		result = human.plan_key_hold(1.0)
+		assert result.hold_ms >= 20.0
+
+	def test_pre_hold_pause_at_least_80ms(self):
+		"""pre_hold_pause uses reaction_time() which is floored at 80 ms."""
+		human = HumanEmulator(rng_seed=0)
+		for _ in range(50):
+			result = human.plan_key_hold(500.0)
+			assert result.pre_hold_pause >= 0.08
+
+	def test_post_hold_pause_positive(self):
+		human = HumanEmulator(rng_seed=0)
+		for _ in range(50):
+			result = human.plan_key_hold(500.0)
+			assert result.post_hold_pause >= 0.02
+
+	def test_fatigue_increases_pre_hold_pause(self):
+		"""A fatigued player has a longer mean reaction time before the key hold."""
+		fresh = HumanEmulator(rng_seed=7, fatigue=0.0)
+		tired = HumanEmulator(rng_seed=7, fatigue=0.9)
+		fresh_total = sum(fresh.plan_key_hold(500.0).pre_hold_pause for _ in range(50))
+		tired_total = sum(tired.plan_key_hold(500.0).pre_hold_pause for _ in range(50))
+		assert tired_total > fresh_total

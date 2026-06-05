@@ -170,3 +170,194 @@ class TestDepositOpenUI:
 
     def test_returns_walk_to_bank_when_no_cart_in_scene(self):
         assert _routine().deposit(_make_game(tick=100, widgets=[], objects=[]), _ctrl()) == "walk_to_bank"
+
+
+# ---------------------------------------------------------------------------
+# Camera rotation integration
+# ---------------------------------------------------------------------------
+
+ORE_OFF_SCREEN = {
+    "id": 440,
+    "name": "Iron rocks",
+    "worldX": 3230,
+    "worldY": 3230,
+    "plane": 0,
+    "onScreen": False,
+    "canvasX": None,
+    "canvasY": None,
+    "hull": None,
+}
+
+MINE_CART_OFF_SCREEN = {**MINE_CART, "onScreen": False, "canvasX": None, "canvasY": None, "hull": None}
+
+
+class TestCameraRotationInRoutine:
+    def test_find_ore_adjusts_camera_when_not_visible(self):
+        """find_ore delegates to bring_entity_on_screen when ore is off-screen."""
+        game = GameState()
+        game.tick = 1
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = False  # camera adjustment made
+        result = _routine().find_ore(game, ctrl)
+
+        ctrl.bring_entity_on_screen.assert_called_once_with(ORE_OFF_SCREEN, game)
+        assert result is None  # stay in state; next tick re-evaluates
+
+    def test_find_ore_clicks_ore_when_bring_on_screen_succeeds(self):
+        """find_ore waits one tick after entity becomes visible, then clicks on the next tick."""
+        game = GameState()
+        game.tick = 1
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        # Tick 1: entity visible, player idle — records settle tick, does not click yet
+        result = r.find_ore(game, ctrl)
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+        # Tick 2: settle complete — clicks and transitions to mining
+        game.tick = 2
+        result = r.find_ore(game, ctrl)
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN)
+        assert result == "mining"
+
+    def test_walk_to_bank_adjusts_camera_when_not_visible(self):
+        """walk_to_bank delegates to bring_entity_on_screen when bank is off-screen."""
+        game = _make_game(
+            tick=1,
+            inventory_full=True,
+            player_x=3200,
+            player_y=3200,
+            objects=[MINE_CART_OFF_SCREEN],
+        )
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = False  # camera adjustment made
+        result = _routine().walk_to_bank(game, ctrl)
+
+        ctrl.bring_entity_on_screen.assert_called_once_with(MINE_CART_OFF_SCREEN, game)
+        ctrl.click_entity.assert_not_called()
+        assert result is None  # still walking
+
+    def test_walk_to_bank_clicks_when_visible(self):
+        """walk_to_bank waits one tick after entity becomes visible, then clicks on the next tick."""
+        game = _make_game(
+            tick=1,
+            inventory_full=True,
+            player_x=3200,
+            player_y=3200,
+            objects=[MINE_CART_OFF_SCREEN],
+        )
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        # Tick 1: entity visible, player idle — records settle tick, does not click yet
+        result = r.walk_to_bank(game, ctrl)
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+        # Tick 2: settle complete — clicks to start walking
+        game.tick = 2
+        result = r.walk_to_bank(game, ctrl)
+        ctrl.click_entity.assert_called_once_with(MINE_CART_OFF_SCREEN)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Idle settle buffer
+# ---------------------------------------------------------------------------
+
+class TestIdleSettleBuffer:
+    def _idle_game(self, tick: int = 1, player_x: int = 3220, player_y: int = 3218) -> GameState:
+        game = GameState()
+        game.tick = tick
+        game.player = {"worldX": player_x, "worldY": player_y, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+        return game
+
+    def _moving_game(self, tick: int = 2, player_x: int = 3221, player_y: int = 3218) -> GameState:
+        game = self._idle_game(tick, player_x, player_y)
+        game._prev_pos = (player_x - 1, player_y)  # moved one tile west this tick
+        return game
+
+    def test_find_ore_does_not_click_while_player_moving(self):
+        """find_ore must not click while the player is in motion."""
+        game = self._moving_game()
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        result = _routine().find_ore(game, ctrl)
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+    def test_walk_to_bank_does_not_click_while_player_moving(self):
+        """walk_to_bank must not issue a walk command while player is already en route."""
+        game = _make_game(tick=2, inventory_full=True, player_x=3210, player_y=3210)
+        game._prev_pos = (3209, 3210)  # player moved this tick
+        game.camera = {"yaw": 0, "pitch": 256}
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        result = _routine().walk_to_bank(game, ctrl)
+        ctrl.click_entity.assert_not_called()
+        # bring_entity_on_screen should not even be called — idle check fires first
+        ctrl.bring_entity_on_screen.assert_not_called()
+        assert result is None
+
+    def test_find_ore_resets_buffer_when_camera_adjusts(self):
+        """If camera adjustment is needed after the buffer starts, the buffer resets."""
+        game = self._idle_game(tick=1)
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.find_ore(game, ctrl)           # tick 1: sets _idle_since_tick=1
+        assert r._idle_since_tick == 1
+
+        ctrl.bring_entity_on_screen.return_value = False
+        game.tick = 2
+        r.find_ore(game, ctrl)           # tick 2: camera adjust resets buffer
+        assert r._idle_since_tick == -1
+
+    def test_find_ore_resets_buffer_when_player_moves(self):
+        """If the player starts moving while the buffer is active, the buffer resets."""
+        game = self._idle_game(tick=1)
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.find_ore(game, ctrl)           # tick 1: sets _idle_since_tick=1
+        assert r._idle_since_tick == 1
+
+        game.tick = 2
+        game._prev_pos = game.player_pos
+        game.player = {**game.player, "worldX": 3222}  # moved
+        r.find_ore(game, ctrl)           # tick 2: player moving resets buffer
+        assert r._idle_since_tick == -1
+
+    def test_find_ore_buffer_resets_after_successful_click(self):
+        """_idle_since_tick returns to -1 after the click fires so the next ore uses a fresh buffer."""
+        game = self._idle_game(tick=1)
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.find_ore(game, ctrl)  # tick 1: buffer start
+        game.tick = 2
+        r.find_ore(game, ctrl)  # tick 2: click
+        assert r._idle_since_tick == -1

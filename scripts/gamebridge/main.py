@@ -112,10 +112,12 @@ def main() -> None:
     from .controller.controller import GameController
     from .decision.engine import DecisionEngine
     from .routines.examples.iron_mining import IronMiningRoutine
+    from .routines.examples.gold_mining import GoldMiningRoutine
     from . import settings as _settings
 
     ROUTINES = {
         "iron_mining": IronMiningRoutine,
+        "gold_mining": GoldMiningRoutine,
     }
 
     if args.routine not in ROUTINES:

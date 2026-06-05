@@ -269,7 +269,7 @@ class GameState:
         px, py = self.player_pos
         dx = entity["worldX"] - px
         dy = entity["worldY"] - py
-        return int(math.atan2(dx, dy) / (2 * math.pi) * 2048 + 2048) % 2048
+        return int(math.atan2(-dx, dy) / (2 * math.pi) * 2048 + 2048) % 2048
 
     # ------------------------------------------------------------------ #
     # Chat

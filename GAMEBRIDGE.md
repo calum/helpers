@@ -103,15 +103,18 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
   "pitch": 256,
   "x":     6582,
   "y":     218,
-  "z":     6532
+  "z":     6532,
+  "baseX": 12800,
+  "baseY": 12800
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `yaw` | int | 0–2047; 0 = north, 512 = east, 1024 = south, 1536 = west |
-| `pitch` | int | 0–2047; higher values = more overhead (top-down) view |
-| `x` / `y` / `z` | int | Camera position in local (scene-relative) coordinates |
+| `yaw` | int | 0–2047 CCW from North; 0 = north, 512 = west, 1024 = south, 1536 = east |
+| `pitch` | int | 0–2047; higher values = more overhead (top-down) view. UP increases pitch; DOWN decreases it (more horizontal, sees further). |
+| `x` / `y` / `z` | int | Camera position in local (scene-relative) coordinates. 1 tile = 128 units. |
+| `baseX` / `baseY` | int | World tile coordinates of the south-west corner of the loaded scene. Use these to convert camera `x`/`y` to world tile coords: `world_tile_x = baseX + camera.x / 128`. |
 
 ### Pointing the camera at a world tile
 
@@ -119,10 +122,10 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 import math
 
 def required_yaw(px, py, tx, ty):
-    """Approximate RS camera yaw (0-2047) needed to face tile (tx, ty) from (px, py)."""
+    """Approximate RS camera yaw (0-2047, CCW from North) needed to face tile (tx, ty) from (px, py)."""
     dx = tx - px
     dy = ty - py
-    return int(math.atan2(dx, dy) / (2 * math.pi) * 2048 + 2048) % 2048
+    return int(math.atan2(-dx, dy) / (2 * math.pi) * 2048 + 2048) % 2048
 
 def yaw_delta(current_yaw, target_yaw):
     """Signed rotation delta. Positive = clockwise, negative = counter-clockwise."""

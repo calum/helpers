@@ -64,6 +64,7 @@ class IronMiningRoutine(Routine):
         super().__init__()
         self.mining_start_tick: Optional[int] = None
         self._deposit_clicked_tick: int = -99
+        self._idle_since_tick: int = -1  # one-tick settle buffer: set on first idle tick, click the next
 
     # ------------------------------------------------------------------
     # States
@@ -85,14 +86,21 @@ class IronMiningRoutine(Routine):
             log.debug("No %s in scene, waiting…", self.ORE_NAME)
             return None
 
-        if not ore.get("onScreen"):
-            # Rock exists but camera isn't facing it.
-            # A real routine would rotate the camera or walk toward it;
-            # for now just wait a tick and let the scene update.
-            log.debug("%s at (%d,%d) is off-screen", self.ORE_NAME, ore["worldX"], ore["worldY"])
+        if not ctrl.bring_entity_on_screen(ore, game):
+            log.debug("%s at (%d,%d) not visible — adjusting camera", self.ORE_NAME, ore["worldX"], ore["worldY"])
+            self._idle_since_tick = -1
+            return None
+
+        if not game.player_idle():
+            self._idle_since_tick = -1
+            return None
+
+        if self._idle_since_tick == -1:
+            self._idle_since_tick = game.tick
             return None
 
         ctrl.click_entity(ore)
+        self._idle_since_tick = -1
         self.mining_start_tick = game.tick
         return "mining"
 
@@ -150,11 +158,21 @@ class IronMiningRoutine(Routine):
         if game.player_near(box, tiles=2):
             return "deposit"
 
-        if box.get("onScreen"):
-            ctrl.click_entity(box)
-        else:
-            log.debug("%s is off-screen, waiting…", self.BANK_NAME)
+        if not game.player_idle():
+            self._idle_since_tick = -1
+            return None
 
+        if not ctrl.bring_entity_on_screen(box, game):
+            log.debug("%s not visible — adjusting camera", self.BANK_NAME)
+            self._idle_since_tick = -1
+            return None
+
+        if self._idle_since_tick == -1:
+            self._idle_since_tick = game.tick
+            return None
+
+        ctrl.click_entity(box)
+        self._idle_since_tick = -1
         return None  # walking
 
     def deposit(self, game: "GameState", ctrl: "GameController") -> Optional[str]:

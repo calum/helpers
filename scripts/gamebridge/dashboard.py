@@ -43,6 +43,7 @@ from .controller.controller import GameController, _find_window_by_prefix
 from .decision.engine import DecisionEngine
 from .routines.base import Routine
 from .routines.examples.iron_mining import IronMiningRoutine
+from .routines.examples.gold_mining import GoldMiningRoutine
 from . import settings as _settings
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ from . import settings as _settings
 
 ROUTINES: dict[str, Type[Routine]] = {
     "Iron Mining": IronMiningRoutine,
+    "Gold Mining": GoldMiningRoutine,
 }
 
 # ---------------------------------------------------------------------------
@@ -258,11 +260,10 @@ def _hms(seconds: float) -> str:
 
 
 def _yaw_dir(yaw: int) -> str:
+    # OSRS yaw: 0=N, 512=W, 1024=S, 1536=E (counter-clockwise, 8 compass points × 256 units each)
     for threshold, label in [
-        (64, "N"), (192, "NE"), (320, "E"), (448, "SE"),
-        (576, "S"), (704, "SW"), (832, "W"), (960, "NW"),
-        (1088, "N"), (1216, "NE"), (1344, "E"), (1472, "SE"),
-        (1600, "S"), (1728, "SW"), (1856, "W"), (1984, "NW"), (2048, "N"),
+        (128, "N"), (384, "NW"), (640, "W"), (896, "SW"),
+        (1152, "S"), (1408, "SE"), (1664, "E"), (1920, "NE"), (2048, "N"),
     ]:
         if yaw < threshold:
             return label
@@ -450,6 +451,39 @@ class MinimapWidget(QWidget):
 
         px, py = self._game.player_pos
 
+        # FOV ellipse — fitted to the bounding box of all onScreen entities.
+        # Shrunk by 1 tile so "just barely visible" outliers don't inflate the shape.
+        # Falls back to a pitch-based circle if no entities are visible.
+        visible_dxdy = [
+            (obj["worldX"] - px, obj["worldY"] - py)
+            for obj in self._game.objects if obj.get("onScreen")
+        ] + [
+            (npc["worldX"] - px, npc["worldY"] - py)
+            for npc in self._game.npcs if npc.get("onScreen")
+        ]
+        if visible_dxdy:
+            min_dx = min(d[0] for d in visible_dxdy)
+            max_dx = max(d[0] for d in visible_dxdy)
+            min_dy = min(d[1] for d in visible_dxdy)
+            max_dy = max(d[1] for d in visible_dxdy)
+            cx_t = (min_dx + max_dx) / 2.0
+            cy_t = (min_dy + max_dy) / 2.0
+            a_t = max(0.5, (max_dx - min_dx) / 2.0 - 1.0)
+            b_t = max(0.5, (max_dy - min_dy) / 2.0 - 1.0)
+        else:
+            _cam = self._game.camera
+            _pitch = _cam.get("pitch", 300) if _cam else 300
+            _t = max(0.0, min(1.0, (_pitch - 229) / (450 - 229)))
+            cx_t = cy_t = 0.0
+            a_t = b_t = 10.0 - _t * 5.0   # 10 tiles at low pitch, 5 at high
+
+        cx_s = pad + (r + cx_t + 0.5) * cell
+        cy_s = pad + (r - cy_t + 0.5) * cell   # y inverted: north = up on minimap
+        a_s, b_s = a_t * cell, b_t * cell
+        p.setPen(QPen(_qc("#58a6ff70"), 1, Qt.PenStyle.DashLine))
+        p.setBrush(_qc("#58a6ff15"))
+        p.drawEllipse(QRectF(cx_s - a_s, cy_s - b_s, a_s * 2, b_s * 2))
+
         # Objects — small squares
         p.setPen(Qt.PenStyle.NoPen)
         for obj in self._game.objects:
@@ -478,7 +512,7 @@ class MinimapWidget(QWidget):
         cx_p, cy_p = to_screen(px, py)
         cam = self._game.camera
         yaw = cam.get("yaw", 0) if cam else 0
-        angle = (yaw / 2048.0) * 2 * math.pi
+        angle = -(yaw / 2048.0) * 2 * math.pi
 
         # Soft halo
         p.setBrush(_qc("#0d3020"))

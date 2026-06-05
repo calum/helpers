@@ -16,9 +16,34 @@ from typing import Callable, Optional
 from ..human.emulator import HumanEmulator
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
+from ..input.keyboard import Key
 from .. import settings as _settings
+from ..fov import decide_camera_action
 
 log = logging.getLogger(__name__)
+
+# Approximate OSRS camera rotation rate when holding an arrow key.
+# Measured in yaw-units per millisecond (full circle = 2048 units).
+# Tune this constant empirically if rotations consistently over- or under-shoot.
+# Measured 10 full rotations in 36.6 seconds → 2048 units / (36600 ms / 10) ≈ 0.56 units/ms.
+CAMERA_YAW_SPEED: float = 0.56
+
+# Camera pitch control.  OSRS pitch: higher value = more top-down (overhead view).
+# UP arrow increases pitch (more overhead); DOWN arrow decreases pitch (more horizontal).
+# Tune CAMERA_PITCH_SPEED empirically; the pitch range in practice is roughly 128–512.
+CAMERA_PITCH_SPEED: float = 0.256   # pitch-units per millisecond
+_PITCH_NEAR_DIST: int = 6           # tiles; at or closer → use overhead pitch
+_PITCH_FAR_DIST: int = 11           # tiles; at or farther → use horizon pitch
+_PITCH_OVERHEAD: int = 512          # target pitch for nearby objects (top-down view)
+_PITCH_HORIZON: int = 240           # target pitch for distant objects (see further)
+_PITCH_TOLERANCE: int = 40          # acceptable deviation before pressing a key
+
+
+def _ideal_pitch(distance: int) -> int:
+    """Return the ideal camera pitch for a given Manhattan tile distance."""
+    clamped = max(_PITCH_NEAR_DIST, min(distance, _PITCH_FAR_DIST))
+    t = (clamped - _PITCH_NEAR_DIST) / (_PITCH_FAR_DIST - _PITCH_NEAR_DIST)
+    return int(_PITCH_OVERHEAD + t * (_PITCH_HORIZON - _PITCH_OVERHEAD))
 
 
 # ------------------------------------------------------------------ #
@@ -274,6 +299,114 @@ class GameController:
         time.sleep(self._human.random_pause(0.02, 0.08))
         kb_input.press_key(key)
         log.debug("Pressed key '%s'", key)
+
+    def rotate_camera_to(self, entity: dict, game_state) -> bool:
+        """
+        Rotate the camera toward an off-screen entity using arrow keys.
+
+        Computes the shortest-arc yaw delta, asks the HumanEmulator for a
+        human-like key-hold intent, then holds LEFT or RIGHT until the estimated
+        angle is covered.  The caller should return None from its routine state
+        after this call so the next tick delivers fresh game state to verify.
+
+        Returns True if the entity was already on-screen (no rotation performed),
+        False if a rotation was executed.
+        """
+        if entity.get("onScreen"):
+            return True
+
+        target_yaw = game_state.camera_yaw_to(entity)
+        current_yaw = game_state.camera.get("yaw", 0)
+        delta = (target_yaw - current_yaw + 2048) % 2048
+
+        if delta > 1024:
+            key = Key.LEFT
+            actual_delta = 2048 - delta
+        else:
+            key = Key.RIGHT
+            actual_delta = delta
+
+        intended_hold_ms = actual_delta / CAMERA_YAW_SPEED
+        intent = self._human.plan_key_hold(intended_hold_ms)
+
+        time.sleep(intent.pre_hold_pause)
+        kb_input.press_key(key, hold_ms=intent.hold_ms)
+        time.sleep(intent.post_hold_pause)
+
+        log.debug(
+            "Rotated camera %s by ~%d yaw units (intended %.0f ms, actual %.0f ms)",
+            "LEFT" if key == Key.LEFT else "RIGHT",
+            actual_delta,
+            intended_hold_ms,
+            intent.hold_ms,
+        )
+        return False
+
+    def adjust_camera_pitch_for(self, entity: dict, game_state) -> bool:
+        """
+        Press UP or DOWN to bring the camera pitch close to the ideal for the
+        entity's tile distance.
+
+        Returns True if pitch was already within tolerance (no key pressed),
+        False if an adjustment was made.
+
+        Call this after rotate_camera_to when an entity is off-screen — combining
+        yaw rotation and pitch adjustment gives the best chance of bringing a
+        distant entity into view on the next tick.
+        """
+        current_pitch = game_state.camera.get("pitch") if game_state.camera else None
+        if current_pitch is None:
+            return True
+
+        distance = game_state.distance_to(entity)
+        target_pitch = _ideal_pitch(distance)
+        pitch_delta = target_pitch - current_pitch
+
+        if abs(pitch_delta) <= _PITCH_TOLERANCE:
+            return True
+
+        if pitch_delta > 0:
+            key = Key.UP      # increase pitch → more overhead
+            hold_ms = pitch_delta / CAMERA_PITCH_SPEED
+        else:
+            key = Key.DOWN    # decrease pitch → more horizontal (see further)
+            hold_ms = (-pitch_delta) / CAMERA_PITCH_SPEED
+
+        intent = self._human.plan_key_hold(hold_ms)
+        time.sleep(intent.pre_hold_pause)
+        kb_input.press_key(key, hold_ms=intent.hold_ms)
+        time.sleep(intent.post_hold_pause)
+
+        log.debug(
+            "Adjusted camera pitch %s by ~%d units (current=%d, target=%d, distance=%d tiles)",
+            "UP" if key == Key.UP else "DOWN",
+            abs(pitch_delta),
+            current_pitch,
+            target_pitch,
+            distance,
+        )
+        return False
+
+    def bring_entity_on_screen(self, entity: dict, game_state) -> bool:
+        """
+        Bring an entity into the camera's visible area using FOV-aware logic.
+
+        Uses decide_camera_action() to check whether the entity is already
+        visible (on-screen flag OR inside the FOV trapezoid), needs a yaw
+        rotation, or is so far off-bearing that walking would normally be
+        required. In all off-screen cases, rotates and adjusts pitch — the
+        combined correction converges in the fewest ticks.
+
+        Returns True  if the entity is already visible (caller may click it).
+        Returns False if a camera adjustment was made (caller should return
+                      None and wait for the next tick).
+        """
+        action = decide_camera_action(entity, game_state)
+        if action == "on_screen":
+            return True
+        self.rotate_camera_to(entity, game_state)
+        self.adjust_camera_pitch_for(entity, game_state)
+        return False
 
     # ------------------------------------------------------------------
     # Timing helpers

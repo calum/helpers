@@ -683,7 +683,14 @@ class TestCameraQueries:
         g.update(_base_msg(player=_player(x=3200, y=3200)))
         # Target is directly east (+x)
         yaw = g.camera_yaw_to({"worldX": 3205, "worldY": 3200})
-        # East is approximately yaw=512 in RS coordinates
+        # East = yaw≈1536 in OSRS CCW convention (0=N, 512=W, 1024=S, 1536=E)
+        assert 1490 <= yaw <= 1580
+
+    def test_camera_yaw_to_west(self):
+        g = GameState()
+        g.update(_base_msg(player=_player(x=3200, y=3200)))
+        yaw = g.camera_yaw_to({"worldX": 3195, "worldY": 3200})
+        # West = yaw≈512
         assert 450 <= yaw <= 570
 
     def test_camera_yaw_to_north(self):

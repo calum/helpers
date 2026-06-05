@@ -44,6 +44,14 @@ class TypingIntent:
     key_delays: List[float]  # per-character delay after key-up (seconds)
 
 
+@dataclass
+class KeyHoldIntent:
+    """Describes how a human would hold a key (e.g. for camera rotation)."""
+    hold_ms: float          # actual hold duration (with jitter applied)
+    pre_hold_pause: float   # reaction time before pressing (seconds)
+    post_hold_pause: float  # hesitation after releasing (seconds)
+
+
 # ------------------------------------------------------------------ #
 # HumanEmulator
 # ------------------------------------------------------------------ #
@@ -210,6 +218,28 @@ class HumanEmulator:
             delays.append(max(0.03, d))
 
         return TypingIntent(text=text, key_delays=delays)
+
+    # ------------------------------------------------------------------
+    # Key hold intent
+    # ------------------------------------------------------------------
+
+    def plan_key_hold(self, intended_hold_ms: float) -> KeyHoldIntent:
+        """
+        Produce a KeyHoldIntent for holding a key (e.g. an arrow key for camera rotation).
+
+        Applies Gaussian jitter to the duration and reaction-time modelling to the
+        pre/post pauses — consistent with how plan_click models mouse actions.
+        """
+        jitter = self._rng.gauss(1.0, 0.12)
+        jitter = max(0.7, min(1.3, jitter))
+        hold_ms = max(20.0, intended_hold_ms * jitter)
+        pre_hold_pause = self.reaction_time()
+        post_hold_pause = self.random_pause(0.02, 0.08)
+        return KeyHoldIntent(
+            hold_ms=hold_ms,
+            pre_hold_pause=pre_hold_pause,
+            post_hold_pause=post_hold_pause,
+        )
 
     # ------------------------------------------------------------------
     # Break modelling

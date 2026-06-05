@@ -312,6 +312,8 @@ public class GameBridgePlugin extends Plugin
 		m.put("x", client.getCameraX());
 		m.put("y", client.getCameraY());
 		m.put("z", client.getCameraZ());
+		m.put("baseX", client.getBaseX());
+		m.put("baseY", client.getBaseY());
 		return m;
 	}
 
