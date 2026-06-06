@@ -16,15 +16,62 @@ We should use the arrow keys to rotate the camera until the game state shows our
 
 Still to be implemented: We should zoom out by using the mouse scroll wheel to see more distance and click to interact with the object that is far away. We should avoid using up and down arrows when zooming out is an option.
 
-## Minimap and interface detection
+## Minimap and interface detection (INFRASTRUCTURE DONE — needs wiring into routines)
 
-The camera movement implementation is working partially. The main problem now is that interfaces are getting in the way and causing issues. For example, a gold ore rock could be in view, but behind the minimap or inventory but we still try to click it.
+### What is implemented
 
-How can we work out what regions are covered by interfaces? and how do we actually interact with interfaces?
+The Java plugin now sends two new pieces of data every tick:
 
-Question 1: How do we know which regions on the game client are covered with an interface, so we know to move the player or camera to see an object that is obscured.
+- **`interfaces`** — every visible, non-hidden UI widget from every currently loaded interface group (minimap, inventory, prayer orbs, bank, etc.), each with its canvas-space bounding box (`x, y, width, height`). Discovered dynamically via `client.getComponentTable()` so it covers any interface that happens to be open with no hardcoding.
+- **`minimapX` / `minimapY`** — canvas pixel coordinates of every NPC and object on the minimap, computed in Java via `Perspective.localToMinimap()`. `null` when the entity is beyond the ~20-tile minimap radius.
 
-Question 2: How do we interact with the minimap? If we're too far away from an interactable object, we should use the minimap to move towards it.
+The Python layer has been updated to match:
+
+- `game.interfaces` — list of all active interface widgets for the current tick.
+- `game.is_occluded(canvas_x, canvas_y)` — returns `True` if a canvas point falls inside any active UI widget. Use this before clicking an entity.
+- `game.find_interface_widget(group_id, child_id)` — look up a specific widget from the full interface list.
+- `game.interfaces_for_group(group_id)` — all widgets for a given group.
+- `ctrl.click_minimap_entity(entity)` — clicks the entity's precomputed minimap position to walk towards it. Returns `False` if the entity is too far from the player to appear on the minimap.
+
+The dashboard has a new **Interfaces** tab showing the live interface list, and the Hull Debug "Show Interfaces" toggle now draws every active UI panel as a coloured overlay on the screenshot, colour-coded by group ID.
+
+### What still needs to happen
+
+**1. Guard all entity clicks with `is_occluded` in the existing routines.**
+
+In `iron_mining.py` and `gold_mining.py`, the `find_ore` state calls `ctrl.click_entity(ore)` without checking whether the ore's canvas centre is hidden behind the minimap or inventory. The fix is straightforward:
+
+```python
+# in find_ore, before clicking:
+if game.is_occluded(ore["canvasX"], ore["canvasY"]):
+    ctrl.bring_entity_on_screen(ore, game)  # rotate camera to move the ore clear
+    return None
+ctrl.click_entity(ore)
+```
+
+**2. Add minimap-based walking when camera rotation is not enough.**
+
+`bring_entity_on_screen` rotates the camera and adjusts pitch, but if the entity is genuinely too far away (e.g. the player is walking to the bank) the entity will never come on screen that way. The current banking states in both routines use hard-coded object clicks that fail silently when out of range. Replace or augment with:
+
+```python
+if not ctrl.bring_entity_on_screen(target, game):
+    # camera adjusted but entity still not on screen next tick — try minimap
+    ctrl.click_minimap_entity(target)
+    return None
+```
+
+**3. Determine the correct group IDs for the minimap and inventory panels.**
+
+Run the game with the dashboard open, look at the Interfaces tab, and note the `groupId` values for:
+- The minimap draw area (needed if you want to avoid clicking the minimap when an entity is behind it)
+- The inventory panel root (the large panel, not individual slots)
+- The prayer/HP/run orbs
+
+`is_occluded` already handles all of these automatically from the live data — no hardcoding needed — but knowing the group IDs is useful when you want to *interact* with a specific interface (e.g. clicking the minimap at a known world position to walk there).
+
+**4. Test occlusion in practice.**
+
+Stand next to an iron rock that is partially behind the minimap in the top-right corner, run the iron mining routine, and verify the routine either rotates the camera to expose the rock or walks via the minimap rather than clicking the UI chrome.
 
 
 ## Mouse movement
