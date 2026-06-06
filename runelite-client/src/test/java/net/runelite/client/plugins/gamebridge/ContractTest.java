@@ -136,6 +136,12 @@ public class ContractTest
 	}
 
 	@Test
+	public void topLevelInterfacesPresent()
+	{
+		assertIsList("interfaces", CONTRACT.get("interfaces"));
+	}
+
+	@Test
 	public void topLevelInventoryPresent()
 	{
 		assertIsList("inventory", CONTRACT.get("inventory"));
@@ -198,7 +204,8 @@ public class ContractTest
 			assertHasFields(npc, "npc",
 				"id", "name", "worldX", "worldY", "plane",
 				"animation", "combatLevel",
-				"onScreen", "canvasX", "canvasY", "hull");
+				"onScreen", "canvasX", "canvasY", "hull",
+				"minimapX", "minimapY");
 		}
 	}
 
@@ -253,7 +260,8 @@ public class ContractTest
 			assertHasFields(obj, "object",
 				"id", "name", "category",
 				"worldX", "worldY", "plane",
-				"onScreen", "canvasX", "canvasY", "hull");
+				"onScreen", "canvasX", "canvasY", "hull",
+				"minimapX", "minimapY");
 		}
 	}
 
@@ -304,6 +312,61 @@ public class ContractTest
 			Map<?, ?> widget = castMap("widget", w);
 			assertTrue("widget must have 'quantity' key", widget.containsKey("quantity"));
 			assertFalse("widget must NOT have 'qty' (that key is for item slots)", widget.containsKey("qty"));
+		}
+	}
+
+	// ------------------------------------------------------------------ //
+	// Interface fields — matches buildInterfacesList() in GameBridgePlugin
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void interfaceEntriesHaveAllFields()
+	{
+		List<?> interfaces = list("interfaces");
+		assertFalse("interfaces array must not be empty", interfaces.isEmpty());
+		for (Object i : interfaces)
+		{
+			Map<?, ?> iface = castMap("interface entry", i);
+			assertHasFields(iface, "interface", "groupId", "childId", "itemId", "quantity", "bounds", "text");
+			Map<?, ?> bounds = castMap("interface.bounds", iface.get("bounds"));
+			assertHasFields(bounds, "interface.bounds", "x", "y", "width", "height");
+		}
+	}
+
+	@Test
+	public void interfaceBoundsHavePositiveArea()
+	{
+		for (Object i : list("interfaces"))
+		{
+			Map<?, ?> bounds = castMap("interface.bounds", castMap("interface", i).get("bounds"));
+			assertTrue("interface bounds width must be > 0",  ((Number) bounds.get("width")).intValue()  > 0);
+			assertTrue("interface bounds height must be > 0", ((Number) bounds.get("height")).intValue() > 0);
+		}
+	}
+
+	// ------------------------------------------------------------------ //
+	// Minimap fields — minimapX / minimapY on NPC and object entries
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void npcMinimapFieldsPresent()
+	{
+		for (Object n : list("npcs"))
+		{
+			Map<?, ?> npc = castMap("npc", n);
+			assertTrue("npc must have minimapX key", npc.containsKey("minimapX"));
+			assertTrue("npc must have minimapY key", npc.containsKey("minimapY"));
+		}
+	}
+
+	@Test
+	public void objectMinimapFieldsPresent()
+	{
+		for (Object o : list("objects"))
+		{
+			Map<?, ?> obj = castMap("object", o);
+			assertTrue("object must have minimapX key", obj.containsKey("minimapX"));
+			assertTrue("object must have minimapY key", obj.containsKey("minimapY"));
 		}
 	}
 

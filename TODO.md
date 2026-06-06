@@ -4,7 +4,7 @@ Please ensure you have read and fully understand CLAUDE.md, GAMEBRIDGE.md, RIPER
 
 The following work items are in priority order.
 
-## Camera Movement
+## Camera Movement (PARTIALLY WORKING)
 
 The routines still try to click outside the game client, as if they are trying to click objects too far out of view.
 
@@ -13,6 +13,18 @@ We need to create the idea of a 'Field of view' and map that onto our 'Minimap'.
 Usually a player will adjust the 'field of view' with either a middle-mouse-hold and drag, or using the arrow keys on their keyboard. I think the arrow keys are enough for the time being so lets support that first.
 
 We should use the arrow keys to rotate the camera until the game state shows our goal object/npc/interactable as being close to the centre of our field of view (within a tolerance and with randomness by the humanised controller).
+
+Still to be implemented: We should zoom out by using the mouse scroll wheel to see more distance and click to interact with the object that is far away. We should avoid using up and down arrows when zooming out is an option.
+
+## Minimap and interface detection
+
+The camera movement implementation is working partially. The main problem now is that interfaces are getting in the way and causing issues. For example, a gold ore rock could be in view, but behind the minimap or inventory but we still try to click it.
+
+How can we work out what regions are covered by interfaces? and how do we actually interact with interfaces?
+
+Question 1: How do we know which regions on the game client are covered with an interface, so we know to move the player or camera to see an object that is obscured.
+
+Question 2: How do we interact with the minimap? If we're too far away from an interactable object, we should use the minimap to move towards it.
 
 
 ## Mouse movement

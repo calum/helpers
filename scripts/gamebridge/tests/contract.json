@@ -33,7 +33,9 @@
       "onScreen": true,
       "canvasX": 412,
       "canvasY": 380,
-      "hull": [[400, 370], [420, 370], [420, 390], [400, 390]]
+      "hull": [[400, 370], [420, 370], [420, 390], [400, 390]],
+      "minimapX": 642,
+      "minimapY": 83
     },
     {
       "id": 2267,
@@ -46,7 +48,9 @@
       "onScreen": false,
       "canvasX": null,
       "canvasY": null,
-      "hull": null
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
     }
   ],
 
@@ -61,7 +65,9 @@
       "onScreen": true,
       "canvasX": 350,
       "canvasY": 290,
-      "hull": [[340, 280], [360, 280], [360, 300], [340, 300]]
+      "hull": [[340, 280], [360, 280], [360, 300], [340, 300]],
+      "minimapX": 638,
+      "minimapY": 84
     },
     {
       "id": 1530,
@@ -73,7 +79,9 @@
       "onScreen": false,
       "canvasX": null,
       "canvasY": null,
-      "hull": null
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
     },
     {
       "id": 2290,
@@ -85,7 +93,9 @@
       "onScreen": false,
       "canvasX": null,
       "canvasY": null,
-      "hull": null
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
     },
     {
       "id": 4350,
@@ -97,7 +107,9 @@
       "onScreen": false,
       "canvasX": null,
       "canvasY": null,
-      "hull": null
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
     }
   ],
 
@@ -116,6 +128,25 @@
       "itemId": 1440,
       "quantity": 1,
       "bounds": {"x": 596, "y": 210, "width": 32, "height": 32},
+      "text": ""
+    }
+  ],
+
+  "interfaces": [
+    {
+      "groupId": 161,
+      "childId": 0,
+      "itemId": -1,
+      "quantity": 0,
+      "bounds": {"x": 1631, "y": 767, "width": 190, "height": 261},
+      "text": ""
+    },
+    {
+      "groupId": 160,
+      "childId": 0,
+      "itemId": -1,
+      "quantity": 0,
+      "bounds": {"x": 1754, "y": 8, "width": 146, "height": 151},
       "text": ""
     }
   ],

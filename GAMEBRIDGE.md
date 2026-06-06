@@ -44,15 +44,16 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 
 ```json
 {
-  "tick":      12345,
-  "player":    { ... },
-  "camera":    { ... },
-  "npcs":      [ ... ],
-  "objects":   [ ... ],
-  "widgets":   [ ... ],
-  "inventory": [ ... ],
-  "equipment": [ ... ],
-  "events":    [ ... ]
+  "tick":       12345,
+  "player":     { ... },
+  "camera":     { ... },
+  "npcs":       [ ... ],
+  "objects":    [ ... ],
+  "widgets":    [ ... ],
+  "interfaces": [ ... ],
+  "inventory":  [ ... ],
+  "equipment":  [ ... ],
+  "events":     [ ... ]
 }
 ```
 
@@ -64,6 +65,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `npcs` | yes | `exposeNpcs` (default on) |
 | `objects` | yes | `exposeObjects` (default on) |
 | `widgets` | no | `exposeWidgets` (default **off**) |
+| `interfaces` | no | `exposeInterfaces` (default **on**) |
 | `inventory` | no | `exposeInventory` (default on) |
 | `equipment` | no | `exposeInventory` (default on) |
 | `events` | yes (may be `[]`) | — |
@@ -149,7 +151,9 @@ def yaw_delta(current_yaw, target_yaw):
   "onScreen":    true,
   "canvasX":     412,
   "canvasY":     380,
-  "hull":        [[400,370],[420,370],[420,390],[400,390]]
+  "hull":        [[400,370],[420,370],[420,390],[400,390]],
+  "minimapX":    642,
+  "minimapY":    83
 }
 ```
 
@@ -158,6 +162,7 @@ def yaw_delta(current_yaw, target_yaw):
 | `onScreen` | `true` when the NPC has a visible convex hull in the current frame |
 | `canvasX` / `canvasY` | Centre of the hull bounding box in screen pixels; `null` when off-screen |
 | `hull` | Array of `[x, y]` screen-pixel pairs forming the clickable polygon; `null` when off-screen or excluded by the hull filter |
+| `minimapX` / `minimapY` | Canvas pixel coordinates of this entity on the minimap; `null` when the entity is beyond minimap range |
 
 ---
 
@@ -169,18 +174,22 @@ Each object entry now includes a `category` field:
 
 ```json
 {
-  "id":       1276,
-  "name":     "Oak tree",
-  "category": "game",
-  "worldX":   3225,
-  "worldY":   3215,
-  "plane":    0,
-  "onScreen": true,
-  "canvasX":  350,
-  "canvasY":  290,
-  "hull":     [[340,280],[360,280],[360,300],[340,300]]
+  "id":        1276,
+  "name":      "Oak tree",
+  "category":  "game",
+  "worldX":    3225,
+  "worldY":    3215,
+  "plane":     0,
+  "onScreen":  true,
+  "canvasX":   350,
+  "canvasY":   290,
+  "hull":      [[340,280],[360,280],[360,300],[340,300]],
+  "minimapX":  638,
+  "minimapY":  84
 }
 ```
+
+`minimapX` / `minimapY` are the canvas pixel coordinates of the object on the minimap. Both are `null` when the object is beyond the minimap's view distance (~20 tiles from the player).
 
 | `category` value | RuneScape type | Examples |
 |---|---|---|
@@ -247,6 +256,67 @@ def click_inventory_item(ctrl, game, item_id):
             ctrl.click_at(cx, cy)
             return True
     return False
+```
+
+---
+
+## Interfaces
+
+When `exposeInterfaces` is enabled (default **on**) the tick message includes an `interfaces` array containing every visible, non-hidden widget from every currently-active interface group. This is a superset of `widgets` and replaces it for most use cases.
+
+```json
+{
+  "groupId":  161,
+  "childId":  0,
+  "itemId":   -1,
+  "quantity": 0,
+  "bounds":   { "x": 1631, "y": 767, "width": 190, "height": 261 },
+  "text":     ""
+}
+```
+
+| Field | Notes |
+|---|---|
+| `groupId` | Interface (widget group) ID — determined dynamically from all currently-loaded groups |
+| `childId` | Child slot index within the group; for dynamic children (item slots) this is the slot's own index |
+| `itemId` | Item ID held in this slot; `-1` if none |
+| `quantity` | Stack size; `0` if empty |
+| `bounds` | Screen-pixel rectangle: top-left origin, width/height in pixels. Only widgets with `width > 0` and `height > 0` are included. |
+| `text` | Widget text label; empty string if none |
+
+Only non-hidden widgets with a positive-area bounding box are included. The list is rebuilt every tick from `Client.getComponentTable()` so it automatically reflects whatever interfaces are open (inventory, bank, minimap, prayer book, quest journal, etc.) without any plugin configuration.
+
+### UI occlusion detection
+
+Use the `interfaces` list to test whether a game entity's click target is hidden behind a UI panel before issuing a click:
+
+```python
+def is_occluded(canvas_x, canvas_y, interfaces):
+    """Return True if (canvas_x, canvas_y) falls inside any active UI widget."""
+    for w in interfaces:
+        b = w["bounds"]
+        if b["x"] <= canvas_x < b["x"] + b["width"] and \
+           b["y"] <= canvas_y < b["y"] + b["height"]:
+            return True
+    return False
+
+# Before clicking an entity:
+if entity["onScreen"] and not is_occluded(entity["canvasX"], entity["canvasY"], msg["interfaces"]):
+    ctrl.click_at(entity["canvasX"], entity["canvasY"])
+```
+
+### Minimap clicking via interfaces
+
+The minimap draw area appears in `interfaces` just like any other panel. To walk to a distant object via the minimap, use its `minimapX`/`minimapY` coordinates:
+
+```python
+def click_minimap(ctrl, game_window_x, game_window_y, entity):
+    """Click the minimap at the entity's minimap position to walk towards it."""
+    if entity.get("minimapX") is None:
+        return False  # entity is beyond minimap range
+    ctrl.click_at(game_window_x + entity["minimapX"],
+                  game_window_y + entity["minimapY"])
+    return True
 ```
 
 ---
@@ -532,6 +602,7 @@ def stream_with_reconnect(host='127.0.0.1', port=7070, retry_delay=5.0):
 | `sendAllNamedObjects` | bool | false | Also include objects with a real (non-null) name |
 | `debugAllObjects` | bool | false | Include all objects unconditionally — dev/debug only |
 | `exposeWidgets` | bool | false | Include `widgets` array (inventory/bank/equipment slot bounds) |
+| `exposeInterfaces` | bool | true | Include `interfaces` array — all active, non-hidden widgets from every loaded interface group |
 
 ---
 

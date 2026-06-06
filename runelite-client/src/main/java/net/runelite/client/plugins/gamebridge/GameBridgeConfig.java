@@ -157,4 +157,16 @@ public interface GameBridgeConfig extends Config
 	{
 		return false;
 	}
+
+	@ConfigItem(
+		keyName = "exposeInterfaces",
+		name = "Expose interfaces",
+		description = "Include all active, non-hidden UI widgets (every interface group) with their screen bounds in each tick message. "
+			+ "Supersedes 'Expose widgets' — use this for occlusion detection and generic UI interaction.",
+		position = 11
+	)
+	default boolean exposeInterfaces()
+	{
+		return true;
+	}
 }

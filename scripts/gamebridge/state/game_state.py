@@ -40,6 +40,11 @@ class GameState:
     # Widget slots (populated when exposeWidgets is on)
     widgets: List[dict] = field(default_factory=list)
 
+    # All active, non-hidden UI widgets from every loaded interface group.
+    # Populated when exposeInterfaces is on (default true).
+    # Use is_occluded() to test whether a canvas point is behind a UI panel.
+    interfaces: List[dict] = field(default_factory=list)
+
     # Current interacting-with target name, or None
     interacting_with: Optional[str] = None
 
@@ -73,6 +78,9 @@ class GameState:
 
         if "widgets" in msg:
             self.widgets = msg["widgets"]
+
+        if "interfaces" in msg:
+            self.interfaces = msg["interfaces"]
 
         if "inventory" in msg:
             self.inventory = msg["inventory"]
@@ -197,6 +205,50 @@ class GameState:
             if w.get("groupId") == group_id and w.get("childId") == child_id:
                 return w
         return None
+
+    # ------------------------------------------------------------------ #
+    # Interfaces
+    # ------------------------------------------------------------------ #
+
+    def is_occluded(self, canvas_x: float, canvas_y: float) -> bool:
+        """Return True if the canvas point lies inside any active UI widget.
+
+        Call this before clicking an on-screen entity to avoid hitting a UI
+        panel (minimap, inventory, prayer orbs, etc.) instead of the entity.
+
+        Example::
+
+            entity = game.nearest_object("Iron rocks")
+            if entity and entity["onScreen"]:
+                if not game.is_occluded(entity["canvasX"], entity["canvasY"]):
+                    ctrl.click_entity(entity)
+                else:
+                    ctrl.bring_entity_on_screen(entity, game)
+        """
+        for w in self.interfaces:
+            b = w.get("bounds")
+            if not b:
+                continue
+            if (b["x"] <= canvas_x < b["x"] + b["width"] and
+                    b["y"] <= canvas_y < b["y"] + b["height"]):
+                return True
+        return False
+
+    def find_interface_widget(self, group_id: int, child_id: int) -> Optional[dict]:
+        """Return the interface widget with the given groupId/childId, or None.
+
+        Searches the full ``interfaces`` list (all active interface groups),
+        unlike :meth:`find_widget` which only searches the limited
+        ``exposeWidgets`` list.
+        """
+        for w in self.interfaces:
+            if w.get("groupId") == group_id and w.get("childId") == child_id:
+                return w
+        return None
+
+    def interfaces_for_group(self, group_id: int) -> List[dict]:
+        """Return all interface widgets belonging to the given group ID."""
+        return [w for w in self.interfaces if w.get("groupId") == group_id]
 
     # ------------------------------------------------------------------ #
     # NPCs

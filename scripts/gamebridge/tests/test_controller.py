@@ -563,3 +563,62 @@ class TestBringEntityOnScreen:
         game = MagicMock()
         ctrl.bring_entity_on_screen(entity, game)
         mock_dca.assert_called_once_with(entity, game)
+
+
+# ---------------------------------------------------------------------------
+# click_minimap_entity
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestClickMinimapEntity:
+    """click_minimap_entity issues a click at minimapX/Y, or returns False when absent."""
+
+    def _ctrl(self, mock_settings, window=WINDOW) -> GameController:
+        mock_settings.get.side_effect = lambda k: 0 if k == "hull_y_offset" else "RuneLite"
+        ctrl = GameController(human=_human())
+        ctrl._window = window
+        return ctrl
+
+    def test_returns_true_and_clicks_when_minimap_coords_present(self, mock_mouse, mock_settings):
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        ctrl = self._ctrl(mock_settings)
+        entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
+        result = ctrl.click_minimap_entity(entity)
+        assert result is True
+        mock_mouse.click_left.assert_called_once()
+
+    def test_returns_false_when_minimap_x_is_none(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings)
+        entity = {"name": "Iron rocks", "minimapX": None, "minimapY": 90}
+        result = ctrl.click_minimap_entity(entity)
+        assert result is False
+        mock_mouse.click_left.assert_not_called()
+
+    def test_returns_false_when_minimap_y_is_none(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings)
+        entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": None}
+        result = ctrl.click_minimap_entity(entity)
+        assert result is False
+        mock_mouse.click_left.assert_not_called()
+
+    def test_returns_false_when_minimap_keys_absent(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings)
+        entity = {"name": "Iron rocks"}
+        result = ctrl.click_minimap_entity(entity)
+        assert result is False
+        mock_mouse.click_left.assert_not_called()
+
+    def test_click_uses_minimap_canvas_coords(self, mock_mouse, mock_settings):
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        mock_settings.get.side_effect = lambda k: 0 if k == "hull_y_offset" else "RuneLite"
+        human = _human()
+        ctrl = GameController(human=human)
+        ctrl._window = WINDOW
+        entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
+        ctrl.click_minimap_entity(entity)
+        # plan_click should have been called with screen coords derived from (650, 90)
+        left, top, _, _ = WINDOW
+        call_args = human.plan_click.call_args[0]
+        assert call_args[0] == left + 650   # screen_x
+        assert call_args[1] == top + 90     # screen_y (y_off=0)

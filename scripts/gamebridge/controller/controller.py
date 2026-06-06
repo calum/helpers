@@ -269,6 +269,46 @@ class GameController:
         log.debug("Clicked widget G%d:%d at canvas (%.0f, %.0f)",
                   widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
 
+    def click_minimap_entity(self, entity: dict) -> bool:
+        """Click the minimap at the entity's pre-computed minimap position.
+
+        The Java plugin calculates ``minimapX``/``minimapY`` for every NPC and
+        object each tick via ``Perspective.localToMinimap()``.  Clicking the
+        minimap causes the player to walk towards that tile — useful when the
+        target is too far to click directly in the viewport.
+
+        Returns ``True`` if the click was issued, ``False`` if the entity has
+        no minimap coordinates (i.e. it is beyond the ~20-tile minimap radius).
+
+        Typical usage in a routine state::
+
+            def find_ore(self, game, ctrl):
+                ore = game.nearest_object("Iron rocks")
+                if ore is None:
+                    return None
+                if not ore["onScreen"] or game.is_occluded(ore["canvasX"], ore["canvasY"]):
+                    if not ctrl.bring_entity_on_screen(ore, game):
+                        # still off-screen after rotation — walk via minimap
+                        ctrl.click_minimap_entity(ore)
+                    return None
+                ctrl.click_entity(ore)
+                return "mining"
+        """
+        mx = entity.get("minimapX")
+        my = entity.get("minimapY")
+        if mx is None or my is None:
+            log.debug(
+                "click_minimap_entity: %s has no minimap coordinates (beyond range)",
+                entity.get("name", "?"),
+            )
+            return False
+        self.click_at(mx, my)
+        log.debug(
+            "Clicked minimap for '%s' at canvas (%d, %d)",
+            entity.get("name", "?"), mx, my,
+        )
+        return True
+
     def click_at(self, canvas_x: float, canvas_y: float) -> None:
         """Left-click at an absolute canvas coordinate."""
         if not self._is_canvas_coord_valid(canvas_x, canvas_y):

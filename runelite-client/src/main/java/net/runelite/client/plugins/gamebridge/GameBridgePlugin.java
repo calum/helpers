@@ -40,15 +40,20 @@ import net.runelite.api.Client;
 import net.runelite.api.DecorativeObject;
 import net.runelite.api.GameObject;
 import net.runelite.api.GroundObject;
+import net.runelite.api.HashTable;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.NPC;
 import net.runelite.api.ObjectComposition;
+import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.Point;
 import net.runelite.api.Skill;
 import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
 import net.runelite.api.WallObject;
+import net.runelite.api.WidgetNode;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.events.AnimationChanged;
@@ -267,6 +272,11 @@ public class GameBridgePlugin extends Plugin
 			msg.put("widgets", buildWidgetsList());
 		}
 
+		if (config.exposeInterfaces())
+		{
+			msg.put("interfaces", buildInterfacesList());
+		}
+
 		// 93 = inventory (INV), 94 = worn equipment (WORN)
 		if (config.exposeInventory())
 		{
@@ -473,6 +483,9 @@ public class GameBridgePlugin extends Plugin
 		m.put("animation", actor.getAnimation());
 		m.put("combatLevel", actor.getCombatLevel());
 		applyHullFields(m, actor.getConvexHull(), id, name);
+		int[] mp = minimapPoint(actor.getLocalLocation());
+		m.put("minimapX", mp != null ? mp[0] : null);
+		m.put("minimapY", mp != null ? mp[1] : null);
 		return m;
 	}
 
@@ -488,6 +501,9 @@ public class GameBridgePlugin extends Plugin
 		m.put("worldY", wp.getY());
 		m.put("plane", wp.getPlane());
 		applyHullFields(m, getObjectHull(obj), id, name);
+		int[] mp = minimapPoint(obj.getLocalLocation());
+		m.put("minimapX", mp != null ? mp[0] : null);
+		m.put("minimapY", mp != null ? mp[1] : null);
 		return m;
 	}
 
@@ -576,5 +592,88 @@ public class GameBridgePlugin extends Plugin
 			it.next();
 		}
 		return points.toArray(new int[0][]);
+	}
+
+	// -------------------------------------------------------------------------
+	// Minimap coordinate helper
+	// -------------------------------------------------------------------------
+
+	private int[] minimapPoint(LocalPoint lp)
+	{
+		if (lp == null)
+		{
+			return null;
+		}
+		Point p = Perspective.localToMinimap(client, lp);
+		if (p == null)
+		{
+			return null;
+		}
+		return new int[]{p.getX(), p.getY()};
+	}
+
+	// -------------------------------------------------------------------------
+	// Dynamic interface / widget enumeration
+	// -------------------------------------------------------------------------
+
+	private List<Map<String, Object>> buildInterfacesList()
+	{
+		List<Map<String, Object>> list = new ArrayList<>();
+		HashTable<WidgetNode> componentTable = client.getComponentTable();
+		for (WidgetNode node : componentTable)
+		{
+			int groupId = node.getId();
+			for (int childId = 0; childId < 512; childId++)
+			{
+				Widget w = client.getWidget(groupId, childId);
+				if (w == null)
+				{
+					break;
+				}
+				if (!w.isHidden())
+				{
+					Rectangle b = w.getBounds();
+					if (b.width > 0 && b.height > 0)
+					{
+						list.add(serializeInterfaceWidget(groupId, childId, w));
+					}
+				}
+				Widget[] dynChildren = w.getDynamicChildren();
+				if (dynChildren != null)
+				{
+					for (Widget dyn : dynChildren)
+					{
+						if (dyn != null && !dyn.isHidden())
+						{
+							Rectangle b = dyn.getBounds();
+							if (b.width > 0 && b.height > 0)
+							{
+								list.add(serializeInterfaceWidget(groupId, dyn.getIndex(), dyn));
+							}
+						}
+					}
+				}
+			}
+		}
+		return list;
+	}
+
+	private Map<String, Object> serializeInterfaceWidget(int groupId, int childId, Widget w)
+	{
+		Map<String, Object> m = new LinkedHashMap<>();
+		m.put("groupId", groupId);
+		m.put("childId", childId);
+		m.put("itemId", w.getItemId());
+		m.put("quantity", w.getItemQuantity());
+		Rectangle b = w.getBounds();
+		Map<String, Object> bounds = new LinkedHashMap<>();
+		bounds.put("x", b.x);
+		bounds.put("y", b.y);
+		bounds.put("width", b.width);
+		bounds.put("height", b.height);
+		m.put("bounds", bounds);
+		String text = w.getText();
+		m.put("text", text != null ? text : "");
+		return m;
 	}
 }

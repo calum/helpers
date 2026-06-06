@@ -252,6 +252,22 @@ QStatusBar {{
 # Helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Per-group-ID colour for interface overlays
+# Deterministic: same group always gets the same colour across frames.
+# ---------------------------------------------------------------------------
+
+_IFACE_PALETTE = [
+    "#58a6ff", "#3fb950", "#e3b341", "#bc8cff", "#f85149",
+    "#79c0ff", "#56d364", "#ffa657", "#d2a8ff", "#ff7b72",
+    "#39d353", "#f0883e", "#a5d6ff", "#7ee787", "#ffa198",
+]
+
+
+def _iface_color(group_id: int) -> QColor:
+    return QColor(_IFACE_PALETTE[group_id % len(_IFACE_PALETTE)])
+
+
 def _hms(seconds: float) -> str:
     secs = int(max(0.0, seconds))
     h, rem = divmod(secs, 3600)
@@ -766,6 +782,7 @@ class GameBridgeWindow(QMainWindow):
         self._session_start = time.monotonic()
         self._connected     = False
         self._hull_last_widgets: list[dict] = []
+        self._hull_last_interfaces: list[dict] = []
 
         self._build_ui()
         self._start_ticker()
@@ -889,6 +906,9 @@ class GameBridgeWindow(QMainWindow):
 
         self._widget_table = self._make_table(["Group", "Child", "Item ID", "Text", "Bounds"])
         self._tabs.addTab(self._widget_table, "Widgets")
+
+        self._iface_table = self._make_table(["Group", "Child", "Bounds", "Item ID", "Text"])
+        self._tabs.addTab(self._iface_table, "Interfaces")
 
         self._xp_table = self._make_table(["Skill", "Level", "Boosted", "Total XP"])
         self._tabs.addTab(self._xp_table, "Skills / XP")
@@ -1183,9 +1203,9 @@ class GameBridgeWindow(QMainWindow):
         self._hull_freeze_btn.setFixedWidth(90)
         self._hull_freeze_btn.toggled.connect(self._on_hull_freeze_toggled)
 
-        self._hull_show_all_btn = QPushButton("☐  Show All Widgets")
+        self._hull_show_all_btn = QPushButton("☐  Show Interfaces")
         self._hull_show_all_btn.setCheckable(True)
-        self._hull_show_all_btn.setFixedWidth(160)
+        self._hull_show_all_btn.setFixedWidth(150)
         self._hull_show_all_btn.toggled.connect(self._on_hull_show_all_toggled)
 
         self._hull_status = QLabel("")
@@ -1224,16 +1244,16 @@ class GameBridgeWindow(QMainWindow):
 
     def _on_hull_show_all_toggled(self, checked: bool) -> None:
         if checked:
-            self._hull_show_all_btn.setText("☑  Show All Widgets")
+            self._hull_show_all_btn.setText("☑  Show Interfaces")
             self._hull_show_all_btn.setStyleSheet(
                 f"background-color: {C.ACCENT_DIM}; "
                 f"border-color: {C.ACCENT}; color: {C.ACCENT};"
             )
         else:
-            self._hull_show_all_btn.setText("☐  Show All Widgets")
+            self._hull_show_all_btn.setText("☐  Show Interfaces")
             self._hull_show_all_btn.setStyleSheet("")
 
-    def _refresh_hull_combos(self, g, widgets: list[dict]) -> None:
+    def _refresh_hull_combos(self, g, interfaces: list[dict]) -> None:
         """Repopulate the three hull-debug dropdowns, preserving the current selection."""
         def _update(combo: QComboBox, items: list[tuple[str, dict]]) -> None:
             current_text = combo.currentText()
@@ -1272,16 +1292,20 @@ class GameBridgeWindow(QMainWindow):
             obj_items.append((label, obj))
         _update(self._hull_obj_combo, obj_items)
 
+        # Widget dropdown is sourced from the full interfaces list — a superset
+        # of the old exposeWidgets data covering every active UI group.
         widget_items = []
         for wg in sorted(
-            widgets, key=lambda x: (x.get("groupId", 0), x.get("childId", 0))
+            interfaces, key=lambda x: (x.get("groupId", 0), x.get("childId", 0))
         ):
             gid = wg.get("groupId", "?")
             cid = wg.get("childId", "?")
             item_id = wg.get("itemId", -1)
             txt = wg.get("text", "")
-            label = f"G{gid}:{cid}  item={item_id}" + (
-                f"  '{txt[:20]}'" if txt else "")
+            b = wg.get("bounds") or {}
+            bounds_hint = f"  ({b.get('x',0)},{b.get('y',0)})" if b else ""
+            label = f"G{gid}:{cid}{bounds_hint}  item={item_id}" + (
+                f"  '{txt[:16]}'" if txt else "")
             widget_items.append((label, wg))
         _update(self._hull_widget_combo, widget_items)
 
@@ -1345,15 +1369,11 @@ class GameBridgeWindow(QMainWindow):
         painter = QPainter(raw)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # --- Layer 1: "show all widgets" overlay ---
+        # --- Layer 1: interface overlay (all active UI panels) ---
         if show_all:
-            group_colors = {
-                149: "#58a6ff", 12: "#3fb950",
-                387: "#e3b341", 192: "#bc8cff",
-            }
             sel_gid = target_widget.get("groupId") if target_widget else None
             sel_cid = target_widget.get("childId") if target_widget else None
-            for wg in self._hull_last_widgets:
+            for wg in self._hull_last_interfaces:
                 b = wg.get("bounds")
                 if not b or b.get("width", 0) <= 0 or b.get("height", 0) <= 0:
                     continue
@@ -1364,9 +1384,9 @@ class GameBridgeWindow(QMainWindow):
                 ry = float(b["y"]) - y_off
                 rw = float(b["width"])
                 rh = float(b["height"])
-                color = QColor(group_colors.get(gid, "#8b949e"))
+                color = _iface_color(gid)
                 fill = QColor(color)
-                fill.setAlpha(100 if is_sel else 30)
+                fill.setAlpha(100 if is_sel else 28)
                 painter.setPen(QPen(color, 2 if is_sel else 1))
                 painter.fillRect(QRectF(rx, ry, rw, rh), fill)
                 painter.drawRect(QRectF(rx, ry, rw, rh))
@@ -1456,7 +1476,7 @@ class GameBridgeWindow(QMainWindow):
                 )
 
         elif show_all:
-            status_text = f"Showing all {len(self._hull_last_widgets)} widgets."
+            status_text = f"Showing all {len(self._hull_last_interfaces)} interface widgets."
         else:
             status_text = (
                 "No selection — choose an entity from a dropdown, "
@@ -1610,7 +1630,7 @@ class GameBridgeWindow(QMainWindow):
                 self._obj_table.setItem(r, col, item)
         self._obj_table.setUpdatesEnabled(True)
 
-        # Widget table
+        # Widget table (exposeWidgets legacy data — usually empty unless that config is on)
         widgets = msg.get("widgets", [])
         self._widget_table.setUpdatesEnabled(False)
         self._widget_table.setRowCount(0)
@@ -1631,14 +1651,42 @@ class GameBridgeWindow(QMainWindow):
             ]
             for col, val in enumerate(vals):
                 self._widget_table.setItem(r, col, QTableWidgetItem(val))
-            # Store full widget dict for hull debug retrieval
             self._widget_table.item(r, 0).setData(Qt.ItemDataRole.UserRole, w)
         self._widget_table.setUpdatesEnabled(True)
 
-        # Hull debug dropdowns — skip refresh when frozen
+        # Interfaces table (exposeInterfaces — all active UI panels, default on)
+        interfaces = msg.get("interfaces", [])
+        self._iface_table.setUpdatesEnabled(False)
+        self._iface_table.setRowCount(0)
+        for w in sorted(interfaces, key=lambda x: (x.get("groupId", 0), x.get("childId", 0))):
+            r = self._iface_table.rowCount()
+            self._iface_table.insertRow(r)
+            b = w.get("bounds") or {}
+            bounds_str = (
+                f"({b.get('x',0)}, {b.get('y',0)})  {b.get('width',0)}×{b.get('height',0)}"
+                if b else "—"
+            )
+            vals = [
+                str(w.get("groupId", "?")),
+                str(w.get("childId", "?")),
+                bounds_str,
+                str(w.get("itemId", -1)),
+                w.get("text", ""),
+            ]
+            for col, val in enumerate(vals):
+                item = QTableWidgetItem(val)
+                if col == 0:
+                    # Colour the group cell with the per-group interface colour
+                    item.setForeground(QBrush(_iface_color(w.get("groupId", 0))))
+                    item.setData(Qt.ItemDataRole.UserRole, w)
+                self._iface_table.setItem(r, col, item)
+        self._iface_table.setUpdatesEnabled(True)
+
+        # Hull debug: update interface store and refresh dropdowns when not frozen
         self._hull_last_widgets = widgets
+        self._hull_last_interfaces = interfaces
         if not self._hull_freeze_btn.isChecked():
-            self._refresh_hull_combos(g, widgets)
+            self._refresh_hull_combos(g, interfaces)
 
         # XP table (only rebuild on xp events to avoid flicker)
         xp_events = [e for e in msg.get("events", []) if e["type"] == "xp"]

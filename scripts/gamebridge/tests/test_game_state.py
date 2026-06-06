@@ -806,3 +806,112 @@ class TestWidgetConstants:
                     assert value[0] == cls.GROUP, (
                         f"{cls.__name__}.{attr} group {value[0]} != GROUP {cls.GROUP}"
                     )
+
+
+# ---------------------------------------------------------------------------
+# Interfaces -- is_occluded, find_interface_widget, interfaces_for_group, update
+# ---------------------------------------------------------------------------
+
+def _iface_widget(group_id: int, child_id: int, x: int, y: int, w: int, h: int, **kw) -> dict:
+    return {"groupId": group_id, "childId": child_id,
+            "bounds": {"x": x, "y": y, "width": w, "height": h},
+            "itemId": kw.get("itemId", -1), "quantity": kw.get("quantity", 0),
+            "text": kw.get("text", "")}
+
+
+class TestIsOccluded:
+    def test_clear_point_returns_false(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 1600, 750, 200, 300)]
+        assert g.is_occluded(400, 300) is False
+
+    def test_point_inside_widget_returns_true(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        assert g.is_occluded(125, 225) is True
+
+    def test_point_on_left_edge_is_inside(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        assert g.is_occluded(100, 220) is True
+
+    def test_point_on_right_edge_is_outside(self):
+        # x < x + width, so the right edge (x=150) is NOT inside
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        assert g.is_occluded(150, 220) is False
+
+    def test_empty_interfaces_never_occluded(self):
+        g = GameState()
+        assert g.is_occluded(0, 0) is False
+
+    def test_multiple_widgets_any_hit_is_true(self):
+        g = GameState()
+        g.interfaces = [
+            _iface_widget(160, 0, 0, 0, 10, 10),
+            _iface_widget(161, 0, 500, 500, 200, 200),
+        ]
+        assert g.is_occluded(600, 600) is True
+
+    def test_widget_with_no_bounds_skipped(self):
+        g = GameState()
+        g.interfaces = [{"groupId": 99, "childId": 0}]  # no bounds key
+        assert g.is_occluded(0, 0) is False
+
+
+class TestFindInterfaceWidget:
+    def test_finds_matching_widget(self):
+        g = GameState()
+        w = _iface_widget(161, 3, 10, 20, 30, 40, itemId=995)
+        g.interfaces = [w]
+        result = g.find_interface_widget(161, 3)
+        assert result is w
+
+    def test_returns_none_when_absent(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 10, 10)]
+        assert g.find_interface_widget(999, 0) is None
+
+    def test_empty_interfaces_returns_none(self):
+        g = GameState()
+        assert g.find_interface_widget(161, 0) is None
+
+
+class TestInterfacesForGroup:
+    def test_filters_by_group(self):
+        g = GameState()
+        g.interfaces = [
+            _iface_widget(161, 0, 0, 0, 10, 10),
+            _iface_widget(161, 1, 0, 0, 10, 10),
+            _iface_widget(160, 0, 0, 0, 10, 10),
+        ]
+        result = g.interfaces_for_group(161)
+        assert len(result) == 2
+        assert all(w["groupId"] == 161 for w in result)
+
+    def test_unknown_group_returns_empty(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 10, 10)]
+        assert g.interfaces_for_group(999) == []
+
+
+class TestInterfacesUpdate:
+    def test_update_parses_interfaces_from_message(self):
+        g = GameState()
+        w = _iface_widget(161, 0, 10, 20, 100, 200)
+        msg = {"tick": 1, "interfaces": [w]}
+        g.update(msg)
+        assert len(g.interfaces) == 1
+        assert g.interfaces[0]["groupId"] == 161
+
+    def test_missing_interfaces_key_preserves_existing(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 50, 50)]
+        g.update({"tick": 2})
+        assert len(g.interfaces) == 1
+
+    def test_empty_interfaces_list_clears_previous(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 50, 50)]
+        g.update({"tick": 2, "interfaces": []})
+        assert g.interfaces == []

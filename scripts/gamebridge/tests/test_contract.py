@@ -50,14 +50,16 @@ def state(contract: dict[str, Any]) -> GameState:
 # ---------------------------------------------------------------------------
 
 class TestContractSchema:
-    _TOP_LEVEL = {"tick", "player", "camera", "npcs", "objects", "widgets", "inventory", "equipment", "events"}
+    _TOP_LEVEL = {"tick", "player", "camera", "npcs", "objects", "widgets", "interfaces",
+                  "inventory", "equipment", "events"}
     _PLAYER    = {"name", "worldX", "worldY", "plane", "animation", "hp", "prayer"}
     _CAMERA    = {"yaw", "pitch", "x", "y", "z"}
     _NPC       = {"id", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
-                  "onScreen", "canvasX", "canvasY", "hull"}
+                  "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _OBJECT    = {"id", "name", "category", "worldX", "worldY", "plane",
-                  "onScreen", "canvasX", "canvasY", "hull"}
+                  "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _WIDGET    = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
+    _INTERFACE = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
     _BOUNDS    = {"x", "y", "width", "height"}
     _SLOT      = {"slot", "itemId", "qty"}
     _EVENT_TYPES      = {"xp", "chat", "container", "animation", "varbit", "interacting"}
@@ -93,6 +95,37 @@ class TestContractSchema:
         for w in contract["widgets"]:
             assert self._WIDGET <= w.keys()
             assert self._BOUNDS <= w["bounds"].keys()
+
+    def test_interface_fields(self, contract):
+        ifaces = contract["interfaces"]
+        assert isinstance(ifaces, list), "interfaces must be a list"
+        assert len(ifaces) >= 1, "contract must include at least one interface entry"
+        for iface in ifaces:
+            missing = self._INTERFACE - iface.keys()
+            assert not missing, f"interface entry missing fields: {missing}  entry={iface}"
+            assert self._BOUNDS <= iface["bounds"].keys()
+
+    def test_interface_bounds_have_positive_area(self, contract):
+        for iface in contract["interfaces"]:
+            b = iface["bounds"]
+            assert b["width"] > 0,  f"interface bounds width must be > 0: {iface}"
+            assert b["height"] > 0, f"interface bounds height must be > 0: {iface}"
+
+    def test_npc_minimap_fields_present(self, contract):
+        for npc in contract["npcs"]:
+            assert "minimapX" in npc, f"NPC missing minimapX: {npc['name']}"
+            assert "minimapY" in npc, f"NPC missing minimapY: {npc['name']}"
+
+    def test_object_minimap_fields_present(self, contract):
+        for obj in contract["objects"]:
+            assert "minimapX" in obj, f"object missing minimapX: {obj['name']}"
+            assert "minimapY" in obj, f"object missing minimapY: {obj['name']}"
+
+    def test_off_screen_entities_have_null_minimap(self, contract):
+        for npc in contract["npcs"]:
+            if not npc["onScreen"]:
+                assert npc["minimapX"] is None, f"off-screen NPC should have null minimapX: {npc['name']}"
+                assert npc["minimapY"] is None, f"off-screen NPC should have null minimapY: {npc['name']}"
 
     def test_inventory_slot_fields(self, contract):
         for slot in contract["inventory"]:
@@ -200,6 +233,22 @@ class TestContractGameStateIntegration:
 
     def test_widgets_count(self, state, contract):
         assert len(state.widgets) == len(contract["widgets"])
+
+    def test_interfaces_count(self, state, contract):
+        assert len(state.interfaces) == len(contract["interfaces"])
+
+    def test_interface_is_occluded_with_known_widget(self, state, contract):
+        iface = contract["interfaces"][0]
+        b = iface["bounds"]
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        assert state.is_occluded(cx, cy) is True
+
+    def test_find_interface_widget_returns_match(self, state, contract):
+        iface = contract["interfaces"][0]
+        result = state.find_interface_widget(iface["groupId"], iface["childId"])
+        assert result is not None
+        assert result["groupId"] == iface["groupId"]
 
     def test_inventory_count(self, state, contract):
         assert len(state.inventory) == len(contract["inventory"])
