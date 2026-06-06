@@ -12,35 +12,65 @@ from __future__ import annotations
 import time
 from typing import List, Optional
 
-from pynput.keyboard import Controller as _Controller
-from pynput.keyboard import Key as _PKey
+try:
+    from pynput.keyboard import Controller as _Controller
+    from pynput.keyboard import Key as _PKey
 
-_ctrl = _Controller()
+    _ctrl = _Controller()
 
-# Maps our string key names to pynput Key objects.
-# pynput sets KEYEVENTF_EXTENDEDKEY automatically for navigation keys.
-_PYNPUT_MAP: dict[str, _PKey] = {
-    "escape":    _PKey.esc,
-    "enter":     _PKey.enter,
-    "return":    _PKey.enter,
-    "backspace": _PKey.backspace,
-    "tab":       _PKey.tab,
-    "space":     _PKey.space,
-    "shift":     _PKey.shift,
-    "ctrl":      _PKey.ctrl,
-    "alt":       _PKey.alt,
-    "capslock":  _PKey.caps_lock,
-    "delete":    _PKey.delete,
-    "home":      _PKey.home,
-    "end":       _PKey.end,
-    "pageup":    _PKey.page_up,
-    "pagedown":  _PKey.page_down,
-    "left":      _PKey.left,
-    "right":     _PKey.right,
-    "up":        _PKey.up,
-    "down":      _PKey.down,
-    **{f"f{i}": getattr(_PKey, f"f{i}") for i in range(1, 13)},
-}
+    # Maps our string key names to pynput Key objects.
+    # pynput sets KEYEVENTF_EXTENDEDKEY automatically for navigation keys.
+    _PYNPUT_MAP: dict[str, _PKey] = {
+        "escape":    _PKey.esc,
+        "enter":     _PKey.enter,
+        "return":    _PKey.enter,
+        "backspace": _PKey.backspace,
+        "tab":       _PKey.tab,
+        "space":     _PKey.space,
+        "shift":     _PKey.shift,
+        "ctrl":      _PKey.ctrl,
+        "alt":       _PKey.alt,
+        "capslock":  _PKey.caps_lock,
+        "delete":    _PKey.delete,
+        "home":      _PKey.home,
+        "end":       _PKey.end,
+        "pageup":    _PKey.page_up,
+        "pagedown":  _PKey.page_down,
+        "left":      _PKey.left,
+        "right":     _PKey.right,
+        "up":        _PKey.up,
+        "down":      _PKey.down,
+        **{f"f{i}": getattr(_PKey, f"f{i}") for i in range(1, 13)},
+    }
+except Exception:
+    # Headless or unsupported platform (CI): provide a no-op fallback so tests
+    # can import this module without requiring an X server or active display.
+    class _DummyController:
+        def press(self, key: object) -> None:
+            return None
+
+        def release(self, key: object) -> None:
+            return None
+
+    class _DummyKey:
+        def __init__(self, name: str):
+            self.name = name
+
+        def __repr__(self) -> str:  # pragma: no cover - trivial
+            return f"_DummyKey({self.name!r})"
+
+    _ctrl = _DummyController()
+    _PKey = _DummyKey
+
+    # Map to simple dummy keys or characters; code using press_key/type_text
+    # already accepts single-character strings for regular keys.
+    _PYNPUT_MAP = {f: _PKey(f) for f in (
+        "escape", "enter", "backspace", "tab", "space", "shift",
+        "ctrl", "alt", "capslock", "delete", "home", "end",
+        "pageup", "pagedown", "left", "right", "up", "down",
+    )}
+    for i in range(1, 13):
+        _PYNPUT_MAP[f"f{i}"] = _PKey(f"f{i}")
 
 
 class Key:
