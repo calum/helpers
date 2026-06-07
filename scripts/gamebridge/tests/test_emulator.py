@@ -189,3 +189,44 @@ class TestPlanKeyHold:
 		fresh_total = sum(fresh.plan_key_hold(500.0).pre_hold_pause for _ in range(50))
 		tired_total = sum(tired.plan_key_hold(500.0).pre_hold_pause for _ in range(50))
 		assert tired_total > fresh_total
+
+
+# ------------------------------------------------------------------ #
+# plan_click — move_speed distance scaling
+# ------------------------------------------------------------------ #
+
+class TestPlanClickMoveSpeed:
+	"""
+	move_speed paces WindMouse: near 1.0 it takes its smallest steps and
+	longest per-step waits (see wind_mouse). Distance fed into the formula
+	must be capped — otherwise a long "homing" move (the cursor starting far
+	outside the game viewport, e.g. over a dashboard button) saturates
+	move_speed at 1.0 and crawls the whole way, which looks like a freeze
+	followed by a snap onto the target. See PLAN.md, "Session: 2026-06-07 (6)".
+	"""
+
+	def test_typical_in_game_distance_lands_in_tuned_range(self):
+		"""100-400 px clicks should land in the documented 0.1-0.5 range."""
+		human = HumanEmulator(rng_seed=0)
+		assert 0.1 <= human.plan_click(100, 0, 0, 0).move_speed <= 0.2
+		assert 0.4 <= human.plan_click(400, 0, 0, 0).move_speed <= 0.5
+
+	def test_long_homing_distance_does_not_saturate_move_speed(self):
+		"""
+		A move starting far outside the viewport (e.g. 1500 px away, as when
+		the cursor rests over a dashboard button before a routine starts)
+		must be paced the same as a typical in-game click, not maxed out.
+		"""
+		human = HumanEmulator(rng_seed=0)
+		near = human.plan_click(400, 0, 0, 0)
+		far = human.plan_click(1500, 0, 0, 0)
+		assert far.move_speed == pytest.approx(near.move_speed)
+		assert far.move_speed < 1.0
+
+	def test_move_speed_capped_distance_matches_400px(self):
+		"""Distances beyond the cap are clamped to the same pacing as 400 px."""
+		human_a = HumanEmulator(rng_seed=3)
+		human_b = HumanEmulator(rng_seed=3)
+		at_cap = human_a.plan_click(400, 0, 0, 0)
+		beyond_cap = human_b.plan_click(2000, 0, 0, 0)
+		assert beyond_cap.move_speed == pytest.approx(at_cap.move_speed)

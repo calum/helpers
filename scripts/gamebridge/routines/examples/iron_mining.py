@@ -91,6 +91,12 @@ class IronMiningRoutine(Routine):
             self._idle_since_tick = -1
             return None
 
+        if ore.get("onScreen") and game.is_occluded(ore["canvasX"], ore["canvasY"]):
+            log.debug("%s is hidden behind a UI panel — adjusting camera", self.ORE_NAME)
+            ctrl.bring_entity_on_screen(ore, game)
+            self._idle_since_tick = -1
+            return None
+
         if not game.player_idle():
             self._idle_since_tick = -1
             return None
@@ -167,6 +173,12 @@ class IronMiningRoutine(Routine):
             self._idle_since_tick = -1
             return None
 
+        if box.get("onScreen") and game.is_occluded(box["canvasX"], box["canvasY"]):
+            log.debug("%s is hidden behind a UI panel — adjusting camera", self.BANK_NAME)
+            ctrl.bring_entity_on_screen(box, game)
+            self._idle_since_tick = -1
+            return None
+
         if self._idle_since_tick == -1:
             self._idle_since_tick = game.tick
             return None
@@ -206,7 +218,7 @@ class IronMiningRoutine(Routine):
             if game.tick - self._deposit_clicked_tick >= 8:
                 ctrl.click_widget(deposit_btn)
                 self._deposit_clicked_tick = game.tick
-        elif box.get("onScreen"):
+        elif box.get("onScreen") and not game.is_occluded(box["canvasX"], box["canvasY"]):
             # UI not open yet — click the Mine cart to open it
             ctrl.click_entity(box)
 

@@ -175,7 +175,18 @@ class HumanEmulator:
 
         # Move speed: further = slower and more deliberate; fatigue adds more drag.
         # Divisor tuned so typical in-game clicks (100–400 px) land in 0.1–0.5 range.
-        base_speed = max(0.05, dist / 800.0)
+        #
+        # Distance is capped before scaling: a human's deliberateness reflects
+        # how precisely they need to land on the target, not how far the cursor
+        # physically has to travel to get there. Without the cap, the very first
+        # move of a session — starting whenever the OS cursor happens to be
+        # (e.g. resting over a dashboard button hundreds of px outside the game
+        # viewport) — saturates move_speed at 1.0. WindMouse then takes its
+        # smallest steps and longest per-step waits over a long haul, which
+        # looks like the cursor crawls, stalls near the target, then snaps to
+        # place on the final move_to() — see PLAN.md, "Session: 2026-06-07 (6)".
+        capped_dist = min(dist, 400.0)
+        base_speed = max(0.05, capped_dist / 800.0)
         move_speed = min(1.0, base_speed * (1.0 + self.fatigue * 0.3))
 
         post_move_pause = self.random_pause(0.03, 0.14)

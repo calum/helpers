@@ -238,8 +238,24 @@ class TestContractGameStateIntegration:
         assert len(state.interfaces) == len(contract["interfaces"])
 
     def test_interface_is_occluded_with_known_widget(self, state, contract):
-        iface = contract["interfaces"][0]
-        b = iface["bounds"]
+        """A widget from a real panel group (160) occludes its own centre point.
+
+        contract["interfaces"][0] (groupId 161) is the toplevel viewport
+        container — see state/interfaces.py — and is intentionally excluded
+        from occlusion checks, so we assert against a registered panel group
+        instead (and confirm the toplevel widget's centre is *not* reported
+        as occluded, demonstrating the exclusion against real captured data).
+        """
+        from scripts.gamebridge.state import interfaces as iface_registry
+
+        toplevel = contract["interfaces"][0]
+        assert iface_registry.occludes(toplevel["groupId"]) is False
+        tb = toplevel["bounds"]
+        assert state.is_occluded(tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2) is False
+
+        panel = contract["interfaces"][1]
+        assert iface_registry.occludes(panel["groupId"]) is True
+        b = panel["bounds"]
         cx = b["x"] + b["width"] / 2
         cy = b["y"] + b["height"] / 2
         assert state.is_occluded(cx, cy) is True

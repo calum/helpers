@@ -361,3 +361,120 @@ class TestIdleSettleBuffer:
         game.tick = 2
         r.find_ore(game, ctrl)  # tick 2: click
         assert r._idle_since_tick == -1
+
+
+# ---------------------------------------------------------------------------
+# Occlusion guard — don't click entities hidden behind UI panels (minimap,
+# inventory, prayer orbs, etc.)
+# ---------------------------------------------------------------------------
+
+# groupId 149 = inventory — a real, separate occluding panel (see
+# state/interfaces.py). The toplevel viewport container (161) is excluded
+# from occlusion checks, so fixtures must use an actual panel group here.
+OCCLUDING_PANEL = {
+    "groupId": 149,
+    "childId": 30,
+    "itemId": -1,
+    "quantity": 0,
+    "bounds": {"x": 570, "y": 20, "width": 150, "height": 150},
+    "text": "",
+}
+
+ORE_ON_SCREEN = {
+    "id": 440,
+    "name": "Iron rocks",
+    "worldX": 3221,
+    "worldY": 3219,
+    "plane": 0,
+    "onScreen": True,
+    "canvasX": 600,   # inside OCCLUDING_PANEL bounds
+    "canvasY": 50,
+    "hull": [[585, 35], [615, 35], [615, 65], [585, 65]],
+}
+
+ORE_ON_SCREEN_CLEAR = {**ORE_ON_SCREEN, "canvasX": 300, "canvasY": 300}  # outside the panel
+
+MINE_CART_OCCLUDED = {**MINE_CART, "canvasX": 600, "canvasY": 50}
+
+
+class TestOcclusionGuard:
+    def _game_with_panel(self, objects: list, tick: int = 2) -> GameState:
+        game = GameState()
+        game.tick = tick
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = objects
+        game.camera = {"yaw": 0, "pitch": 256}
+        game.interfaces = [OCCLUDING_PANEL]
+        return game
+
+    def test_find_ore_does_not_click_when_occluded(self):
+        """An on-screen ore hidden behind the minimap must not be clicked."""
+        game = self._game_with_panel([ORE_ON_SCREEN])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        result = _routine().find_ore(game, ctrl)
+
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+    def test_find_ore_adjusts_camera_when_occluded(self):
+        """Occlusion triggers a camera adjustment attempt to clear the entity."""
+        game = self._game_with_panel([ORE_ON_SCREEN])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        _routine().find_ore(game, ctrl)
+
+        assert ctrl.bring_entity_on_screen.call_count == 2
+        ctrl.bring_entity_on_screen.assert_called_with(ORE_ON_SCREEN, game)
+
+    def test_find_ore_resets_idle_buffer_when_occluded(self):
+        """Occlusion must reset the settle buffer like any other camera disruption."""
+        game = self._game_with_panel([ORE_ON_SCREEN])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r._idle_since_tick = 1
+        r.find_ore(game, ctrl)
+        assert r._idle_since_tick == -1
+
+    def test_find_ore_clicks_when_on_screen_and_clear(self):
+        """Sanity check: an on-screen ore outside any UI panel is still clickable."""
+        game = self._game_with_panel([ORE_ON_SCREEN_CLEAR])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.find_ore(game, ctrl)             # tick 1 (settle buffer starts)
+        game.tick += 1
+        result = r.find_ore(game, ctrl)    # tick 2: settle complete — click fires
+
+        ctrl.click_entity.assert_called_once_with(ORE_ON_SCREEN_CLEAR)
+        assert result == "mining"
+
+    def test_walk_to_bank_does_not_click_when_occluded(self):
+        """An on-screen bank object hidden behind a UI panel must not be clicked."""
+        game = self._game_with_panel([MINE_CART_OCCLUDED], tick=1)
+        game.player = {"worldX": 3200, "worldY": 3200, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": 440, "qty": 1} for i in range(28)]
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        result = _routine().walk_to_bank(game, ctrl)
+
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+    def test_deposit_does_not_click_mine_cart_when_occluded(self):
+        """The deposit state must not click the Mine cart while it's hidden behind UI."""
+        ctrl = _ctrl()
+        game = self._game_with_panel([MINE_CART_OCCLUDED], tick=100)
+        game.inventory = [{"slot": i, "itemId": 440, "qty": 1} for i in range(28)]
+        game.widgets = []
+
+        _routine().deposit(game, ctrl)
+
+        ctrl.click_entity.assert_not_called()

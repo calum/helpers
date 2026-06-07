@@ -1,15 +1,3 @@
 {
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "shell": "powershell",
-            "command": "$ctx = 'PLAN.md UPDATE REMINDER: If you discovered any new information about the RuneLite codebase this session (plugin architecture, event bus, build process, Jagex Launcher integration, or any other findings), update PLAN.md now with what you learned.'; Write-Output (@{hookSpecificOutput=@{hookEventName='Stop';additionalContext=$ctx}} | ConvertTo-Json -Compress)"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }

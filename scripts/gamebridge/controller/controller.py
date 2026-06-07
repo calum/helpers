@@ -28,22 +28,23 @@ log = logging.getLogger(__name__)
 # Measured 10 full rotations in 36.6 seconds → 2048 units / (36600 ms / 10) ≈ 0.56 units/ms.
 CAMERA_YAW_SPEED: float = 0.56
 
-# Camera pitch control.  OSRS pitch: higher value = more top-down (overhead view).
-# UP arrow increases pitch (more overhead); DOWN arrow decreases pitch (more horizontal).
-# Tune CAMERA_PITCH_SPEED empirically; the pitch range in practice is roughly 128–512.
-CAMERA_PITCH_SPEED: float = 0.256   # pitch-units per millisecond
-_PITCH_NEAR_DIST: int = 6           # tiles; at or closer → use overhead pitch
-_PITCH_FAR_DIST: int = 11           # tiles; at or farther → use horizon pitch
-_PITCH_OVERHEAD: int = 512          # target pitch for nearby objects (top-down view)
-_PITCH_HORIZON: int = 240           # target pitch for distant objects (see further)
-_PITCH_TOLERANCE: int = 40          # acceptable deviation before pressing a key
+# Minimap-walk settling — see click_minimap_entity / _minimap_walk_in_progress.
+# These are tracked across ticks (not blocking sleeps): the engine is a
+# single-threaded message loop (process_tick → routine.tick → controller),
+# so blocking here would stall game-state updates and freeze the bot facing
+# stale data — exactly the "click the same dead spot forever" bug this
+# mechanism exists to prevent.
+MINIMAP_WALK_START_TICKS: int = 2    # ticks to allow the walk to begin before checking idle
+MINIMAP_WALK_SETTLE_TICKS: int = 1   # consecutive idle ticks required before re-clicking
+MINIMAP_WALK_MAX_TICKS: int = 100    # ~60s safety cap — give up waiting & allow a re-click
 
-
-def _ideal_pitch(distance: int) -> int:
-    """Return the ideal camera pitch for a given Manhattan tile distance."""
-    clamped = max(_PITCH_NEAR_DIST, min(distance, _PITCH_FAR_DIST))
-    t = (clamped - _PITCH_NEAR_DIST) / (_PITCH_FAR_DIST - _PITCH_NEAR_DIST)
-    return int(_PITCH_OVERHEAD + t * (_PITCH_HORIZON - _PITCH_OVERHEAD))
+# On-screen settling — see bring_entity_on_screen. The tick a camera
+# rotation/walk first reports the entity as "on_screen", its canvasX/Y can
+# still reflect a transient mid-adjustment frame; clicking immediately lands
+# on a stale position (e.g. "Mining ended after 3.0s (xp=False, timeout=True)"
+# from a missed click — see PLAN.md, "Session: 2026-06-07 (5)"). Waiting this
+# many extra ticks lets the polled coordinates settle before we click.
+ON_SCREEN_SETTLE_TICKS: int = 1
 
 
 # ------------------------------------------------------------------ #
@@ -116,6 +117,14 @@ class GameController:
         self.min_click_interval: float = 0.0
         self._last_entity_click: float = 0.0
         self._session_start: float = time.monotonic()
+        # Tracks an in-progress minimap walk across ticks — see
+        # click_minimap_entity / _minimap_walk_in_progress. None when no walk
+        # is being tracked; otherwise {"clicked_tick", "idle_since_tick"}.
+        self._minimap_walk: Optional[dict] = None
+        # Tick the entity was first reported "on_screen" by bring_entity_on_screen
+        # — see ON_SCREEN_SETTLE_TICKS. Reset to None whenever a rotation or
+        # minimap walk is issued (the entity is no longer considered settled).
+        self._on_screen_since_tick: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Window management
@@ -269,7 +278,7 @@ class GameController:
         log.debug("Clicked widget G%d:%d at canvas (%.0f, %.0f)",
                   widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
 
-    def click_minimap_entity(self, entity: dict) -> bool:
+    def click_minimap_entity(self, entity: dict, game_state) -> bool:
         """Click the minimap at the entity's pre-computed minimap position.
 
         The Java plugin calculates ``minimapX``/``minimapY`` for every NPC and
@@ -277,23 +286,46 @@ class GameController:
         minimap causes the player to walk towards that tile — useful when the
         target is too far to click directly in the viewport.
 
-        Returns ``True`` if the click was issued, ``False`` if the entity has
-        no minimap coordinates (i.e. it is beyond the ~20-tile minimap radius).
+        A minimap click kicks off a multi-tick walk, so re-clicking every
+        tick would just queue up redundant walk requests ("spam clicking",
+        which a human never does). Instead this tracks the walk's progress
+        across calls (see ``_minimap_walk_in_progress``) and only issues a
+        new click once the previous one has fully settled: the player has
+        started moving, then stopped both animating and moving, then one
+        further tick has passed for the polled game state to catch up.
 
-        Typical usage in a routine state::
+        This check is intentionally non-blocking — it only inspects the
+        already-updated ``game_state`` passed in on this tick. The engine
+        drives ``routine.tick()`` synchronously inside the same loop that
+        polls game state (see ``DecisionEngine.process_tick``), so sleeping
+        or polling here would freeze the engine on stale data: it would keep
+        re-clicking the same dead minimap position forever (see PLAN.md,
+        "Session: 2026-06-07 (4)" for the live bug this caused).
+
+        Returns ``True`` if a click was issued or a walk is still being
+        tracked (the caller should treat the entity as "being walked
+        towards" and wait for a future tick), ``False`` if the entity has no
+        minimap coordinates (i.e. it is beyond the ~20-tile minimap radius).
+
+        ``bring_entity_on_screen`` already calls this automatically when
+        ``decide_camera_action`` decides the target is too far/off-bearing for
+        rotation alone ("walk"). Call it directly only when you need to walk
+        toward an entity outside that flow, e.g.::
 
             def find_ore(self, game, ctrl):
                 ore = game.nearest_object("Iron rocks")
                 if ore is None:
                     return None
-                if not ore["onScreen"] or game.is_occluded(ore["canvasX"], ore["canvasY"]):
-                    if not ctrl.bring_entity_on_screen(ore, game):
-                        # still off-screen after rotation — walk via minimap
-                        ctrl.click_minimap_entity(ore)
+                if not ctrl.bring_entity_on_screen(ore, game):
+                    return None  # camera rotated or minimap-walk issued — wait a tick
+                if game.is_occluded(ore["canvasX"], ore["canvasY"]):
                     return None
                 ctrl.click_entity(ore)
                 return "mining"
         """
+        if self._minimap_walk_in_progress(game_state):
+            return True
+
         mx = entity.get("minimapX")
         my = entity.get("minimapY")
         if mx is None or my is None:
@@ -307,6 +339,60 @@ class GameController:
             "Clicked minimap for '%s' at canvas (%d, %d)",
             entity.get("name", "?"), mx, my,
         )
+        self._minimap_walk = {"clicked_tick": game_state.tick, "idle_since_tick": None}
+        return True
+
+    def _minimap_walk_in_progress(self, game_state) -> bool:
+        """Non-blocking check for whether a tracked minimap walk is still
+        settling, advancing the tracked state for this tick as it goes.
+
+        Mirrors how a human would wait before re-clicking, in three phases:
+
+          1. registration — for ``MINIMAP_WALK_START_TICKS`` ticks after the
+             click, assume the walk is starting up and don't check idle yet
+             (animation/movement takes a tick or two to register);
+          2. walking — once registration has elapsed, wait for the player to
+             stop animating AND stop moving (``GameState.player_idle``);
+          3. settling — once idle, wait ``MINIMAP_WALK_SETTLE_TICKS`` more
+             consecutive idle ticks so the polled game state reflects the
+             player's final, settled position before allowing a re-click.
+
+        ``MINIMAP_WALK_MAX_TICKS`` is a safety cap: if the walk hasn't
+        settled by then (e.g. the path was blocked), the tracked state is
+        dropped and the caller is allowed to click again rather than
+        waiting forever.
+
+        Returns True while a walk is still being tracked (caller should not
+        click again yet), False once it has settled or been abandoned
+        (caller may issue a new click).
+        """
+        walk = self._minimap_walk
+        if walk is None:
+            return False
+
+        elapsed = game_state.tick - walk["clicked_tick"]
+        if elapsed >= MINIMAP_WALK_MAX_TICKS:
+            log.debug(
+                "Minimap walk did not settle within %d ticks — giving up and allowing a re-click",
+                MINIMAP_WALK_MAX_TICKS,
+            )
+            self._minimap_walk = None
+            return False
+
+        if elapsed < MINIMAP_WALK_START_TICKS:
+            return True
+
+        if not game_state.player_idle():
+            walk["idle_since_tick"] = None
+            return True
+
+        if walk["idle_since_tick"] is None:
+            walk["idle_since_tick"] = game_state.tick
+
+        if game_state.tick - walk["idle_since_tick"] >= MINIMAP_WALK_SETTLE_TICKS:
+            self._minimap_walk = None
+            return False
+
         return True
 
     def click_at(self, canvas_x: float, canvas_y: float) -> None:
@@ -382,70 +468,51 @@ class GameController:
         )
         return False
 
-    def adjust_camera_pitch_for(self, entity: dict, game_state) -> bool:
-        """
-        Press UP or DOWN to bring the camera pitch close to the ideal for the
-        entity's tile distance.
-
-        Returns True if pitch was already within tolerance (no key pressed),
-        False if an adjustment was made.
-
-        Call this after rotate_camera_to when an entity is off-screen — combining
-        yaw rotation and pitch adjustment gives the best chance of bringing a
-        distant entity into view on the next tick.
-        """
-        current_pitch = game_state.camera.get("pitch") if game_state.camera else None
-        if current_pitch is None:
-            return True
-
-        distance = game_state.distance_to(entity)
-        target_pitch = _ideal_pitch(distance)
-        pitch_delta = target_pitch - current_pitch
-
-        if abs(pitch_delta) <= _PITCH_TOLERANCE:
-            return True
-
-        if pitch_delta > 0:
-            key = Key.UP      # increase pitch → more overhead
-            hold_ms = pitch_delta / CAMERA_PITCH_SPEED
-        else:
-            key = Key.DOWN    # decrease pitch → more horizontal (see further)
-            hold_ms = (-pitch_delta) / CAMERA_PITCH_SPEED
-
-        intent = self._human.plan_key_hold(hold_ms)
-        time.sleep(intent.pre_hold_pause)
-        kb_input.press_key(key, hold_ms=intent.hold_ms)
-        time.sleep(intent.post_hold_pause)
-
-        log.debug(
-            "Adjusted camera pitch %s by ~%d units (current=%d, target=%d, distance=%d tiles)",
-            "UP" if key == Key.UP else "DOWN",
-            abs(pitch_delta),
-            current_pitch,
-            target_pitch,
-            distance,
-        )
-        return False
-
     def bring_entity_on_screen(self, entity: dict, game_state) -> bool:
         """
         Bring an entity into the camera's visible area using FOV-aware logic.
 
         Uses decide_camera_action() to check whether the entity is already
         visible (on-screen flag OR inside the FOV trapezoid), needs a yaw
-        rotation, or is so far off-bearing that walking would normally be
-        required. In all off-screen cases, rotates and adjusts pitch — the
-        combined correction converges in the fewest ticks.
+        rotation, or is so far off-bearing/distant that walking is the only
+        way to bring it into view.
 
-        Returns True  if the entity is already visible (caller may click it).
-        Returns False if a camera adjustment was made (caller should return
-                      None and wait for the next tick).
+        For the 'walk' case, camera rotation alone would never converge —
+        instead we click the entity's pre-computed minimap position so the
+        player walks toward it (see click_minimap_entity). If the entity has
+        no minimap coordinates (beyond the ~20-tile minimap radius), we fall
+        back to rotating the camera as the best single-tick effort.
+
+        Only LEFT/RIGHT yaw rotation is used — pitch (UP/DOWN) is not adjusted.
+        Minimap walking gets the player close enough that yaw rotation alone is
+        sufficient to bring the entity on-screen. Zoom in/out via the scroll
+        wheel is the planned replacement for pitch adjustment (see TODO.md).
+
+        Settling: the tick an adjustment first reports the entity as
+        "on_screen", its canvasX/Y can still reflect a transient mid-rotation
+        frame — clicking immediately lands on a stale position (a missed
+        click). So the first ON_SCREEN_SETTLE_TICKS ticks of "on_screen" are
+        treated like an in-progress adjustment (return False, wait); only once
+        the entity has stayed on-screen for that long do we report it ready
+        to click. _on_screen_since_tick resets whenever a rotation/walk is
+        issued, so a fresh adjustment always re-settles before the next click.
+
+        Returns True  if the entity is on-screen AND has stayed there for at
+                      least ON_SCREEN_SETTLE_TICKS ticks (caller may click it).
+        Returns False if a camera adjustment or minimap walk was issued, or
+                      the entity has only just settled on-screen (caller
+                      should return None and wait for the next tick).
         """
         action = decide_camera_action(entity, game_state)
         if action == "on_screen":
-            return True
+            if self._on_screen_since_tick is None:
+                self._on_screen_since_tick = game_state.tick
+            return game_state.tick - self._on_screen_since_tick >= ON_SCREEN_SETTLE_TICKS
+
+        self._on_screen_since_tick = None
+        if action == "walk" and self.click_minimap_entity(entity, game_state):
+            return False
         self.rotate_camera_to(entity, game_state)
-        self.adjust_camera_pitch_for(entity, game_state)
         return False
 
     # ------------------------------------------------------------------

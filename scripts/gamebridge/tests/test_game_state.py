@@ -820,25 +820,27 @@ def _iface_widget(group_id: int, child_id: int, x: int, y: int, w: int, h: int, 
 
 
 class TestIsOccluded:
+    # group 149 ("inventory") is registered as occluding — used as a stand-in
+    # for "any normal panel" throughout these bounds-matching tests.
     def test_clear_point_returns_false(self):
         g = GameState()
-        g.interfaces = [_iface_widget(161, 0, 1600, 750, 200, 300)]
+        g.interfaces = [_iface_widget(149, 0, 1600, 750, 200, 300)]
         assert g.is_occluded(400, 300) is False
 
     def test_point_inside_widget_returns_true(self):
         g = GameState()
-        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        g.interfaces = [_iface_widget(149, 0, 100, 200, 50, 50)]
         assert g.is_occluded(125, 225) is True
 
     def test_point_on_left_edge_is_inside(self):
         g = GameState()
-        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        g.interfaces = [_iface_widget(149, 0, 100, 200, 50, 50)]
         assert g.is_occluded(100, 220) is True
 
     def test_point_on_right_edge_is_outside(self):
         # x < x + width, so the right edge (x=150) is NOT inside
         g = GameState()
-        g.interfaces = [_iface_widget(161, 0, 100, 200, 50, 50)]
+        g.interfaces = [_iface_widget(149, 0, 100, 200, 50, 50)]
         assert g.is_occluded(150, 220) is False
 
     def test_empty_interfaces_never_occluded(self):
@@ -849,7 +851,7 @@ class TestIsOccluded:
         g = GameState()
         g.interfaces = [
             _iface_widget(160, 0, 0, 0, 10, 10),
-            _iface_widget(161, 0, 500, 500, 200, 200),
+            _iface_widget(149, 0, 500, 500, 200, 200),
         ]
         assert g.is_occluded(600, 600) is True
 
@@ -857,6 +859,25 @@ class TestIsOccluded:
         g = GameState()
         g.interfaces = [{"groupId": 99, "childId": 0}]  # no bounds key
         assert g.is_occluded(0, 0) is False
+
+    def test_viewport_root_widget_never_occludes(self):
+        """Regression test: the always-loaded viewport root (group 161) owns
+        a background widget spanning the whole canvas. It must be ignored —
+        otherwise every on-screen entity would register as occluded."""
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 1600, 900)]
+        assert g.is_occluded(800, 450) is False
+
+    def test_viewport_root_does_not_mask_real_panel(self):
+        """A real panel reported alongside the (ignored) viewport root must
+        still occlude — the exclusion is per-group, not all-or-nothing."""
+        g = GameState()
+        g.interfaces = [
+            _iface_widget(161, 0, 0, 0, 1600, 900),
+            _iface_widget(149, 0, 100, 100, 50, 50),
+        ]
+        assert g.is_occluded(125, 125) is True
+        assert g.is_occluded(800, 450) is False
 
 
 class TestFindInterfaceWidget:
@@ -915,3 +936,24 @@ class TestInterfacesUpdate:
         g.interfaces = [_iface_widget(161, 0, 0, 0, 50, 50)]
         g.update({"tick": 2, "interfaces": []})
         assert g.interfaces == []
+
+
+class TestIsInterfaceOpen:
+    def test_open_when_widget_with_registered_group_present(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(12, 1, 0, 0, 10, 10)]  # "bank"
+        assert g.is_interface_open("bank") is True
+
+    def test_closed_when_no_widget_for_group_present(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(149, 0, 0, 0, 10, 10)]  # "inventory"
+        assert g.is_interface_open("bank") is False
+
+    def test_unregistered_name_returns_false(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(12, 1, 0, 0, 10, 10)]
+        assert g.is_interface_open("not_a_real_interface") is False
+
+    def test_empty_interfaces_returns_false(self):
+        g = GameState()
+        assert g.is_interface_open("bank") is False

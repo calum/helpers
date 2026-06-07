@@ -11,6 +11,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from . import interfaces as iface_registry
+
 
 @dataclass
 class GameState:
@@ -211,10 +213,20 @@ class GameState:
     # ------------------------------------------------------------------ #
 
     def is_occluded(self, canvas_x: float, canvas_y: float) -> bool:
-        """Return True if the canvas point lies inside any active UI widget.
+        """Return True if the canvas point lies inside any occluding UI widget.
 
         Call this before clicking an on-screen entity to avoid hitting a UI
-        panel (minimap, inventory, prayer orbs, etc.) instead of the entity.
+        panel (bank, inventory, chatbox, etc.) instead of the entity.
+
+        Only widgets whose group is explicitly registered as occluding in
+        ``state/interfaces.py`` (``occludes(group_id)`` returns True) are
+        checked — everything else (viewport/root containers, always-on chrome
+        like orbs, xp counters, the minimap, ...) is ignored. The
+        ``interfaces`` array dumps every loaded group indiscriminately, and
+        most of it visually overlaps the canvas without actually blocking a
+        click, so checking the full list (or even just excluding viewport
+        roots) produced false "occluded" reports for entities sitting behind
+        harmless chrome.
 
         Example::
 
@@ -226,6 +238,8 @@ class GameState:
                     ctrl.bring_entity_on_screen(entity, game)
         """
         for w in self.interfaces:
+            if not iface_registry.occludes(w.get("groupId", -1)):
+                continue
             b = w.get("bounds")
             if not b:
                 continue
@@ -233,6 +247,26 @@ class GameState:
                     b["y"] <= canvas_y < b["y"] + b["height"]):
                 return True
         return False
+
+    def is_interface_open(self, name: str) -> bool:
+        """Return True if any widget from the named interface group is active.
+
+        ``name`` is looked up in the ``state/interfaces.py`` registry to find
+        the group's numeric ID, then matched against the live ``interfaces``
+        list. Returns False for unregistered names — register the group first
+        (see that module's docstring for how).
+
+        Example::
+
+            if game.is_interface_open("silver_crafting"):
+                ctrl.click_widget(gold_ring_slot)
+            else:
+                ctrl.click_entity(game.nearest_object("Furnace"))
+        """
+        group_id = iface_registry.group_id_for(name)
+        if group_id is None:
+            return False
+        return any(w.get("groupId") == group_id for w in self.interfaces)
 
     def find_interface_widget(self, group_id: int, child_id: int) -> Optional[dict]:
         """Return the interface widget with the given groupId/childId, or None.

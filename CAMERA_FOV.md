@@ -487,6 +487,13 @@ Do these in order — each step unblocks the next.
 ## 13. What NOT to change
 
 - **`rotate_camera_to` key logic** — LEFT/RIGHT assignment is correct.
-- **`adjust_camera_pitch_for` key logic** — UP/DOWN assignment is correct.
-- **`_ideal_pitch` interpolation** — direction and range are correct; only constants need calibration.
 - **`_yaw_dir` in dashboard.py** — the CCW label table is correct.
+
+> **2026-06-07 update — pitch (UP/DOWN) adjustment removed.** `adjust_camera_pitch_for`
+> and `_ideal_pitch` (and the `_PITCH_*`/`CAMERA_PITCH_SPEED` constants) have been
+> deleted from `controller.py` per user feedback: minimap-based walking gets the
+> player close enough that LEFT/RIGHT yaw rotation alone is sufficient, and
+> constantly nudging pitch added complexity without enough benefit. `bring_entity_on_screen`
+> now only calls `rotate_camera_to`. Zoom in/out via the scroll wheel is the planned
+> replacement for "see further" (TODO.md "Camera Movement") — do not reintroduce
+> UP/DOWN pitch control.

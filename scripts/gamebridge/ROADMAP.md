@@ -85,11 +85,11 @@ All items below were implemented in the initial session.
 
 ---
 
-## Milestone 7 — TUI Dashboard  ✅
+## Milestone 7 — GUI Dashboard  ✅
 
 | # | Feature | File(s) | Status |
 |---|---------|---------|--------|
-| 7.1 | Textual TUI app (`GameBridgeApp`) | `dashboard.py` | ✅ |
+| 7.1 | Qt GUI app (`GameBridgeApp`) | `dashboard.py` | ✅ |
 | 7.2 | Player stats panel (name, pos, hp, prayer, animation, interacting) | `dashboard.py` | ✅ |
 | 7.3 | ASCII minimap (15×15 tile grid centred on player) | `dashboard.py` | ✅ |
 | 7.4 | Inventory summary panel | `dashboard.py` | ✅ |
@@ -124,12 +124,13 @@ These are the next routines to write.  Each follows the same method-per-state pa
 
 | # | Routine | Notes | Status |
 |---|---------|-------|--------|
-| 9.1 | Woodcutting (oaks/willows) | Find tree → chop → drop or bank | 🔜 |
-| 9.2 | Fishing (fly-fishing, cage) | Find spot → fish → drop or bank | 🔜 |
-| 9.3 | Combat (melee/ranged) | Find NPC → attack → loot → repeat | 🔜 |
-| 9.4 | Smithing (anvil) | Walk to anvil → smith → repeat | 🔜 |
-| 9.5 | Agility (Gnome Stronghold course) | Follow waypoints, click obstacles | 🔜 |
-| 9.6 | Crafting (pottery / glass-blowing) | Use item on table, craft all | 🔜 |
+| 9.1 | Gold mining | Subclass of iron mining for gold rock areas | ✅ |
+| 9.2 | Woodcutting (oaks/willows) | Find tree → chop → drop or bank | 🔜 |
+| 9.3 | Fishing (fly-fishing, cage) | Find spot → fish → drop or bank | 🔜 |
+| 9.4 | Combat (melee/ranged) | Find NPC → attack → loot → repeat | 🔜 |
+| 9.5 | Smithing (anvil) | Walk to anvil → smith → repeat | 🔜 |
+| 9.6 | Agility (Gnome Stronghold course) | Follow waypoints, click obstacles | 🔜 |
+| 9.7 | Crafting (pottery / glass-blowing) | Use item on table, craft all | 🔜 |
 
 ---
 
@@ -138,8 +139,8 @@ These are the next routines to write.  Each follows the same method-per-state pa
 | # | Feature | Notes | Status |
 |---|---------|-------|--------|
 | 10.1 | Context-menu selection | After right-click, scan the menu and click the right option by text | 🔜 |
-| 10.2 | Minimap click-to-walk | Click the minimap dot for out-of-screen destinations | 🔜 |
-| 10.3 | Camera rotation | Turn camera by holding middle-click and dragging | 🔜 |
+| 10.2 | Minimap click-to-walk | Click the minimap dot for out-of-screen destinations | ✅ |
+| 10.3 | Camera rotation | Turn camera by holding middle-click and dragging | ✅ |
 | 10.4 | Drag and drop | For bank rearranging, spell-casting on items, etc. | 🔜 |
 | 10.5 | Scroll wheel | Zoom and interface scrolling | 🔜 |
 
@@ -186,13 +187,14 @@ These are the next routines to write.  Each follows the same method-per-state pa
 
 - [ ] `mise run gamebridge-setup` installs `textual` without error
 - [ ] `mise run gamebridge-watch` connects and prints one line per tick
-- [ ] `mise run gamebridge` opens the TUI dashboard without crashing
+- [ ] `mise run gamebridge` opens the GUI dashboard without crashing
 - [ ] Dashboard shows live player position, HP, prayer
 - [ ] NPCs table populates with entities visible in-game
 - [ ] Objects table populates
 - [ ] Debug log shows one line per tick with event types
 - [ ] `d` key toggles the debug log off and on
 - [ ] `s` key (or Start button) launches `iron_mining` routine
+- [ ] `Gold Mining` appears in the routine dropdown and can start
 - [ ] Routine state label updates as states transition
 - [ ] `x` key (or Stop button) halts the routine
 - [ ] No Python exceptions in the terminal

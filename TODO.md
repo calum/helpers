@@ -73,6 +73,20 @@ Run the game with the dashboard open, look at the Interfaces tab, and note the `
 
 Stand next to an iron rock that is partially behind the minimap in the top-right corner, run the iron mining routine, and verify the routine either rotates the camera to expose the rock or walks via the minimap rather than clicking the UI chrome.
 
+**5. Dashboard testing menu.**
+
+Add a new dashboard window for testing simple commands. The things I would want to test are:
+
+Input: type the name of an object
+Actions:
+* Move into view
+* move towards
+* click minimap to move torwards
+* is occluded?
+* is on screen?
+* is on minimap?
+
+Make this testing menu easy to extend with future test methods.
 
 ## Mouse movement
 

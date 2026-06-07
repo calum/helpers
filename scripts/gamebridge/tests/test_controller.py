@@ -23,13 +23,10 @@ from unittest.mock import MagicMock, patch
 from scripts.gamebridge.controller.controller import (
     GameController,
     CAMERA_YAW_SPEED,
-    CAMERA_PITCH_SPEED,
-    _ideal_pitch,
-    _PITCH_OVERHEAD,
-    _PITCH_HORIZON,
-    _PITCH_TOLERANCE,
-    _PITCH_NEAR_DIST,
-    _PITCH_FAR_DIST,
+    MINIMAP_WALK_START_TICKS,
+    MINIMAP_WALK_SETTLE_TICKS,
+    MINIMAP_WALK_MAX_TICKS,
+    ON_SCREEN_SETTLE_TICKS,
 )
 from scripts.gamebridge.human.emulator import KeyHoldIntent
 from scripts.gamebridge.input.keyboard import Key
@@ -419,148 +416,109 @@ class TestRotateCameraTo:
 
 
 # ---------------------------------------------------------------------------
-# adjust_camera_pitch_for
-# ---------------------------------------------------------------------------
-
-def _pitch_state_stub(current_pitch: int, distance: int):
-    """Minimal game-state stub for adjust_camera_pitch_for tests."""
-    stub = MagicMock()
-    stub.camera = {"yaw": 0, "pitch": current_pitch}
-    stub.distance_to.return_value = distance
-    return stub
-
-
-@patch("scripts.gamebridge.controller.controller.kb_input")
-class TestAdjustCameraPitchFor:
-    """adjust_camera_pitch_for: key selection, hold duration, tolerance, and edge cases."""
-
-    def _ctrl(self, hold_ms_out: float = 300.0) -> GameController:
-        ctrl = _ctrl_with_mock_human(hold_ms_out)
-        return ctrl
-
-    def test_within_tolerance_returns_true_no_key(self, mock_kb):
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        pitch = _PITCH_OVERHEAD  # ideal for near distance
-        result = self._ctrl().adjust_camera_pitch_for(
-            entity, _pitch_state_stub(current_pitch=pitch, distance=_PITCH_NEAR_DIST)
-        )
-        assert result is True
-        mock_kb.press_key.assert_not_called()
-
-    def test_within_tolerance_band_no_key(self, mock_kb):
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        # Target for near dist = _PITCH_OVERHEAD; current is _PITCH_TOLERANCE below → still OK
-        result = self._ctrl().adjust_camera_pitch_for(
-            entity, _pitch_state_stub(
-                current_pitch=_PITCH_OVERHEAD - _PITCH_TOLERANCE,
-                distance=_PITCH_NEAR_DIST,
-            )
-        )
-        assert result is True
-        mock_kb.press_key.assert_not_called()
-
-    def test_presses_up_when_pitch_too_low(self, mock_kb):
-        """Pitch needs increasing (more overhead) → UP key."""
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        # Near distance → target=_PITCH_OVERHEAD; current far below that
-        result = self._ctrl().adjust_camera_pitch_for(
-            entity, _pitch_state_stub(current_pitch=200, distance=_PITCH_NEAR_DIST)
-        )
-        assert result is False
-        key_pressed = mock_kb.press_key.call_args[0][0]
-        assert key_pressed == Key.UP
-
-    def test_presses_down_when_pitch_too_high(self, mock_kb):
-        """Pitch needs decreasing (more horizontal to see further) → DOWN key."""
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        # Far distance → target=_PITCH_HORIZON; current far above that
-        result = self._ctrl().adjust_camera_pitch_for(
-            entity, _pitch_state_stub(current_pitch=450, distance=_PITCH_FAR_DIST)
-        )
-        assert result is False
-        key_pressed = mock_kb.press_key.call_args[0][0]
-        assert key_pressed == Key.DOWN
-
-    def test_hold_ms_proportional_to_pitch_delta(self, mock_kb):
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        delta = 200  # well above tolerance
-        pitch_target = _ideal_pitch(_PITCH_NEAR_DIST)  # = _PITCH_OVERHEAD for near dist
-        current = pitch_target - delta  # needs UP
-        ctrl = self._ctrl()
-        ctrl.adjust_camera_pitch_for(
-            entity, _pitch_state_stub(current_pitch=current, distance=_PITCH_NEAR_DIST)
-        )
-        called_hold_ms = ctrl._human.plan_key_hold.call_args[0][0]
-        assert called_hold_ms == pytest.approx(delta / CAMERA_PITCH_SPEED, rel=0.01)
-
-    def test_no_camera_data_returns_true_no_key(self, mock_kb):
-        """If camera is None/empty, skip adjustment without pressing anything."""
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        stub = MagicMock()
-        stub.camera = None
-        result = self._ctrl().adjust_camera_pitch_for(entity, stub)
-        assert result is True
-        mock_kb.press_key.assert_not_called()
-
-    def test_missing_pitch_key_returns_true_no_key(self, mock_kb):
-        """Camera dict without 'pitch' key → skip adjustment."""
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        stub = MagicMock()
-        stub.camera = {"yaw": 0}  # no pitch
-        result = self._ctrl().adjust_camera_pitch_for(entity, stub)
-        assert result is True
-        mock_kb.press_key.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
 # bring_entity_on_screen
 # ---------------------------------------------------------------------------
 
 @patch("scripts.gamebridge.controller.controller.decide_camera_action")
 class TestBringEntityOnScreen:
-    """bring_entity_on_screen: delegates to decide_camera_action then rotates if needed."""
+    """bring_entity_on_screen: delegates to decide_camera_action then rotates (yaw only) if needed."""
 
-    def _ctrl_spied(self):
-        """Controller whose rotate/pitch methods are replaced with no-op mocks."""
+    def _ctrl_spied(self, click_minimap_result=False):
+        """Controller whose rotate/minimap methods are replaced with no-op mocks."""
         ctrl = _ctrl_with_mock_human()
         ctrl.rotate_camera_to = MagicMock(return_value=False)
-        ctrl.adjust_camera_pitch_for = MagicMock(return_value=False)
+        ctrl.click_minimap_entity = MagicMock(return_value=click_minimap_result)
         return ctrl
 
-    def test_on_screen_action_returns_true_no_keys(self, mock_dca):
+    def test_on_screen_first_tick_not_yet_settled_returns_false(self, mock_dca):
+        """The tick the entity first reports on-screen, canvas coords may still be
+        mid-rotation/transient — wait rather than click immediately (see
+        ON_SCREEN_SETTLE_TICKS)."""
         mock_dca.return_value = "on_screen"
         ctrl = self._ctrl_spied()
-        result = ctrl.bring_entity_on_screen({"worldX": 3225, "worldY": 3218}, MagicMock())
-        assert result is True
+        result = ctrl.bring_entity_on_screen({"worldX": 3225, "worldY": 3218}, MagicMock(tick=10))
+        assert result is False
         ctrl.rotate_camera_to.assert_not_called()
-        ctrl.adjust_camera_pitch_for.assert_not_called()
+        ctrl.click_minimap_entity.assert_not_called()
+
+    def test_on_screen_settles_after_settle_ticks_then_returns_true(self, mock_dca):
+        mock_dca.return_value = "on_screen"
+        ctrl = self._ctrl_spied()
+        entity = {"worldX": 3225, "worldY": 3218}
+
+        first = ctrl.bring_entity_on_screen(entity, MagicMock(tick=10))
+        second = ctrl.bring_entity_on_screen(entity, MagicMock(tick=10 + ON_SCREEN_SETTLE_TICKS))
+
+        assert first is False
+        assert second is True
+        ctrl.rotate_camera_to.assert_not_called()
+
+    def test_on_screen_settle_tracking_persists_across_calls(self, mock_dca):
+        """Once settled, staying on-screen keeps returning True without re-waiting."""
+        mock_dca.return_value = "on_screen"
+        ctrl = self._ctrl_spied()
+        entity = {"worldX": 3225, "worldY": 3218}
+
+        ctrl.bring_entity_on_screen(entity, MagicMock(tick=10))
+        ctrl.bring_entity_on_screen(entity, MagicMock(tick=11))
+        result = ctrl.bring_entity_on_screen(entity, MagicMock(tick=12))
+
+        assert result is True
 
     def test_rotate_action_calls_rotation_returns_false(self, mock_dca):
         mock_dca.return_value = "rotate"
         ctrl = self._ctrl_spied()
         entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        game = MagicMock()
+        game = MagicMock(tick=10)
         result = ctrl.bring_entity_on_screen(entity, game)
         assert result is False
         ctrl.rotate_camera_to.assert_called_once_with(entity, game)
-        ctrl.adjust_camera_pitch_for.assert_called_once_with(entity, game)
 
-    def test_walk_action_calls_rotation_returns_false(self, mock_dca):
-        """For 'walk' (too far / off-bearing) still rotate toward target as best single-tick action."""
-        mock_dca.return_value = "walk"
+    def test_rotation_resets_on_screen_settle_tracking(self, mock_dca):
+        """A fresh adjustment must force the entity to re-settle before the next click —
+        otherwise a rotation triggered mid-state could let a stale on-screen streak
+        carry over and produce an immediate (mis-)click."""
+        mock_dca.return_value = "on_screen"
         ctrl = self._ctrl_spied()
-        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218}
-        game = MagicMock()
+        entity = {"worldX": 3225, "worldY": 3218}
+        ctrl.bring_entity_on_screen(entity, MagicMock(tick=10))
+        ctrl.bring_entity_on_screen(entity, MagicMock(tick=11))
+        assert ctrl.bring_entity_on_screen(entity, MagicMock(tick=12)) is True
+
+        mock_dca.return_value = "rotate"
+        ctrl.bring_entity_on_screen(entity, MagicMock(tick=13))
+
+        mock_dca.return_value = "on_screen"
+        result = ctrl.bring_entity_on_screen(entity, MagicMock(tick=14))
+        assert result is False  # must settle again, not reuse the old streak
+
+    def test_walk_action_clicks_minimap_and_skips_rotation(self, mock_dca):
+        """For 'walk' (too far / off-bearing) walk via the minimap — rotation alone never converges."""
+        mock_dca.return_value = "walk"
+        ctrl = self._ctrl_spied(click_minimap_result=True)
+        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218, "minimapX": 640, "minimapY": 80}
+        game = MagicMock(tick=10)
         result = ctrl.bring_entity_on_screen(entity, game)
         assert result is False
+        ctrl.click_minimap_entity.assert_called_once_with(entity, game)
+        ctrl.rotate_camera_to.assert_not_called()
+
+    def test_walk_action_falls_back_to_rotation_without_minimap_coords(self, mock_dca):
+        """If the entity has no minimap coordinates, fall back to rotating toward it."""
+        mock_dca.return_value = "walk"
+        ctrl = self._ctrl_spied(click_minimap_result=False)
+        entity = {"onScreen": False, "worldX": 3225, "worldY": 3218, "minimapX": None, "minimapY": None}
+        game = MagicMock(tick=10)
+        result = ctrl.bring_entity_on_screen(entity, game)
+        assert result is False
+        ctrl.click_minimap_entity.assert_called_once_with(entity, game)
         ctrl.rotate_camera_to.assert_called_once_with(entity, game)
-        ctrl.adjust_camera_pitch_for.assert_called_once_with(entity, game)
 
     def test_passes_entity_and_game_to_decide(self, mock_dca):
         mock_dca.return_value = "on_screen"
         ctrl = self._ctrl_spied()
         entity = {"onScreen": True, "worldX": 3225, "worldY": 3218}
-        game = MagicMock()
+        game = MagicMock(tick=10)
         ctrl.bring_entity_on_screen(entity, game)
         mock_dca.assert_called_once_with(entity, game)
 
@@ -572,7 +530,12 @@ class TestBringEntityOnScreen:
 @patch("scripts.gamebridge.controller.controller._settings")
 @patch("scripts.gamebridge.controller.controller.mouse_input")
 class TestClickMinimapEntity:
-    """click_minimap_entity issues a click at minimapX/Y, or returns False when absent."""
+    """click_minimap_entity issues a click at minimapX/Y, or returns False when absent.
+
+    The walk-tracking/throttling behaviour itself is covered separately by
+    TestMinimapWalkInProgress — these tests use a fresh controller (no walk
+    yet tracked) so every call here issues an immediate click.
+    """
 
     def _ctrl(self, mock_settings, window=WINDOW) -> GameController:
         mock_settings.get.side_effect = lambda k: 0 if k == "hull_y_offset" else "RuneLite"
@@ -584,28 +547,28 @@ class TestClickMinimapEntity:
         mock_mouse.get_position.return_value = (500.0, 400.0)
         ctrl = self._ctrl(mock_settings)
         entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
-        result = ctrl.click_minimap_entity(entity)
+        result = ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         assert result is True
         mock_mouse.click_left.assert_called_once()
 
     def test_returns_false_when_minimap_x_is_none(self, mock_mouse, mock_settings):
         ctrl = self._ctrl(mock_settings)
         entity = {"name": "Iron rocks", "minimapX": None, "minimapY": 90}
-        result = ctrl.click_minimap_entity(entity)
+        result = ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         assert result is False
         mock_mouse.click_left.assert_not_called()
 
     def test_returns_false_when_minimap_y_is_none(self, mock_mouse, mock_settings):
         ctrl = self._ctrl(mock_settings)
         entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": None}
-        result = ctrl.click_minimap_entity(entity)
+        result = ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         assert result is False
         mock_mouse.click_left.assert_not_called()
 
     def test_returns_false_when_minimap_keys_absent(self, mock_mouse, mock_settings):
         ctrl = self._ctrl(mock_settings)
         entity = {"name": "Iron rocks"}
-        result = ctrl.click_minimap_entity(entity)
+        result = ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         assert result is False
         mock_mouse.click_left.assert_not_called()
 
@@ -616,9 +579,167 @@ class TestClickMinimapEntity:
         ctrl = GameController(human=human)
         ctrl._window = WINDOW
         entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
-        ctrl.click_minimap_entity(entity)
+        ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         # plan_click should have been called with screen coords derived from (650, 90)
         left, top, _, _ = WINDOW
         call_args = human.plan_click.call_args[0]
         assert call_args[0] == left + 650   # screen_x
         assert call_args[1] == top + 90     # screen_y (y_off=0)
+
+    def test_no_walk_is_tracked_when_no_minimap_coords(self, mock_mouse, mock_settings):
+        """No click was issued, so there's nothing to track/throttle."""
+        ctrl = self._ctrl(mock_settings)
+        entity = {"name": "Iron rocks", "minimapX": None, "minimapY": None}
+        ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
+        assert ctrl._minimap_walk is None
+
+
+# ---------------------------------------------------------------------------
+# click_minimap_entity — non-blocking walk tracking (prevents spam-clicking)
+# ---------------------------------------------------------------------------
+
+class _WalkGameState:
+    """Minimal stand-in for GameState driving _minimap_walk_in_progress tests.
+
+    Exposes a settable ``tick`` and ``player_idle()`` so a test can advance
+    the walk state machine one tick at a time, exactly as the engine does by
+    calling routine.tick() with a freshly-updated game_state each message.
+    """
+
+    def __init__(self, tick: int = 0, idle: bool = False):
+        self.tick = tick
+        self.idle = idle
+
+    def player_idle(self) -> bool:
+        return self.idle
+
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestMinimapWalkInProgress:
+    """
+    A minimap click kicks off a multi-tick walk. Re-clicking every tick would
+    queue up redundant walk requests ("spam clicking", which a human never
+    does) — and, critically, the engine drives routine.tick() synchronously
+    inside the very loop that polls game state (process_tick → game.update()
+    → routine.tick()), so a *blocking* wait here would freeze the engine on
+    stale data: it would see the same dead minimap position forever (this is
+    exactly the live bug recorded in PLAN.md "Session: 2026-06-07 (4)").
+    _minimap_walk_in_progress must therefore be a pure, non-blocking check of
+    the already-updated game_state handed to it on each tick.
+
+    Phases tracked after the initial click at tick T:
+      1. registration — ticks T .. T+START_TICKS-1: assume the walk is just
+         starting, don't check idle yet, don't re-click;
+      2. walking — once registration elapses, wait for player_idle();
+      3. settling — once idle, wait SETTLE_TICKS consecutive idle ticks
+         before allowing a re-click (idle streak resets if the player moves
+         again, e.g. continuing along a multi-tile path).
+    MAX_TICKS is a safety cap: if the walk never settles (e.g. a blocked
+    path), the tracked state is dropped and a re-click is allowed.
+    """
+
+    def _ctrl(self, mock_settings, mock_mouse, window=WINDOW) -> GameController:
+        mock_settings.get.side_effect = lambda k: 0 if k == "hull_y_offset" else "RuneLite"
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        ctrl = GameController(human=_human())
+        ctrl._window = window
+        return ctrl
+
+    def _entity(self):
+        return {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
+
+    def test_first_call_clicks_and_starts_tracking(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+
+        result = ctrl.click_minimap_entity(self._entity(), game)
+
+        assert result is True
+        mock_mouse.click_left.assert_called_once()
+        assert ctrl._minimap_walk == {"clicked_tick": 10, "idle_since_tick": None}
+
+    def test_does_not_reclick_during_registration(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+        ctrl.click_minimap_entity(self._entity(), game)
+        mock_mouse.click_left.reset_mock()
+
+        for offset in range(MINIMAP_WALK_START_TICKS):
+            game.tick = 10 + offset
+            assert ctrl.click_minimap_entity(self._entity(), game) is True
+            mock_mouse.click_left.assert_not_called()
+
+    def test_does_not_reclick_while_walking(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+        ctrl.click_minimap_entity(self._entity(), game)
+        mock_mouse.click_left.reset_mock()
+
+        # Past registration, but the player is still animating/moving
+        game.tick = 10 + MINIMAP_WALK_START_TICKS
+        game.idle = False
+        result = ctrl.click_minimap_entity(self._entity(), game)
+
+        assert result is True
+        mock_mouse.click_left.assert_not_called()
+        assert ctrl._minimap_walk["idle_since_tick"] is None
+
+    def test_reclicks_only_after_settle_ticks_of_idle(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+        ctrl.click_minimap_entity(self._entity(), game)
+        mock_mouse.click_left.reset_mock()
+
+        # Past registration and now idle — settling starts counting this tick
+        idle_start = 10 + MINIMAP_WALK_START_TICKS
+        game.tick = idle_start
+        game.idle = True
+        assert ctrl.click_minimap_entity(self._entity(), game) is True
+        mock_mouse.click_left.assert_not_called()
+
+        # Fewer than SETTLE_TICKS of consecutive idle so far — still tracked
+        for offset in range(1, MINIMAP_WALK_SETTLE_TICKS):
+            game.tick = idle_start + offset
+            assert ctrl.click_minimap_entity(self._entity(), game) is True
+            mock_mouse.click_left.assert_not_called()
+
+        # SETTLE_TICKS of idle have elapsed — walk settled, re-click allowed
+        game.tick = idle_start + MINIMAP_WALK_SETTLE_TICKS
+        result = ctrl.click_minimap_entity(self._entity(), game)
+
+        assert result is True
+        mock_mouse.click_left.assert_called_once()
+        assert ctrl._minimap_walk == {"clicked_tick": game.tick, "idle_since_tick": None}
+
+    def test_idle_streak_resets_if_player_moves_again(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+        ctrl.click_minimap_entity(self._entity(), game)
+
+        idle_start = 10 + MINIMAP_WALK_START_TICKS
+        game.tick = idle_start
+        game.idle = True
+        ctrl.click_minimap_entity(self._entity(), game)
+        assert ctrl._minimap_walk["idle_since_tick"] == idle_start
+
+        # Player resumes walking (e.g. continuing along a multi-tile path)
+        game.tick = idle_start + 1
+        game.idle = False
+        ctrl.click_minimap_entity(self._entity(), game)
+        assert ctrl._minimap_walk["idle_since_tick"] is None
+
+    def test_gives_up_and_reclicks_after_max_ticks(self, mock_mouse, mock_settings):
+        ctrl = self._ctrl(mock_settings, mock_mouse)
+        game = _WalkGameState(tick=10)
+        ctrl.click_minimap_entity(self._entity(), game)
+        mock_mouse.click_left.reset_mock()
+
+        # Player never settles (e.g. stuck on a blocked path) — cap kicks in
+        game.tick = 10 + MINIMAP_WALK_MAX_TICKS
+        game.idle = False
+        result = ctrl.click_minimap_entity(self._entity(), game)
+
+        assert result is True
+        mock_mouse.click_left.assert_called_once()
+        assert ctrl._minimap_walk == {"clicked_tick": game.tick, "idle_since_tick": None}

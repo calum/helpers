@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QToolTip, QVBoxLayout, QWidget,
 )
 
+from . import diagnostics
 from .client import stream as tcp_stream
 from .state.game_state import GameState
 from .human.emulator import HumanEmulator
@@ -914,6 +915,7 @@ class GameBridgeWindow(QMainWindow):
         self._tabs.addTab(self._xp_table, "Skills / XP")
 
         self._tabs.addTab(self._make_hull_debug_tab(), "Hull Debug")
+        self._tabs.addTab(self._make_testing_tab(), "Testing")
         self._tabs.addTab(self._make_settings_tab(), "Settings")
 
         nearby.layout().addWidget(self._tabs)
@@ -1058,6 +1060,113 @@ class GameBridgeWindow(QMainWindow):
         card.layout().addLayout(fat_row)
 
         return card
+
+    # ------------------------------------------------------------------
+    # Testing tab — ad-hoc checks against a named entity.
+    #
+    # To add a new check: write a `diagnostics.describe_*` helper (so the
+    # logic stays unit-testable without Qt) and append a
+    # (label, handler) pair to _TEST_ACTIONS below — no layout work needed.
+    # ------------------------------------------------------------------
+
+    def _make_testing_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        lbl = QLabel("Entity name")
+        lbl.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        layout.addWidget(lbl)
+
+        self._test_name_input = QLineEdit()
+        self._test_name_input.setPlaceholderText("e.g. Iron rocks, Mine cart, Man")
+        self._test_name_input.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 5px 10px; color: {C.TEXT};"
+        )
+        layout.addWidget(self._test_name_input)
+
+        hint = QLabel(
+            "Resolves to the nearest object or NPC matching this name (case-insensitive). "
+            "Each button below runs one check against it and appends the result below."
+        )
+        hint.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        layout.addWidget(HDivider())
+
+        self._TEST_ACTIONS = [
+            ("Move into view",                self._run_test_move_into_view),
+            ("Move towards",                  self._run_test_move_towards),
+            ("Click minimap to move towards", self._run_test_click_minimap),
+            ("Is occluded?",                  self._run_test_is_occluded),
+            ("Is on screen?",                 self._run_test_is_on_screen),
+            ("Is on minimap?",                self._run_test_is_on_minimap),
+        ]
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        for i, (label, handler) in enumerate(self._TEST_ACTIONS):
+            btn = QPushButton(label)
+            btn.clicked.connect(handler)
+            grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(grid)
+
+        self._test_output = QTextEdit()
+        self._test_output.setReadOnly(True)
+        self._test_output.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self._test_output.document().setMaximumBlockCount(500)
+        self._test_output.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 6px; color: {C.TEXT}; font-size: 12px;"
+        )
+        layout.addWidget(self._test_output, stretch=1)
+
+        return w
+
+    def _resolve_test_entity(self) -> Optional[dict]:
+        name = self._test_name_input.text().strip()
+        if not name:
+            self._log_test("Enter an entity name first.")
+            return None
+        entity = diagnostics.find_entity(self._engine.game, name)
+        if entity is None:
+            self._log_test(f"No object or NPC named '{name}' found nearby.")
+        return entity
+
+    def _log_test(self, message: str) -> None:
+        self._test_output.append(message)
+
+    def _run_test_move_into_view(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_move_into_view(self._ctrl, self._engine.game, entity))
+
+    def _run_test_move_towards(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_move_towards(self._ctrl, entity))
+
+    def _run_test_click_minimap(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_click_minimap(self._ctrl, self._engine.game, entity))
+
+    def _run_test_is_occluded(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_is_occluded(self._engine.game, entity))
+
+    def _run_test_is_on_screen(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_is_on_screen(entity))
+
+    def _run_test_is_on_minimap(self) -> None:
+        entity = self._resolve_test_entity()
+        if entity is not None:
+            self._log_test(diagnostics.describe_is_on_minimap(entity))
 
     def _make_settings_tab(self) -> QWidget:
         w = QWidget()
