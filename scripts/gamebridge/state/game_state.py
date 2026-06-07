@@ -22,7 +22,9 @@ class GameState:
     player: dict = field(default_factory=dict)
     camera: dict = field(default_factory=dict)
     npcs: List[dict] = field(default_factory=list)
+    players: List[dict] = field(default_factory=list)
     objects: List[dict] = field(default_factory=list)
+    ground_items: List[dict] = field(default_factory=list)
 
     # Derived from container events
     inventory: List[dict] = field(default_factory=list)
@@ -75,8 +77,14 @@ class GameState:
         if "npcs" in msg:
             self.npcs = msg["npcs"]
 
+        if "players" in msg:
+            self.players = msg["players"]
+
         if "objects" in msg:
             self.objects = msg["objects"]
+
+        if "groundItems" in msg:
+            self.ground_items = msg["groundItems"]
 
         if "widgets" in msg:
             self.widgets = msg["widgets"]
@@ -345,6 +353,34 @@ class GameState:
     def distance_to(self, entity: dict) -> int:
         px, py = self.player_pos
         return abs(entity["worldX"] - px) + abs(entity["worldY"] - py)
+
+    def distance_between(self, a: dict, b: dict) -> int:
+        return abs(a["worldX"] - b["worldX"]) + abs(a["worldY"] - b["worldY"])
+
+    # ------------------------------------------------------------------ #
+    # Other players
+    # ------------------------------------------------------------------ #
+
+    def players_named(self, name: str) -> List[dict]:
+        return [p for p in self.players if p.get("name", "").lower() == name.lower()]
+
+    def entity_near_other_player(self, entity: dict, tiles: int = 1) -> bool:
+        """True if any other player is within `tiles` of the given entity.
+
+        Useful for picking combat targets that aren't already contested —
+        e.g. skip an NPC standing next to another player who may be fighting it.
+        """
+        return any(self.distance_between(entity, p) <= tiles for p in self.players)
+
+    # ------------------------------------------------------------------ #
+    # Ground items
+    # ------------------------------------------------------------------ #
+
+    def ground_items_at(self, world_x: int, world_y: int) -> List[dict]:
+        return [
+            i for i in self.ground_items
+            if i.get("worldX") == world_x and i.get("worldY") == world_y
+        ]
 
     # ------------------------------------------------------------------ #
     # Camera

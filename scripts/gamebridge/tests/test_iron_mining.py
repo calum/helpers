@@ -15,7 +15,7 @@ import pytest
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.iron_mining import IronMiningRoutine
 from scripts.gamebridge.state.game_state import GameState
-from scripts.gamebridge.ui.widgets import BankDepositBox
+from scripts.gamebridge.widget_ids import BankDepositBox
 
 
 # ---------------------------------------------------------------------------

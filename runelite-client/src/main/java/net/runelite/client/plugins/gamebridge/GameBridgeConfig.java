@@ -169,4 +169,27 @@ public interface GameBridgeConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "exposeGroundItems",
+		name = "Expose ground items",
+		description = "Include item drops lying on the ground (e.g. monster loot) in each tick message.",
+		position = 12
+	)
+	default boolean exposeGroundItems()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "exposePlayers",
+		name = "Expose players",
+		description = "Include other nearby players (name, position, hull) in each tick message. "
+			+ "Useful for avoiding contested NPCs or crowded areas.",
+		position = 13
+	)
+	default boolean exposePlayers()
+	{
+		return true;
+	}
 }

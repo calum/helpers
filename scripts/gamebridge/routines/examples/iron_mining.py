@@ -43,7 +43,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..base import Routine, initial_state
 from ...input.keyboard import Key
-from ...ui.widgets import BankDepositBox
+from ...widget_ids import BankDepositBox
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState

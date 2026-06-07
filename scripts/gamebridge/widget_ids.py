@@ -4,7 +4,7 @@ Named widget component constants for GameBridge routines.
 Each constant is a ``(group_id, child_id)`` tuple that can be passed directly
 to ``GameState.find_widget``:
 
-    from scripts.gamebridge.ui.widgets import BankDepositBox
+    from scripts.gamebridge.widget_ids import BankDepositBox
     btn = game.find_widget(*BankDepositBox.DEPOSIT_INV)
 
 How the IDs are derived

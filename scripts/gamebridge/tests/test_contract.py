@@ -50,14 +50,18 @@ def state(contract: dict[str, Any]) -> GameState:
 # ---------------------------------------------------------------------------
 
 class TestContractSchema:
-    _TOP_LEVEL = {"tick", "player", "camera", "npcs", "objects", "widgets", "interfaces",
-                  "inventory", "equipment", "events"}
+    _TOP_LEVEL = {"tick", "player", "camera", "npcs", "players", "objects", "groundItems",
+                  "widgets", "interfaces", "inventory", "equipment", "events"}
     _PLAYER    = {"name", "worldX", "worldY", "plane", "animation", "hp", "prayer"}
     _CAMERA    = {"yaw", "pitch", "x", "y", "z"}
-    _NPC       = {"id", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
+    _NPC       = {"id", "index", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
                   "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
+    _PLAYER_ENTITY = {"id", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
+                      "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _OBJECT    = {"id", "name", "category", "worldX", "worldY", "plane",
                   "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
+    _GROUND_ITEM = {"id", "name", "quantity", "worldX", "worldY", "plane",
+                    "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _WIDGET    = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
     _INTERFACE = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
     _BOUNDS    = {"x", "y", "width", "height"}
@@ -84,12 +88,30 @@ class TestContractSchema:
             missing = self._NPC - npc.keys()
             assert not missing, f"NPC missing fields: {missing}  entry={npc}"
 
+    def test_player_entity_fields(self, contract):
+        players = contract["players"]
+        assert len(players) >= 1, "contract must include at least one other player"
+        for player in players:
+            missing = self._PLAYER_ENTITY - player.keys()
+            assert not missing, f"Player entry missing fields: {missing}  entry={player}"
+
+    def test_npc_indices_are_unique(self, contract):
+        indices = [npc["index"] for npc in contract["npcs"]]
+        assert len(indices) == len(set(indices)), "NPC indices must be unique per instance"
+
     def test_object_fields(self, contract):
         objects = contract["objects"]
         assert len(objects) >= 1, "contract must include at least one object"
         for obj in objects:
             missing = self._OBJECT - obj.keys()
             assert not missing, f"Object missing fields: {missing}  entry={obj}"
+
+    def test_ground_item_fields(self, contract):
+        items = contract["groundItems"]
+        assert len(items) >= 1, "contract must include at least one ground item"
+        for item in items:
+            missing = self._GROUND_ITEM - item.keys()
+            assert not missing, f"Ground item missing fields: {missing}  entry={item}"
 
     def test_widget_fields(self, contract):
         for w in contract["widgets"]:
@@ -151,30 +173,26 @@ class TestContractSchema:
         assert not missing, f"contract missing categories: {missing}"
 
     def test_on_screen_entities_have_hull_and_canvas(self, contract):
-        for npc in contract["npcs"]:
-            if npc["onScreen"]:
-                assert npc["hull"] is not None, f"on-screen NPC has null hull: {npc['name']}"
-                assert npc["canvasX"] is not None
-                assert npc["canvasY"] is not None
+        for group in ("npcs", "players", "groundItems"):
+            for entity in contract[group]:
+                if entity["onScreen"]:
+                    assert entity["hull"] is not None, f"on-screen {group} entry has null hull: {entity['name']}"
+                    assert entity["canvasX"] is not None
+                    assert entity["canvasY"] is not None
 
     def test_off_screen_entities_have_null_hull(self, contract):
-        for npc in contract["npcs"]:
-            if not npc["onScreen"]:
-                assert npc["hull"] is None, f"off-screen NPC has non-null hull: {npc['name']}"
-                assert npc["canvasX"] is None
-        for obj in contract["objects"]:
-            if not obj["onScreen"]:
-                assert obj["hull"] is None
+        for group in ("npcs", "players", "groundItems", "objects"):
+            for entity in contract[group]:
+                if not entity["onScreen"]:
+                    assert entity["hull"] is None, f"off-screen {group} entry has non-null hull: {entity['name']}"
+                    assert entity["canvasX"] is None
 
     def test_hull_points_are_int_pairs(self, contract):
-        for npc in contract["npcs"]:
-            for pt in (npc["hull"] or []):
-                assert len(pt) == 2
-                assert all(isinstance(c, int) for c in pt)
-        for obj in contract["objects"]:
-            for pt in (obj["hull"] or []):
-                assert len(pt) == 2
-                assert all(isinstance(c, int) for c in pt)
+        for group in ("npcs", "players", "groundItems", "objects"):
+            for entity in contract[group]:
+                for pt in (entity["hull"] or []):
+                    assert len(pt) == 2
+                    assert all(isinstance(c, int) for c in pt)
 
     def test_tick_is_integer(self, contract):
         assert isinstance(contract["tick"], int)
@@ -224,8 +242,30 @@ class TestContractGameStateIntegration:
         assert npc["hull"] is not None
         assert npc["canvasX"] is not None
 
+    def test_players_count(self, state, contract):
+        assert len(state.players) == len(contract["players"])
+
+    def test_on_screen_player_accessible(self, state):
+        on_screen = [p for p in state.players if p["onScreen"]]
+        assert len(on_screen) >= 1
+        player = on_screen[0]
+        assert player["hull"] is not None
+        assert player["canvasX"] is not None
+
     def test_objects_count(self, state, contract):
         assert len(state.objects) == len(contract["objects"])
+
+    def test_ground_items_count(self, state, contract):
+        assert len(state.ground_items) == len(contract["groundItems"])
+
+    def test_ground_items_at_returns_matching_tile(self, state, contract):
+        item = contract["groundItems"][0]
+        found = state.ground_items_at(item["worldX"], item["worldY"])
+        assert len(found) == 1
+        assert found[0]["id"] == item["id"]
+
+    def test_ground_items_at_returns_empty_for_unmatched_tile(self, state):
+        assert state.ground_items_at(0, 0) == []
 
     def test_object_category_field_preserved(self, state):
         categories = {o["category"] for o in state.objects}

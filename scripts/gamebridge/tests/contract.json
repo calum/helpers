@@ -24,6 +24,7 @@
   "npcs": [
     {
       "id": 3106,
+      "index": 14271,
       "name": "Cow",
       "worldX": 3225,
       "worldY": 3215,
@@ -39,12 +40,77 @@
     },
     {
       "id": 2267,
+      "index": 8842,
       "name": "Guard",
       "worldX": 3240,
       "worldY": 3215,
       "plane": 0,
       "animation": -1,
       "combatLevel": 22,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
+    }
+  ],
+
+  "players": [
+    {
+      "id": 17,
+      "name": "Hans",
+      "worldX": 3224,
+      "worldY": 3216,
+      "plane": 0,
+      "animation": -1,
+      "combatLevel": 5,
+      "onScreen": true,
+      "canvasX": 430,
+      "canvasY": 360,
+      "hull": [[420, 350], [440, 350], [440, 370], [420, 370]],
+      "minimapX": 645,
+      "minimapY": 80
+    },
+    {
+      "id": 23,
+      "name": "Player Two",
+      "worldX": 3260,
+      "worldY": 3215,
+      "plane": 0,
+      "animation": -1,
+      "combatLevel": 110,
+      "onScreen": false,
+      "canvasX": null,
+      "canvasY": null,
+      "hull": null,
+      "minimapX": null,
+      "minimapY": null
+    }
+  ],
+
+  "groundItems": [
+    {
+      "id": 526,
+      "name": "Bones",
+      "quantity": 1,
+      "worldX": 3225,
+      "worldY": 3215,
+      "plane": 0,
+      "onScreen": true,
+      "canvasX": 412,
+      "canvasY": 395,
+      "hull": [[402, 388], [422, 388], [422, 402], [402, 402]],
+      "minimapX": 642,
+      "minimapY": 83
+    },
+    {
+      "id": 995,
+      "name": "Coins",
+      "quantity": 25,
+      "worldX": 3240,
+      "worldY": 3215,
+      "plane": 0,
       "onScreen": false,
       "canvasX": null,
       "canvasY": null,

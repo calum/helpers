@@ -124,9 +124,21 @@ public class ContractTest
 	}
 
 	@Test
+	public void topLevelPlayersPresent()
+	{
+		assertIsList("players", CONTRACT.get("players"));
+	}
+
+	@Test
 	public void topLevelObjectsPresent()
 	{
 		assertIsList("objects", CONTRACT.get("objects"));
+	}
+
+	@Test
+	public void topLevelGroundItemsPresent()
+	{
+		assertIsList("groundItems", CONTRACT.get("groundItems"));
 	}
 
 	@Test
@@ -202,10 +214,103 @@ public class ContractTest
 		{
 			Map<?, ?> npc = castMap("npc entry", n);
 			assertHasFields(npc, "npc",
+				"id", "index", "name", "worldX", "worldY", "plane",
+				"animation", "combatLevel",
+				"onScreen", "canvasX", "canvasY", "hull",
+				"minimapX", "minimapY");
+		}
+	}
+
+	@Test
+	public void npcIndexIsUniquePerEntry()
+	{
+		// index is the per-instance identifier (unlike id, which is the shared
+		// composition id) — the contract's two NPC entries must have distinct indices.
+		List<?> npcs = list("npcs");
+		Set<Object> indices = npcs.stream()
+			.map(n -> castMap("npc", n).get("index"))
+			.collect(Collectors.toSet());
+		assertEquals("npc indices must be unique", npcs.size(), indices.size());
+	}
+
+	// ------------------------------------------------------------------ //
+	// Player fields — matches buildPlayersList()/serializeActor() in TickMessageBuilder
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void playerEntriesHaveAllFields()
+	{
+		List<?> players = list("players");
+		assertFalse("players array must not be empty", players.isEmpty());
+		for (Object p : players)
+		{
+			Map<?, ?> player = castMap("player entry", p);
+			assertHasFields(player, "player entry",
 				"id", "name", "worldX", "worldY", "plane",
 				"animation", "combatLevel",
 				"onScreen", "canvasX", "canvasY", "hull",
 				"minimapX", "minimapY");
+		}
+	}
+
+	@Test
+	public void onScreenPlayerHasHullAndCanvas()
+	{
+		for (Object p : list("players"))
+		{
+			Map<?, ?> player = castMap("player", p);
+			boolean onScreen = Boolean.TRUE.equals(player.get("onScreen"));
+			if (onScreen)
+			{
+				assertNotNull("on-screen player must have hull",    player.get("hull"));
+				assertNotNull("on-screen player must have canvasX", player.get("canvasX"));
+				assertNotNull("on-screen player must have canvasY", player.get("canvasY"));
+			}
+			else
+			{
+				assertNull("off-screen player hull must be null",    player.get("hull"));
+				assertNull("off-screen player canvasX must be null", player.get("canvasX"));
+			}
+		}
+	}
+
+	// ------------------------------------------------------------------ //
+	// Ground item fields — matches serializeGroundItem() in TickMessageBuilder
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void groundItemEntriesHaveAllFields()
+	{
+		List<?> items = list("groundItems");
+		assertFalse("groundItems array must not be empty", items.isEmpty());
+		for (Object i : items)
+		{
+			Map<?, ?> item = castMap("ground item entry", i);
+			assertHasFields(item, "ground item",
+				"id", "name", "quantity", "worldX", "worldY", "plane",
+				"onScreen", "canvasX", "canvasY", "hull",
+				"minimapX", "minimapY");
+		}
+	}
+
+	@Test
+	public void onScreenGroundItemHasHullAndCanvas()
+	{
+		for (Object i : list("groundItems"))
+		{
+			Map<?, ?> item = castMap("ground item", i);
+			boolean onScreen = Boolean.TRUE.equals(item.get("onScreen"));
+			if (onScreen)
+			{
+				assertNotNull("on-screen ground item must have hull",    item.get("hull"));
+				assertNotNull("on-screen ground item must have canvasX", item.get("canvasX"));
+				assertNotNull("on-screen ground item must have canvasY", item.get("canvasY"));
+			}
+			else
+			{
+				assertNull("off-screen ground item hull must be null",    item.get("hull"));
+				assertNull("off-screen ground item canvasX must be null", item.get("canvasX"));
+			}
 		}
 	}
 

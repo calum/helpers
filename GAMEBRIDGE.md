@@ -44,16 +44,18 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 
 ```json
 {
-  "tick":       12345,
-  "player":     { ... },
-  "camera":     { ... },
-  "npcs":       [ ... ],
-  "objects":    [ ... ],
-  "widgets":    [ ... ],
-  "interfaces": [ ... ],
-  "inventory":  [ ... ],
-  "equipment":  [ ... ],
-  "events":     [ ... ]
+  "tick":        12345,
+  "player":      { ... },
+  "camera":      { ... },
+  "npcs":        [ ... ],
+  "players":     [ ... ],
+  "objects":     [ ... ],
+  "groundItems": [ ... ],
+  "widgets":     [ ... ],
+  "interfaces":  [ ... ],
+  "inventory":   [ ... ],
+  "equipment":   [ ... ],
+  "events":      [ ... ]
 }
 ```
 
@@ -63,7 +65,9 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `player` | yes (absent before login) | — |
 | `camera` | yes | `exposeCamera` (default on) |
 | `npcs` | yes | `exposeNpcs` (default on) |
+| `players` | yes | `exposePlayers` (default on) |
 | `objects` | yes | `exposeObjects` (default on) |
+| `groundItems` | yes | `exposeGroundItems` (default on) |
 | `widgets` | no | `exposeWidgets` (default **off**) |
 | `interfaces` | no | `exposeInterfaces` (default **on**) |
 | `inventory` | no | `exposeInventory` (default on) |
@@ -142,6 +146,7 @@ def yaw_delta(current_yaw, target_yaw):
 ```json
 {
   "id":          3106,
+  "index":       14271,
   "name":        "Cow",
   "worldX":      3225,
   "worldY":      3215,
@@ -159,10 +164,49 @@ def yaw_delta(current_yaw, target_yaw):
 
 | Field | Notes |
 |---|---|
+| `id` | NPC composition/definition ID — **shared** by every instance of the same NPC type (e.g. all "Goblin"s have the same `id`) |
+| `index` | Per-instance world index — **unique** to this specific NPC; use it to track one individual across ticks (e.g. "did the Goblin I attacked die?"). May be reused by a different NPC after this one despawns, so only rely on it across short windows. |
 | `onScreen` | `true` when the NPC has a visible convex hull in the current frame |
 | `canvasX` / `canvasY` | Centre of the hull bounding box in screen pixels; `null` when off-screen |
 | `hull` | Array of `[x, y]` screen-pixel pairs forming the clickable polygon; `null` when off-screen or excluded by the hull filter |
 | `minimapX` / `minimapY` | Canvas pixel coordinates of this entity on the minimap; `null` when the entity is beyond minimap range |
+
+---
+
+## Players
+
+Other nearby players (the local player is described separately in the top-level
+`player` object, never included here). Same shape as NPCs, minus the
+composition/instance `id`/`index` split — a player's `id` is already a unique
+per-instance world index.
+
+```json
+{
+  "id":          17,
+  "name":        "Hans",
+  "worldX":      3224,
+  "worldY":      3216,
+  "plane":       0,
+  "animation":   -1,
+  "combatLevel": 5,
+  "onScreen":    true,
+  "canvasX":     430,
+  "canvasY":     360,
+  "hull":        [[420,350],[440,350],[440,370],[420,370]],
+  "minimapX":    645,
+  "minimapY":    80
+}
+```
+
+| Field | Notes |
+|---|---|
+| `id` | Unique per-instance world index for this player |
+| `onScreen` / `canvasX` / `canvasY` / `hull` / `minimapX` / `minimapY` | Same semantics as NPCs |
+
+Use `GameState.players` / `GameState.entity_near_other_player(entity, tiles)` to
+e.g. avoid picking combat targets that another player is already standing next to.
+
+Controlled by `exposePlayers` (default on).
 
 ---
 
@@ -216,6 +260,45 @@ The three rules are evaluated in priority order: `debugAllObjects` → filter ma
 iron = state.nearest_object("Iron rocks")
 cart = state.nearest_object("Mine cart")
 ```
+
+---
+
+## Ground items
+
+Item drops lying on the ground — e.g. monster loot, dropped items, resource
+spawns. Same shape as objects, plus a `quantity` field; no `category`.
+
+```json
+{
+  "id":        526,
+  "name":      "Bones",
+  "quantity":  1,
+  "worldX":    3225,
+  "worldY":    3215,
+  "plane":     0,
+  "onScreen":  true,
+  "canvasX":   412,
+  "canvasY":   395,
+  "hull":      [[402,388],[422,388],[422,402],[402,402]],
+  "minimapX":  642,
+  "minimapY":  83
+}
+```
+
+| Field | Notes |
+|---|---|
+| `name` | Resolved via `client.getItemDefinition(id)`; `"unknown"` if not resolvable |
+| `quantity` | Stack size of this drop |
+| `onScreen` / `canvasX` / `canvasY` / `hull` / `minimapX` / `minimapY` | Same semantics as objects — `hull` here is the tile's canvas polygon (`Perspective.getCanvasTilePoly`), gated by the same `hullFilter` |
+
+```python
+# Loot whatever lands on a tile after killing something there
+for item in state.ground_items_at(corpse_x, corpse_y):
+    if item["onScreen"]:
+        ctrl.click_entity(item)
+```
+
+Controlled by `exposeGroundItems` (default on).
 
 ---
 
@@ -485,7 +568,9 @@ class GameState:
     player: dict = field(default_factory=dict)
     camera: dict = field(default_factory=dict)
     npcs: List[dict] = field(default_factory=list)
+    players: List[dict] = field(default_factory=list)
     objects: List[dict] = field(default_factory=list)
+    ground_items: List[dict] = field(default_factory=list)
     inventory: List[dict] = field(default_factory=list)
     equipment: List[dict] = field(default_factory=list)
     xp: Dict[str, int] = field(default_factory=dict)
@@ -498,8 +583,12 @@ class GameState:
             self.camera = msg['camera']
         if 'npcs' in msg:
             self.npcs = msg['npcs']
+        if 'players' in msg:
+            self.players = msg['players']
         if 'objects' in msg:
             self.objects = msg['objects']
+        if 'groundItems' in msg:
+            self.ground_items = msg['groundItems']
         if 'inventory' in msg:
             self.inventory = msg['inventory']
         if 'equipment' in msg:
@@ -525,6 +614,9 @@ class GameState:
         px, py = self.player.get('worldX', 0), self.player.get('worldY', 0)
         candidates = self.objects_named(name)
         return min(candidates, key=lambda o: abs(o['worldX'] - px) + abs(o['worldY'] - py), default=None)
+
+    def ground_items_at(self, world_x: int, world_y: int) -> List[dict]:
+        return [i for i in self.ground_items if i['worldX'] == world_x and i['worldY'] == world_y]
 
     def required_camera_yaw(self, target: dict) -> int:
         px, py = self.player.get('worldX', 0), self.player.get('worldY', 0)
@@ -593,7 +685,9 @@ def stream_with_reconnect(host='127.0.0.1', port=7070, retry_delay=5.0):
 |---|---|---|---|
 | `port` | int | 7070 | Listening port; restart plugin to apply |
 | `exposeNpcs` | bool | true | Include `npcs` array in tick messages |
+| `exposePlayers` | bool | true | Include `players` array (other nearby players) in tick messages |
 | `exposeObjects` | bool | true | Include `objects` array in tick messages (see Object filtering) |
+| `exposeGroundItems` | bool | true | Include `groundItems` array (item drops on the ground) in tick messages |
 | `exposeInventory` | bool | true | Emit `container` events |
 | `exposeVarbits` | bool | true | Emit `varbit` events |
 | `exposeCamera` | bool | true | Include `camera` object in tick messages |

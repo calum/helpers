@@ -226,6 +226,27 @@ def _obj(obj_id=1, name="Oak tree", x=3225, y=3218, on_screen=True):
     }
 
 
+def _player_entity(player_id=17, name="Hans", x=3224, y=3216, on_screen=True):
+    return {
+        "id": player_id, "name": name, "worldX": x, "worldY": y, "plane": 0,
+        "animation": -1, "combatLevel": 5,
+        "onScreen": on_screen,
+        "canvasX": 430 if on_screen else None,
+        "canvasY": 360 if on_screen else None,
+        "hull": [[420, 350], [440, 350], [440, 370], [420, 370]] if on_screen else None,
+    }
+
+
+def _ground_item(item_id=526, name="Bones", qty=1, x=3225, y=3215, on_screen=True):
+    return {
+        "id": item_id, "name": name, "quantity": qty, "worldX": x, "worldY": y, "plane": 0,
+        "onScreen": on_screen,
+        "canvasX": 412 if on_screen else None,
+        "canvasY": 395 if on_screen else None,
+        "hull": [[402, 388], [422, 388], [422, 402], [402, 402]] if on_screen else None,
+    }
+
+
 def _widget(group_id=149, child_id=0, item_id=995, qty=100):
     return {
         "groupId": group_id, "childId": child_id,
@@ -640,6 +661,117 @@ class TestObjectQueries:
 
 
 # ---------------------------------------------------------------------------
+# Other-player queries
+# ---------------------------------------------------------------------------
+
+class TestOtherPlayerQueries:
+    def test_players_named_exact(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(name="Hans"), _player_entity(name="Bob")]))
+        assert len(g.players_named("Hans")) == 1
+
+    def test_players_named_case_insensitive(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(name="Hans")]))
+        assert len(g.players_named("hans")) == 1
+        assert len(g.players_named("HANS")) == 1
+
+    def test_players_named_none_when_not_found(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(name="Hans")]))
+        assert g.players_named("Bob") == []
+
+    def test_missing_players_key_preserves_existing(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(name="Hans")]))
+        g.update(_base_msg(tick=2))  # no players key
+        assert len(g.players_named("Hans")) == 1
+
+
+# ---------------------------------------------------------------------------
+# distance_between
+# ---------------------------------------------------------------------------
+
+class TestDistanceBetween:
+    def test_distance_between_entities(self):
+        g = GameState()
+        a = _npc(x=3221, y=3218)
+        b = _player_entity(x=3225, y=3220)  # dx=4, dy=2 → manhattan = 6
+        assert g.distance_between(a, b) == 6
+
+    def test_distance_between_same_tile_is_zero(self):
+        g = GameState()
+        a = _npc(x=3221, y=3218)
+        b = _player_entity(x=3221, y=3218)
+        assert g.distance_between(a, b) == 0
+
+
+# ---------------------------------------------------------------------------
+# entity_near_other_player
+# ---------------------------------------------------------------------------
+
+class TestEntityNearOtherPlayer:
+    def test_true_when_player_within_range(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(x=3222, y=3218)]))
+        entity = _npc(x=3221, y=3218)  # 1 tile away
+        assert g.entity_near_other_player(entity, tiles=1) is True
+
+    def test_false_when_no_player_within_range(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(x=3230, y=3218)]))
+        entity = _npc(x=3221, y=3218)  # 9 tiles away
+        assert g.entity_near_other_player(entity, tiles=1) is False
+
+    def test_false_when_no_players(self):
+        g = GameState()
+        entity = _npc(x=3221, y=3218)
+        assert g.entity_near_other_player(entity) is False
+
+    def test_exact_boundary_counts_as_near(self):
+        g = GameState()
+        g.update(_base_msg(players=[_player_entity(x=3223, y=3218)]))
+        entity = _npc(x=3221, y=3218)  # exactly 2 tiles away
+        assert g.entity_near_other_player(entity, tiles=2) is True
+        assert g.entity_near_other_player(entity, tiles=1) is False
+
+
+# ---------------------------------------------------------------------------
+# Ground item queries
+# ---------------------------------------------------------------------------
+
+class TestGroundItemQueries:
+    def test_ground_items_at_returns_matching_tile(self):
+        g = GameState()
+        g.update(_base_msg(groundItems=[
+            _ground_item(item_id=526, name="Bones", x=3225, y=3215),
+            _ground_item(item_id=995, name="Coins", x=3240, y=3215),
+        ]))
+        items = g.ground_items_at(3225, 3215)
+        assert len(items) == 1
+        assert items[0]["name"] == "Bones"
+
+    def test_ground_items_at_returns_multiple_on_same_tile(self):
+        g = GameState()
+        g.update(_base_msg(groundItems=[
+            _ground_item(item_id=526, name="Bones", x=3225, y=3215),
+            _ground_item(item_id=995, name="Coins", x=3225, y=3215),
+        ]))
+        assert len(g.ground_items_at(3225, 3215)) == 2
+
+    def test_ground_items_at_returns_empty_for_unmatched_tile(self):
+        g = GameState()
+        g.update(_base_msg(groundItems=[_ground_item(x=3225, y=3215)]))
+        assert g.ground_items_at(3300, 3300) == []
+
+    def test_missing_ground_items_key_preserves_existing(self):
+        g = GameState()
+        g.update(_base_msg(groundItems=[_ground_item(x=3225, y=3215)]))
+        g.update(_base_msg(tick=2))  # no groundItems key
+        assert len(g.ground_items_at(3225, 3215)) == 1
+
+
+# ---------------------------------------------------------------------------
 # Widget queries
 # ---------------------------------------------------------------------------
 
@@ -736,7 +868,7 @@ class TestInventoryItemHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Widget constants (scripts/gamebridge/ui/widgets.py)
+# Widget constants (scripts/gamebridge/widget_ids.py)
 # ---------------------------------------------------------------------------
 
 class TestWidgetConstants:
@@ -749,31 +881,31 @@ class TestWidgetConstants:
     """
 
     def test_bank_deposit_box_deposit_inv_tuple(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox
+        from scripts.gamebridge.widget_ids import BankDepositBox
         assert BankDepositBox.DEPOSIT_INV == (192, 31)
 
     def test_bank_deposit_box_deposit_worn_tuple(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox
+        from scripts.gamebridge.widget_ids import BankDepositBox
         assert BankDepositBox.DEPOSIT_WORN == (192, 30)
 
     def test_bank_deposit_box_deposit_lootingbag_tuple(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox
+        from scripts.gamebridge.widget_ids import BankDepositBox
         assert BankDepositBox.DEPOSIT_LOOTINGBAG == (192, 32)
 
     def test_bankmain_depositinv_tuple(self):
-        from scripts.gamebridge.ui.widgets import Bankmain
+        from scripts.gamebridge.widget_ids import Bankmain
         assert Bankmain.DEPOSITINV == (12, 41)
 
     def test_bankmain_depositworn_tuple(self):
-        from scripts.gamebridge.ui.widgets import Bankmain
+        from scripts.gamebridge.widget_ids import Bankmain
         assert Bankmain.DEPOSITWORN == (12, 43)
 
     def test_inventory_items_tuple(self):
-        from scripts.gamebridge.ui.widgets import Inventory
+        from scripts.gamebridge.widget_ids import Inventory
         assert Inventory.ITEMS == (149, 0)
 
     def test_find_widget_via_named_constant(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox
+        from scripts.gamebridge.widget_ids import BankDepositBox
         g = GameState()
         w = _widget(group_id=192, child_id=31, item_id=-1, qty=0)
         g.update(_base_msg(widgets=[w]))
@@ -783,7 +915,7 @@ class TestWidgetConstants:
         assert result["childId"] == 31
 
     def test_find_widget_via_bankmain_constant(self):
-        from scripts.gamebridge.ui.widgets import Bankmain
+        from scripts.gamebridge.widget_ids import Bankmain
         g = GameState()
         w = _widget(group_id=12, child_id=41, item_id=-1, qty=0)
         g.update(_base_msg(widgets=[w]))
@@ -793,13 +925,13 @@ class TestWidgetConstants:
         assert result["childId"] == 41
 
     def test_find_widget_returns_none_when_absent(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox
+        from scripts.gamebridge.widget_ids import BankDepositBox
         g = GameState()
         g.update(_base_msg(widgets=[]))
         assert g.find_widget(*BankDepositBox.DEPOSIT_INV) is None
 
     def test_group_constants_match_tuple_group(self):
-        from scripts.gamebridge.ui.widgets import BankDepositBox, Bankmain, Inventory, Wornitems
+        from scripts.gamebridge.widget_ids import BankDepositBox, Bankmain, Inventory, Wornitems
         for cls in (BankDepositBox, Bankmain, Inventory, Wornitems):
             for attr, value in vars(cls).items():
                 if isinstance(value, tuple):
