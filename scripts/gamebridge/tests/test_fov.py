@@ -1,7 +1,7 @@
 """
 Tests for the FOV helpers in scripts.gamebridge.fov.
 
-Calibration reference (CAMERA_FOV.md §9):
+Calibration reference (see scripts.gamebridge.fov module docstring):
   pitch=229: back 3 tiles, front 6 tiles, half-width 4 / 6
   pitch=320: back 3 tiles, front 3 tiles, half-width 5 / 7
 

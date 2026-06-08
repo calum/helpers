@@ -1,6 +1,6 @@
 # The next improvements due to be made to the system
 
-Please ensure you have read and fully understand CLAUDE.md, GAMEBRIDGE.md, RIPER-5.md, and ARCHITECTURE.md before starting on any of these pieces of work.
+Please ensure you have read and fully understand CLAUDE.md (including the Research/Plan/Execute/Review methodology section), GAMEBRIDGE.md, and ARCHITECTURE.md before starting on any of these pieces of work.
 
 The following work items are in priority order.
 
@@ -104,7 +104,7 @@ if it works, click closest iron rock (which may not be the one we pre-empted but
 
 ## Game world movement
 
-We need to follow the RIPER-5 model to work out how to manage movement around the world and navigating obsticals in our way. This is necessary for banking items or moving between objectives during a routine.
+We need to work through this methodically — research how the existing navigation pieces (camera, minimap walking, FOV) fit together before planning a pathfinding approach — to manage movement around the world and navigating obstacles in our way. This is necessary for banking items or moving between objectives during a routine.
 
 The free resource [Explv's Map](https://explv.github.io/?centreX=2916&centreY=3315&centreZ=0&zoom=7) is probably going to be the route we take.
 

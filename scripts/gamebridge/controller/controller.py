@@ -240,6 +240,26 @@ class GameController:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _onscreen_canvas_pos(self, entity: dict, action: str) -> Optional[tuple[float, float]]:
+        """Return the entity's canvas position if it's safe to aim at, else None.
+
+        Shared guard for move_to_entity/click_entity/right_click_entity: the
+        entity must be flagged on-screen AND its canvas position must fall
+        inside the viewport — the plugin can report onScreen=true while the
+        projected hull still lands outside canvas bounds (e.g. a sliver of
+        an object peeking past the edge), so both checks are needed before
+        aiming the mouse at it. Logs why at debug/warning level either way.
+        """
+        if not entity.get("onScreen"):
+            log.debug("%s: %s is off-screen", action, entity.get("name", "?"))
+            return None
+        cx, cy = entity["canvasX"], entity["canvasY"]
+        if not self._is_canvas_coord_valid(cx, cy):
+            log.warning("%s: %s canvas (%d, %d) outside viewport — skipping",
+                        action, entity.get("name", "?"), cx, cy)
+            return None
+        return cx, cy
+
     def _after_click(self) -> None:
         """Call after every click: accumulate fatigue and take a break if due."""
         self._human.accumulate_fatigue(0.0002)
@@ -259,12 +279,7 @@ class GameController:
 
     def move_to_entity(self, entity: dict) -> None:
         """Move the mouse to an on-screen entity, tracking it if it moves."""
-        if not entity.get("onScreen"):
-            return
-        cx, cy = entity["canvasX"], entity["canvasY"]
-        if not self._is_canvas_coord_valid(cx, cy):
-            log.warning("move_to_entity: %s canvas (%d, %d) outside viewport — skipping",
-                        entity.get("name", "?"), cx, cy)
+        if self._onscreen_canvas_pos(entity, "move_to_entity") is None:
             return
         cur_x, cur_y = mouse_input.get_position()
         intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
@@ -273,17 +288,10 @@ class GameController:
 
     def click_entity(self, entity: dict) -> None:
         """Left-click an on-screen entity, tracking it if it moves."""
-        if not entity.get("onScreen"):
-            log.debug("click_entity: %s is off-screen", entity.get("name", "?"))
+        pos = self._onscreen_canvas_pos(entity, "click_entity")
+        if pos is None:
             return
-        cx, cy = entity["canvasX"], entity["canvasY"]
-        if not self._is_canvas_coord_valid(cx, cy):
-            log.warning(
-                "click_entity: %s canvas (%d, %d) outside viewport — skipping "
-                "(plugin reported onScreen=true but hull projects outside canvas bounds)",
-                entity.get("name", "?"), cx, cy,
-            )
-            return
+        cx, cy = pos
         now = time.monotonic()
         if self.min_click_interval > 0 and now - self._last_entity_click < self.min_click_interval:
             log.debug(
@@ -309,12 +317,7 @@ class GameController:
 
     def right_click_entity(self, entity: dict) -> None:
         """Right-click an on-screen entity, tracking it if it moves."""
-        if not entity.get("onScreen"):
-            return
-        cx, cy = entity["canvasX"], entity["canvasY"]
-        if not self._is_canvas_coord_valid(cx, cy):
-            log.warning("right_click_entity: %s canvas (%d, %d) outside viewport — skipping",
-                        entity.get("name", "?"), cx, cy)
+        if self._onscreen_canvas_pos(entity, "right_click_entity") is None:
             return
         cur_x, cur_y = mouse_input.get_position()
         intent, predict = self._plan_moving_click(entity, cur_x, cur_y)

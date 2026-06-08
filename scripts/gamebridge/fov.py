@@ -11,8 +11,8 @@ Parameters interpolate linearly between these anchors; clamped outside the range
 The trapezoid is defined in (right, forward) camera-relative coordinates and
 rotated into world tile space by the camera yaw before use.
 
-Requires camera_yaw_to() in GameState to use the fixed atan2(-dx, dy) formula
-(CAMERA_FOV.md §4).
+Requires camera_yaw_to() in GameState to use the atan2(-dx, dy) formula —
+OSRS yaw is counter-clockwise (0=N, 512=W, 1024=S, 1536=E).
 """
 from __future__ import annotations
 
@@ -23,7 +23,9 @@ if TYPE_CHECKING:
     from .state.game_state import GameState
 
 # Calibration anchors — measured empirically at the user's preferred zoom.
-# Adjust these constants if zoom level changes (see CAMERA_FOV.md §7d/7e).
+# Adjust these constants if zoom level changes (re-measure per the method in
+# PLAN.md's Camera/FOV audit session: stand at a known pitch, find the furthest
+# on-screen tile in each direction, and record the trapezoid extents).
 _CAL_PITCH_LOW  = 229   # near-horizon anchor pitch
 _CAL_PITCH_HIGH = 320   # overhead anchor pitch
 
@@ -110,8 +112,8 @@ def entity_in_fov(entity: dict, game: "GameState") -> bool:
     """
     Return True if the entity is likely within the camera's visible trapezoid.
 
-    Uses the calibrated trapezoid model (CAMERA_FOV.md §9).
-    camera_yaw_to() must use the fixed atan2(-dx, dy) formula.
+    Uses the calibrated trapezoid model — see the module docstring for the
+    measured anchor values. camera_yaw_to() must use the atan2(-dx, dy) formula.
     """
     camera = game.camera
     if not camera:

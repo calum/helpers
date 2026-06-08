@@ -20,6 +20,29 @@ Every code change — bug fix, new feature, or refactor — must include new or 
 
 ---
 
+## Working Methodology — Research, Plan, Execute, Review
+
+Distilled from the old RIPER-5 protocol (now removed — its rigid `[MODE: ...]`
+declarations and transition commands were never actually used in practice, but
+the underlying discipline is worth keeping as a lightweight checklist):
+
+1. **Research first.** Before proposing or making a change, read the relevant
+   source, understand existing patterns, and identify dependencies — especially
+   for legacy/unfamiliar code. Don't skip straight to an implementation guess.
+2. **Plan before large changes.** For anything non-trivial (new subsystems,
+   refactors touching multiple files, architectural decisions), sketch the
+   concrete steps — exact files, functions, and the shape of the change —
+   before writing code. Small, obvious fixes don't need this ceremony.
+3. **Execute the plan**, but don't be afraid to stop and re-plan if you hit
+   something the research missed — never paper over a wrong assumption with a
+   quick hack.
+4. **Review afterward.** Run the tests (see Testing Requirements above),
+   re-read the diff against the original goal, and note any deviations or
+   follow-ups. This is what feeds the "Open / next steps" section of `PLAN.md`.
+
+This mirrors the structure each `PLAN.md` session entry already follows
+(Goal → Findings/Decisions → Tests → Open/next steps) — keep using that shape.
+
 ## Research Protocol
 
 After any research session (reading source files, exploring the codebase, investigating APIs), update `PLAN.md` with new findings. Add concrete details: file paths, class names, how mechanisms work, open questions, and next steps. Keep `PLAN.md` as a living document that accumulates knowledge across sessions.

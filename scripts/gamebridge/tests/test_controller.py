@@ -141,6 +141,38 @@ class TestClampToWindow:
 
 
 # ---------------------------------------------------------------------------
+# _onscreen_canvas_pos — shared guard for move/click/right-click
+# ---------------------------------------------------------------------------
+
+class TestOnscreenCanvasPos:
+    def test_returns_canvas_pos_when_valid_and_on_screen(self):
+        pos = _ctrl()._onscreen_canvas_pos(_entity(500, 300, on_screen=True), "click_entity")
+        assert pos == (500, 300)
+
+    def test_returns_none_when_off_screen(self):
+        assert _ctrl()._onscreen_canvas_pos(_entity(500, 300, on_screen=False), "click_entity") is None
+
+    def test_returns_none_when_outside_viewport(self):
+        assert _ctrl()._onscreen_canvas_pos(_entity(-50, 300, on_screen=True), "click_entity") is None
+
+    def test_off_screen_logs_debug_with_action_and_name(self, caplog):
+        with caplog.at_level(logging.DEBUG, logger="scripts.gamebridge.controller.controller"):
+            _ctrl()._onscreen_canvas_pos(_entity(500, 300, on_screen=False, name="Goblin"), "move_to_entity")
+        assert any(
+            "move_to_entity" in r.message and "Goblin" in r.message and "off-screen" in r.message
+            for r in caplog.records
+        )
+
+    def test_outside_viewport_logs_warning_with_action_and_name(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="scripts.gamebridge.controller.controller"):
+            _ctrl()._onscreen_canvas_pos(_entity(-50, 300, on_screen=True, name="Mine cart"), "right_click_entity")
+        assert any(
+            "right_click_entity" in r.message and "Mine cart" in r.message and "outside viewport" in r.message
+            for r in caplog.records
+        )
+
+
+# ---------------------------------------------------------------------------
 # click_entity — viewport guard and clamping
 # Patch order: innermost decorator → first arg; outermost → last arg.
 # ---------------------------------------------------------------------------
