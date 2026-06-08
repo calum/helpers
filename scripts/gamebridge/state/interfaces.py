@@ -73,6 +73,11 @@ INTERFACES: Dict[int, InterfaceInfo] = {
     161: InterfaceInfo("resizable_viewport", occludes=False),
     164: InterfaceInfo("resizable_viewport_bottom_line", occludes=False),
     165: InterfaceInfo("fullscreen_container_tli", occludes=False),
+    # Overlay container for floating xp-drop icons — its root widgets report
+    # full-canvas layout bounds even though almost nothing is drawn there, so
+    # (like the viewport roots above) it must never be treated as occluding —
+    # or as a click target — or it would swallow every click into the world.
+    122: InterfaceInfo("xp_drops", occludes=False),
 
     # --- Panels in active use by routines / diagnostics -----------------
     12: InterfaceInfo("bank"),

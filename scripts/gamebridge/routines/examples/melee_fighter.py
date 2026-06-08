@@ -42,10 +42,14 @@ class MeleeFighterRoutine(Routine):
     """Attack the nearest uncontested NPC by name, loot its drops, repeat."""
 
     # TODO: read this from the dashboard's NPC-name text box input instead of
-    # hardcoding it — for now we always target "GoblinMeleeFighter".
-    NPC_NAME = "GoblinMeleeFighter"
+    # hardcoding it — for now we always target "Goblin".
+    NPC_NAME = "Goblin"
 
-    LOOT_WINDOW_TICKS = 3       # how long after a kill to watch the corpse tile for drops
+    # A single corpse can drop more than one item (e.g. runes + bones), and
+    # looting() only attempts one pickup per tick (it waits for player_idle()
+    # between clicks so the walk/animation settles first) — so the window
+    # needs enough headroom to cover several sequential pickups, not just one.
+    LOOT_WINDOW_TICKS = 5       # how long after a kill to watch the corpse tile for drops
     PLAYER_EXCLUSION_TILES = 1  # skip NPCs standing this close to another player
 
     MISCLICK_TIMEOUT_TICKS = 10  # ticks to wait for combat xp before assuming a miss-click
@@ -60,6 +64,8 @@ class MeleeFighterRoutine(Routine):
         self._looted_keys: Set[Tuple[int, int, int]] = set()
         self._idle_since_tick: int = -1
         self._fight_start_tick: Optional[int] = None
+        self._attack_target: Optional[dict] = None
+        self._loot_target: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # States
@@ -71,7 +77,27 @@ class MeleeFighterRoutine(Routine):
         Pick the nearest NPC matching NPC_NAME that isn't standing next to
         another player (avoids contested/kill-stolen targets), bring it on
         screen, and attack it once the camera/player have settled.
+
+        Targeting is "verify before you click": right-click the NPC, confirm
+        an "Attack <NPC_NAME>" entry actually appears in the context menu,
+        then click that exact row. A blind left-click can land on a tile or
+        another entity behind/in front of the NPC (especially in crowds —
+        this spot has dozens of goblins plus other players milling about);
+        reading the menu back removes that ambiguity entirely.
         """
+        if self._attack_target is not None:
+            if ctrl.click_menu_entry(game, "Attack", self.NPC_NAME):
+                self._target_index = self._attack_target["index"]
+                self._target = self._attack_target
+                self._fight_start_tick = game.tick
+                self._attack_target = None
+                return "fighting"
+
+            if not game.menu_open():
+                log.debug("Menu closed without an Attack %s entry — retrying", self.NPC_NAME)
+                self._attack_target = None
+            return None
+
         target = self._nearest_available_npc(game)
 
         if target is None:
@@ -96,12 +122,10 @@ class MeleeFighterRoutine(Routine):
             self._idle_since_tick = game.tick
             return None
 
-        ctrl.click_entity(target)
+        ctrl.right_click_entity(target)
+        self._attack_target = target
         self._idle_since_tick = -1
-        self._target_index = target["index"]
-        self._target = target
-        self._fight_start_tick = game.tick
-        return "fighting"
+        return None
 
     def fighting(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
@@ -153,27 +177,43 @@ class MeleeFighterRoutine(Routine):
     def looting(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
         For LOOT_WINDOW_TICKS ticks after the kill, watch the corpse's tile
-        for drops and click each one exactly once — the first successful
+        for drops and pick up each one exactly once — the first successful
         pickup walks the player onto the tile, shifting every subsequent
         item's canvas position, so we re-resolve from live game state on
-        every tick rather than caching coordinates. Each item is recorded in
-        _looted_keys the moment we click it (not when it disappears) so a
-        failed pickup is never retried — "click and move on" mirrors how a
-        human would treat a stuck item.
+        every tick rather than caching coordinates.
 
-        A click sets the player walking toward the item's tile, which shifts
-        every other item's canvas position mid-stride — clicking again before
-        the player settles lands on a stale (now wrong) position. So besides
-        one attempt per tick, we also wait for `player_idle()` before each
-        attempt: this holds off the next click until the previous walk (and
-        any pickup animation) has fully resolved and positions are stable
-        again.
+        Picking an item up is "verify before you click", same as targeting:
+        right-click it, confirm a "Take <item name>" entry is actually in the
+        menu, then click that row. Items pile up on the same corpse tile and
+        a walk-in-progress shifts everything mid-stride, so a blind left-click
+        can easily land on the wrong stack — reading the menu back guarantees
+        we pick up the item we meant to. Only on a verified click do we record
+        the item in _looted_keys, so a failed gesture (menu closed without a
+        match — wrong item under the cursor, or it vanished mid-gesture) is
+        simply retried rather than abandoned.
+
+        We also wait for `player_idle()` before starting a new pickup gesture:
+        a click sets the player walking toward the item's tile, which shifts
+        every other item's canvas position mid-stride, so the previous walk
+        (and any pickup animation) needs to fully resolve — and positions
+        stabilise — before the next item can be reliably right-clicked.
         """
         x, y = self._target_pos
 
         log.debug("Watching for loot on %s's corpse tile at (%d, %d)…",
                   self.NPC_NAME, x, y)
         log.debug("Ground items at target tile: %s", game.ground_items_at(x, y))
+
+        if self._loot_target is not None:
+            key = (self._loot_target["id"], x, y)
+            if ctrl.click_menu_entry(game, "Take", self._loot_target.get("name")):
+                self._looted_keys.add(key)
+                self._loot_target = None
+            elif not game.menu_open():
+                log.debug("Menu closed without a Take %s entry — retrying",
+                          self._loot_target.get("name"))
+                self._loot_target = None
+            return None
 
         if game.player_idle():
             for item in game.ground_items_at(x, y):
@@ -183,9 +223,9 @@ class MeleeFighterRoutine(Routine):
                 if not item.get("onScreen"):
                     continue  # wait for it to come into view before attempting
 
-                ctrl.click_entity(item)
-                self._looted_keys.add(key)
-                return None  # one pickup attempt per tick — let the walk settle before the next
+                ctrl.right_click_entity(item)
+                self._loot_target = item
+                return None  # one pickup gesture at a time — let the walk settle before the next
 
         if game.tick - self._death_tick >= self.LOOT_WINDOW_TICKS:
             return "find_target"

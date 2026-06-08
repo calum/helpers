@@ -115,6 +115,49 @@ class TestWidgetResolution:
 
         assert result["kind"] == "menuEntry"
 
+    def test_full_canvas_background_chrome_does_not_shadow_entity_beneath(self):
+        """The `interfaces` dump includes always-loaded background containers
+        (viewport roots, the xp-drops overlay, ...) that report bounds
+        spanning the *entire* canvas with no text/itemId of their own —
+        exactly where every NPC/object/ground-item the player could click
+        also lives. Treating those as real widgets would swallow every
+        in-world click before the entity-hull check ever ran (confirmed via
+        a live recording: every click landed on group 122's full-canvas
+        background instead of the Goblin or ground item underneath it).
+        Group 122 (xp_drops) is registered with occludes=False precisely so
+        resolve_click — like is_occluded — passes through it to what's
+        actually beneath the cursor."""
+        g = GameState()
+        g.interfaces = [_iface_widget(122, 0, 0, 0, 625, 412)]  # full-canvas background
+        g.npcs = [_entity("Goblin", 3107, 3211, 3311, _SQUARE_HULL)]
+
+        result = resolve_click(410, 380, g)
+
+        assert result["kind"] == "npc"
+        assert result["name"] == "Goblin"
+
+    def test_full_canvas_background_chrome_alone_falls_through_to_viewport(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(122, 0, 0, 0, 625, 412)]
+
+        result = resolve_click(410, 380, g)
+
+        assert result["kind"] == "viewport"
+
+    def test_occluding_widget_still_wins_over_entity_hull_beneath(self):
+        """Unlike background chrome, a real panel (inventory) sitting in
+        front of the game world should still resolve as the widget — the
+        player would be clicking the panel, not whatever's rendered behind
+        it in the 3D scene."""
+        g = GameState()
+        g.interfaces = [_iface_widget(149, 3, 400, 370, 32, 32, itemId=995, text="Coins")]
+        g.npcs = [_entity("Goblin", 3107, 3211, 3311, _SQUARE_HULL)]
+
+        result = resolve_click(410, 380, g)
+
+        assert result["kind"] == "widget"
+        assert result["groupId"] == 149
+
 
 class TestEntityResolution:
     def test_click_inside_npc_hull_resolves_to_npc(self):

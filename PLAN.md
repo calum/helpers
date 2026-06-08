@@ -4,6 +4,98 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-08 (6) — Live recording analysis: fixed melee_fighter + resolver bug
+
+### Goal
+
+Analyse the first real recording made with the session recorder
+(`recordings/killing-and-looting-two-goblins.jsonl` — 87 ticks, 9 clicks,
+"attacked and looted two goblins"), use it to correct `MeleeFighterRoutine`
+where its assumptions don't match real play, and fix whatever the recording
+exposed in the recorder/resolver itself.
+
+### Findings from the recording
+
+1. **`NPC_NAME = "GoblinMeleeFighter"` doesn't exist.** The real NPCs are
+   named `"Goblin"` (menu entry: `"Attack Goblin (level-2)"`). With the old
+   constant, `npcs_named()` would return nothing and the routine would never
+   find a target. → changed `NPC_NAME` to `"Goblin"` (and updated the
+   `GOBLIN_ON_SCREEN`/`GOBLIN_OFF_SCREEN` test fixtures' `name` to match —
+   `_nearest_available_npc` filters by `NPC_NAME` so a stale fixture name
+   would silently break every find_target test).
+2. **`LOOT_WINDOW_TICKS = 3` is too short for multi-item drops.** Goblin #1
+   dropped two items (Body rune + Bones); the corpse vanished after tick 83
+   (death detected tick 84), the rune was picked up at tick 85 (+1) but Bones
+   not until tick 88 (+4) — one tick *past* where a 3-tick window would
+   already have bailed back to `find_target`, abandoning the second item.
+   → bumped to `LOOT_WINDOW_TICKS = 5`.
+3. **Goblin index 2796 "dying" then reappearing 35 ticks later is a
+   respawn reusing a recycled NPC slot index — expected RS behaviour**, not
+   a routine bug. Confirms the `index`-based death-detection assumption is
+   safe in practice (recycling happens with far more delay than the 3–5 tick
+   loot window could ever collide with).
+4. **The resolver swallowed every in-world click.** All 9 real clicks
+   resolved as either `menuEntry` (when a context menu happened to already
+   be open) or generic `widget G122:0` — *never* `npc`/`groundItem`, even
+   though the player directly attacked a Goblin (left-click at tick 89,
+   8px from NPC index 2797) and looted ground items. Root cause: RuneLite's
+   `interfaces` dump always includes group 122 (`InterfaceID.XP_DROPS`,
+   confirmed via `InterfaceID.java`) with bounds `(0,0,625,412)` — the full
+   game canvas — present on 87/87 ticks. `resolve_click` checked
+   `game.interfaces` (any group) before entity hulls, so this background
+   overlay intercepted every click before the hull test ever ran. Unit
+   tests never caught it because their fixtures only ever used small,
+   specific widget rects (inventory slots etc.), never a full-viewport
+   background pane.
+
+### Fixes applied
+
+- **`melee_fighter.py`**: `NPC_NAME` → `"Goblin"`, `LOOT_WINDOW_TICKS` 3 → 5
+  (with a comment on why — multiple drops need more than one pickup gesture).
+- **`melee_fighter.py` redesign (per explicit user request)**: both
+  `find_target` and `looting` now use the documented "verify before you
+  click" pattern from `Controller.click_menu_entry` — right-click the
+  target/item, confirm an `"Attack <NPC_NAME>"` / `"Take <item name>"` entry
+  is actually present in the context menu, then click that exact row, rather
+  than blind-left-clicking via `click_entity`. New `_attack_target`/
+  `_loot_target` instance vars track the in-flight gesture across ticks
+  (mirrors the `_right_clicked` example in `click_menu_entry`'s docstring);
+  a closed menu with no match resets and retries rather than abandoning.
+  `test_melee_fighter.py` rewritten accordingly (39 tests).
+- **`resolver.py`**: `resolve_click` now skips `interfaces` entries whose
+  group doesn't pass `iface_registry.occludes(group_id)` — the same
+  whitelist `GameState.is_occluded` already uses — so background/chrome
+  groups (viewport roots, xp drops, ...) fall through to the entity-hull
+  test instead of shadowing it. Registered group 122 in
+  `state/interfaces.py` as `InterfaceInfo("xp_drops", occludes=False)`.
+  Added regression tests in `test_recording_resolver.py` covering: a
+  full-canvas background pane no longer shadows an entity hull beneath it,
+  falls through to `viewport` when nothing's beneath it, and a *real*
+  occluding panel (inventory) still correctly wins over an entity behind it.
+
+### Tests
+
+All 665 Python tests pass (`python -m pytest scripts/gamebridge/tests/ -q`).
+No GAMEBRIDGE.md changes — no wire-format/plugin changes, pure Python fixes.
+
+### Open / next steps
+
+- **Still not live-tested with the new menu-verification flow** — the
+  `right_click_entity`/`click_menu_entry` gesture sequencing in
+  `find_target`/`looting` is unit-tested but unverified in a real session.
+  Worth a follow-up recording run specifically targeting Goblins to confirm
+  the gesture timing (right-click → menu populates → verify → click) holds
+  up across ticks in practice, and that `LOOT_WINDOW_TICKS = 5` is enough
+  headroom for the slightly-slower right-click+verify pickup path (the
+  manual recording used menu-navigation throughout, so its timings are a
+  reasonable but not perfect proxy for the routine's own gesture costs).
+- Possible follow-up: audit other interface groups likely to share XP_DROPS'
+  "always-loaded, full-canvas, no occludes flag" shape (orbs, world-map
+  button, etc.) — they'd have the same swallowing effect on `resolve_click`
+  if a click ever lands in their bounds, just less frequently than 122.
+
+---
+
 ## Session: 2026-06-08 (5) — Session Recorder: capture manual play to reverse-engineer routines
 
 ### Goal

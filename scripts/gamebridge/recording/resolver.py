@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..state import interfaces as iface_registry
+
 if TYPE_CHECKING:
     from ..state.game_state import GameState
 
@@ -80,6 +82,16 @@ def resolve_click(canvas_x: float, canvas_y: float, game: "GameState") -> dict:
                 }
 
     for w in game.interfaces:
+        # The `interfaces` array is a flat dump of every loaded widget group —
+        # viewport/root containers and overlay chrome (xp drops, ...) report
+        # full-canvas bounds alongside real panels (bank, inventory, ...) with
+        # no flag distinguishing "the player could click this" from "this is
+        # just background". Reusing the same occludes() whitelist GameState
+        # already relies on for is_occluded() keeps both checks consistent —
+        # and, critically, lets a click pass through background chrome to the
+        # entity hulls beneath it instead of being swallowed here.
+        if not iface_registry.occludes(w.get("groupId", -1)):
+            continue
         bounds = w.get("bounds")
         if bounds and _point_in_rect(canvas_x, canvas_y, bounds):
             item_id = w.get("itemId", -1)

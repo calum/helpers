@@ -3,10 +3,13 @@ Tests for the MeleeFighterRoutine state machine.
 
 Covers:
   - target selection: nearest NPC by name, excluding ones near other players
-  - camera/occlusion/idle-settle gating before the attack click (mirrors iron_mining)
+  - camera/occlusion/idle-settle gating before the attack gesture (mirrors iron_mining)
+  - "verify before you click": right-click → confirm "Attack <name>"/"Take <name>"
+    is actually in the context menu → click that row, for both targeting and looting
   - death detection via the unique per-instance `index` (not the shared `id`)
-  - looting: one click per tick, each item attempted exactly once, re-resolved
-    from live state every tick, transition back once the loot window elapses
+  - looting: one pickup gesture at a time, each item attempted exactly once,
+    re-resolved from live state every tick, transition back once the loot
+    window elapses
 """
 from __future__ import annotations
 
@@ -53,7 +56,7 @@ def _rival(x: int, y: int, player_id: int = 5, name: str = "Rival") -> dict:
 
 
 GOBLIN_ON_SCREEN = {
-    "id": 100, "name": "GoblinMeleeFighter", "index": 42,
+    "id": 100, "name": "Goblin", "index": 42,
     "worldX": 3221, "worldY": 3219, "plane": 0,
     "animation": -1, "combatLevel": 2,
     "onScreen": True, "canvasX": 400, "canvasY": 300,
@@ -61,7 +64,7 @@ GOBLIN_ON_SCREEN = {
 }
 
 GOBLIN_OFF_SCREEN = {
-    "id": 100, "name": "GoblinMeleeFighter", "index": 7,
+    "id": 100, "name": "Goblin", "index": 7,
     "worldX": 3230, "worldY": 3230, "plane": 0,
     "animation": -1, "combatLevel": 2,
     "onScreen": False, "canvasX": None, "canvasY": None, "hull": None,
@@ -94,7 +97,7 @@ class TestFindTargetSelection:
         ctrl = _ctrl()
         result = _routine().find_target(game, ctrl)
         ctrl.bring_entity_on_screen.assert_not_called()
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
     def test_no_click_when_only_candidate_is_near_other_player(self):
@@ -104,7 +107,7 @@ class TestFindTargetSelection:
         ctrl = _ctrl()
         result = _routine().find_target(game, ctrl)
         ctrl.bring_entity_on_screen.assert_not_called()
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
     def test_picks_nearest_uncontested_npc(self):
@@ -115,13 +118,17 @@ class TestFindTargetSelection:
         game = _make_game(npcs=[contested_close, uncontested_near, uncontested_far], players=[rival])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
+        ctrl.click_menu_entry.return_value = True
 
         r = _routine()
-        r.find_target(game, ctrl)         # tick 1: settle buffer starts
+        r.find_target(game, ctrl)            # tick 1: settle buffer starts
         game.tick = 2
-        result = r.find_target(game, ctrl)  # tick 2: click fires
+        r.find_target(game, ctrl)            # tick 2: settle complete — right-clicks
+        game.tick = 3
+        result = r.find_target(game, ctrl)   # tick 3: "Attack Goblin" verified — commits
 
-        ctrl.click_entity.assert_called_once_with(uncontested_near)
+        ctrl.right_click_entity.assert_called_once_with(uncontested_near)
+        ctrl.click_menu_entry.assert_called_once_with(game, "Attack", r.NPC_NAME)
         assert result == "fighting"
         assert r._target_index == uncontested_near["index"]
         assert r._target == uncontested_near
@@ -138,7 +145,7 @@ class TestFindTargetCameraAndSettleBuffer:
         ctrl.bring_entity_on_screen.return_value = False
         result = _routine().find_target(game, ctrl)
         ctrl.bring_entity_on_screen.assert_called_once_with(GOBLIN_OFF_SCREEN, game)
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
     def test_does_not_click_while_player_moving(self):
@@ -147,25 +154,33 @@ class TestFindTargetCameraAndSettleBuffer:
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
         result = _routine().find_target(game, ctrl)
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
-    def test_waits_one_tick_after_settle_then_clicks_and_transitions(self):
+    def test_waits_one_tick_after_settle_then_attacks_and_transitions(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
+        ctrl.click_menu_entry.return_value = True
         r = _routine()
 
         result = r.find_target(game, ctrl)   # tick 1: records settle tick, no click
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
         game.tick = 2
-        result = r.find_target(game, ctrl)   # tick 2: settle complete — clicks
-        ctrl.click_entity.assert_called_once_with(GOBLIN_OFF_SCREEN)
+        result = r.find_target(game, ctrl)   # tick 2: settle complete — right-clicks
+        ctrl.right_click_entity.assert_called_once_with(GOBLIN_OFF_SCREEN)
+        assert r._attack_target == GOBLIN_OFF_SCREEN
+        assert result is None
+
+        game.tick = 3
+        result = r.find_target(game, ctrl)   # tick 3: "Attack Goblin" verified — commits
+        ctrl.click_menu_entry.assert_called_once_with(game, "Attack", r.NPC_NAME)
         assert result == "fighting"
         assert r._target_index == GOBLIN_OFF_SCREEN["index"]
         assert r._target == GOBLIN_OFF_SCREEN
+        assert r._attack_target is None
 
     def test_resets_buffer_when_camera_adjusts_mid_settle(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
@@ -196,7 +211,7 @@ class TestFindTargetCameraAndSettleBuffer:
         r.find_target(game, ctrl)
         assert r._idle_since_tick == -1
 
-    def test_buffer_resets_after_successful_click(self):
+    def test_buffer_resets_after_right_click(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
@@ -204,8 +219,70 @@ class TestFindTargetCameraAndSettleBuffer:
 
         r.find_target(game, ctrl)   # tick 1: buffer start
         game.tick = 2
-        r.find_target(game, ctrl)   # tick 2: click
+        r.find_target(game, ctrl)   # tick 2: right-clicks — gesture started
         assert r._idle_since_tick == -1
+
+
+# ---------------------------------------------------------------------------
+# find_target — "verify before you click": confirm the menu before committing
+# ---------------------------------------------------------------------------
+
+class TestFindTargetMenuVerification:
+    def _mid_gesture_routine(self, target: dict = GOBLIN_ON_SCREEN) -> MeleeFighterRoutine:
+        r = _routine()
+        r._attack_target = target
+        return r
+
+    def test_does_not_commit_while_menu_still_open_without_a_match(self):
+        """The menu can take a tick to populate — don't abandon the gesture
+        (or fall back to clicking blind) while it's still open with no
+        "Attack Goblin" entry yet."""
+        game = _make_game(tick=5)
+        game.menu = {"open": True, "entries": []}
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        r = self._mid_gesture_routine()
+
+        result = r.find_target(game, ctrl)
+
+        assert r._attack_target == GOBLIN_ON_SCREEN
+        assert result is None
+
+    def test_retries_when_menu_closes_without_a_match(self):
+        """The menu closed without ever showing "Attack Goblin" — e.g. the
+        right-click landed on a tile or another entity. Reset and let
+        find_target re-pick and re-click a target on a future tick rather
+        than getting stuck waiting on a menu that's gone."""
+        game = _make_game(tick=5)
+        game.menu = {"open": False, "entries": []}
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        r = self._mid_gesture_routine()
+
+        result = r.find_target(game, ctrl)
+
+        assert r._attack_target is None
+        assert r._target_index is None
+        assert result is None
+
+    def test_commits_target_once_attack_entry_is_verified_and_clicked(self):
+        game = _make_game(tick=5)
+        game.menu = {"open": True, "entries": [
+            {"option": "Attack", "target": "<col=ffff00>Goblin<col=80ff00>  (level-2)",
+             "bounds": {"x": 100, "y": 50, "width": 80, "height": 15}},
+        ]}
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = True
+        r = self._mid_gesture_routine()
+
+        result = r.find_target(game, ctrl)
+
+        ctrl.click_menu_entry.assert_called_once_with(game, "Attack", r.NPC_NAME)
+        assert result == "fighting"
+        assert r._target_index == GOBLIN_ON_SCREEN["index"]
+        assert r._target == GOBLIN_ON_SCREEN
+        assert r._fight_start_tick == 5
+        assert r._attack_target is None
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +316,7 @@ class TestFindTargetOcclusionGuard:
 
         result = _routine().find_target(game, ctrl)
 
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
     def test_adjusts_camera_when_occluded(self):
@@ -262,17 +339,20 @@ class TestFindTargetOcclusionGuard:
         r.find_target(game, ctrl)
         assert r._idle_since_tick == -1
 
-    def test_clicks_when_on_screen_and_clear(self):
+    def test_attacks_when_on_screen_and_clear(self):
         game = self._game_with_panel(GOBLIN_CLEAR)
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
+        ctrl.click_menu_entry.return_value = True
 
         r = _routine()
-        r.find_target(game, ctrl)            # tick 1: settle buffer starts
+        r.find_target(game, ctrl)            # tick 2: settle buffer starts
         game.tick += 1
-        result = r.find_target(game, ctrl)   # tick 2: settle complete — clicks
+        r.find_target(game, ctrl)            # tick 3: settle complete — right-clicks
+        game.tick += 1
+        result = r.find_target(game, ctrl)   # tick 4: "Attack Goblin" verified — commits
 
-        ctrl.click_entity.assert_called_once_with(GOBLIN_CLEAR)
+        ctrl.right_click_entity.assert_called_once_with(GOBLIN_CLEAR)
         assert result == "fighting"
 
 
@@ -388,7 +468,7 @@ class TestFightingMissclickDetection:
 
 
 # ---------------------------------------------------------------------------
-# looting — one attempt per item, one click per tick, re-resolved live
+# looting — one pickup gesture at a time, "verify before you click", re-resolved live
 # ---------------------------------------------------------------------------
 
 class TestLooting:
@@ -398,18 +478,76 @@ class TestLooting:
         r._death_tick = death_tick
         return r
 
-    def test_clicks_first_unlooted_onscreen_item_and_records_it(self):
+    def _take_entry(self, name: str) -> dict:
+        return {"option": "Take", "target": f"<col=ff9040>{name}",
+                "bounds": {"x": 100, "y": 50, "width": 80, "height": 15}}
+
+    def test_right_clicks_first_unlooted_onscreen_item(self):
+        """Picking an item up starts with a right-click — it isn't recorded
+        in _looted_keys (and so isn't "committed") until the menu confirms
+        the matching "Take <name>" entry is actually present."""
         game = _make_game(tick=11, ground_items=[BONES])
         ctrl = _ctrl()
         r = self._looting_routine()
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(BONES)
-        assert (BONES["id"], 3225, 3215) in r._looted_keys
+        ctrl.right_click_entity.assert_called_once_with(BONES)
+        assert r._loot_target == BONES
+        assert r._looted_keys == set()
         assert result is None
 
-    def test_does_not_reclick_already_looted_item(self):
+    def test_does_not_start_a_new_gesture_mid_pickup(self):
+        """While a pickup gesture is in flight, looting must keep verifying
+        that one rather than scanning the tile and right-clicking something
+        else (which would abandon the in-flight gesture)."""
+        game = _make_game(tick=11, ground_items=[BONES, COINS_ON_SCREEN])
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        game.menu = {"open": True, "entries": []}
+        r = self._looting_routine()
+        r._loot_target = BONES
+
+        result = r.looting(game, ctrl)
+
+        ctrl.right_click_entity.assert_not_called()
+        ctrl.click_menu_entry.assert_called_once_with(game, "Take", BONES["name"])
+        assert r._loot_target == BONES
+        assert result is None
+
+    def test_records_item_once_take_entry_is_verified_and_clicked(self):
+        game = _make_game(tick=11, ground_items=[BONES])
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = True
+        r = self._looting_routine()
+        r._loot_target = BONES
+
+        result = r.looting(game, ctrl)
+
+        ctrl.click_menu_entry.assert_called_once_with(game, "Take", BONES["name"])
+        assert (BONES["id"], 3225, 3215) in r._looted_keys
+        assert r._loot_target is None
+        assert result is None
+
+    def test_retries_pickup_when_menu_closes_without_a_match(self):
+        """The menu closed without ever showing "Take Bones" — e.g. the
+        right-click landed on the corpse or another stack instead. The item
+        was never actually clicked, so reset and let looting re-resolve and
+        re-attempt it on a future tick rather than abandoning it."""
+        game = _make_game(tick=11, ground_items=[BONES])
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        game.menu = {"open": False, "entries": []}
+        r = self._looting_routine()
+        r._loot_target = BONES
+
+        result = r.looting(game, ctrl)
+
+        assert r._loot_target is None
+        assert r._looted_keys == set()
+        assert result is None
+
+    def test_does_not_reattempt_already_looted_item(self):
         game = _make_game(tick=11, ground_items=[BONES])
         ctrl = _ctrl()
         r = self._looting_routine()
@@ -417,52 +555,66 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
     def test_skips_offscreen_item_without_marking_it_attempted(self):
         """An item that hasn't rendered yet is left alone — not yet 'attempted' —
-        so it can still be clicked once it appears."""
+        so it can still be picked up once it appears."""
         game = _make_game(tick=11, ground_items=[COINS_OFF_SCREEN])
         ctrl = _ctrl()
         r = self._looting_routine()
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert r._looted_keys == set()
         assert result is None
 
-    def test_clicks_only_one_item_per_tick(self):
+    def test_attempts_only_one_item_per_tick(self):
         game = _make_game(tick=11, ground_items=[BONES, COINS_ON_SCREEN])
         ctrl = _ctrl()
         r = self._looting_routine()
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(BONES)
+        ctrl.right_click_entity.assert_called_once_with(BONES)
         assert result is None
 
-    def test_re_resolves_items_at_tile_each_tick_for_subsequent_pickups(self):
-        """Coordinates aren't cached: the first pickup walks the player onto the
-        tile, so the next tick must re-query live state and click the next item."""
+    def test_picks_up_items_one_full_gesture_at_a_time(self):
+        """Coordinates aren't cached: each pickup is its own right-click →
+        verify → click gesture. Once one resolves (recorded here), the next
+        tick re-resolves the tile from live state — Bones is gone and Coins
+        has rendered — and starts a fresh gesture on whatever's there now,
+        rather than reusing a stale position."""
         ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = True
         r = self._looting_routine()
 
+        # tick 11: right-click Bones
         r.looting(_make_game(tick=11, ground_items=[BONES]), ctrl)
+        assert r._loot_target == BONES
         ctrl.reset_mock()
 
-        result = r.looting(_make_game(tick=12, ground_items=[BONES, COINS_ON_SCREEN]), ctrl)
+        # tick 12: "Take Bones" verified — recorded, gesture resolved
+        r.looting(_make_game(tick=12, ground_items=[BONES]), ctrl)
+        assert (BONES["id"], 3225, 3215) in r._looted_keys
+        assert r._loot_target is None
+        ctrl.reset_mock()
 
-        ctrl.click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        # tick 13: re-resolved from live state — start a fresh gesture on Coins
+        result = r.looting(_make_game(tick=13, ground_items=[COINS_ON_SCREEN]), ctrl)
+
+        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        assert r._loot_target == COINS_ON_SCREEN
         assert result is None
 
-    def test_does_not_click_next_item_while_still_walking_to_previous_pickup(self):
-        """The click on the first item starts the player walking toward its
+    def test_does_not_start_next_pickup_while_still_walking_to_previous_one(self):
+        """The previous pickup's click started the player walking toward its
         tile — every other item's canvas position shifts mid-stride, so a
-        click fired before the player settles lands on a stale position
+        right-click fired before the player settles lands on a stale position
         (this was the reported "loots only the top item" bug). We must wait
-        for player_idle() before attempting the next pickup."""
+        for player_idle() before starting the next gesture."""
         game = _make_game(tick=12, ground_items=[BONES, COINS_ON_SCREEN])
         game._prev_pos = (game.player_pos[0] - 1, game.player_pos[1])  # mid-walk
         ctrl = _ctrl()
@@ -471,10 +623,10 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_not_called()
+        ctrl.right_click_entity.assert_not_called()
         assert result is None
 
-    def test_clicks_next_item_once_player_settles_after_previous_pickup(self):
+    def test_starts_next_pickup_once_player_settles_after_previous_one(self):
         game = _make_game(tick=13, ground_items=[BONES, COINS_ON_SCREEN])
         game._prev_pos = game.player_pos  # settled — no movement this tick
         ctrl = _ctrl()
@@ -483,27 +635,29 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN)
         assert result is None
 
     def test_stays_in_looting_before_window_elapses_with_nothing_to_loot(self):
-        game = _make_game(tick=12, ground_items=[])  # 12 - 10 = 2 < LOOT_WINDOW_TICKS (3)
+        game = _make_game(tick=12, ground_items=[])  # 12 - 10 = 2 < LOOT_WINDOW_TICKS (5)
         result = self._looting_routine(death_tick=10).looting(game, _ctrl())
         assert result is None
 
     def test_returns_to_find_target_once_window_elapses_with_nothing_to_loot(self):
-        game = _make_game(tick=13, ground_items=[])  # 13 - 10 = 3 >= LOOT_WINDOW_TICKS
+        game = _make_game(tick=15, ground_items=[])  # 15 - 10 = 5 >= LOOT_WINDOW_TICKS
         result = self._looting_routine(death_tick=10).looting(game, _ctrl())
         assert result == "find_target"
 
     def test_does_not_abandon_an_unlooted_item_when_window_elapses(self):
         """The window only ends the search once nothing is left to attempt —
-        a freshly-visible drop still gets its one click even on the last tick."""
-        game = _make_game(tick=14, ground_items=[BONES])  # window already elapsed
+        a freshly-visible drop still gets its gesture started even on the
+        last tick."""
+        game = _make_game(tick=16, ground_items=[BONES])  # window already elapsed
         ctrl = _ctrl()
         r = self._looting_routine(death_tick=10)
 
         result = r.looting(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(BONES)
+        ctrl.right_click_entity.assert_called_once_with(BONES)
+        assert r._loot_target == BONES
         assert result is None
