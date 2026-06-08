@@ -192,4 +192,17 @@ public interface GameBridgeConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "exposeMenu",
+		name = "Expose context menu",
+		description = "Include the open right-click context menu (option/target text and clickable screen bounds "
+			+ "per entry) in each tick message. Lets external tooling verify menu contents before clicking — "
+			+ "e.g. right-click an NPC, confirm 'Attack Goblin' is present, then click it.",
+		position = 14
+	)
+	default boolean exposeMenu()
+	{
+		return true;
+	}
 }

@@ -51,7 +51,7 @@ def state(contract: dict[str, Any]) -> GameState:
 
 class TestContractSchema:
     _TOP_LEVEL = {"tick", "player", "camera", "npcs", "players", "objects", "groundItems",
-                  "widgets", "interfaces", "inventory", "equipment", "events"}
+                  "widgets", "interfaces", "menu", "inventory", "equipment", "events"}
     _PLAYER    = {"name", "worldX", "worldY", "plane", "animation", "hp", "prayer"}
     _CAMERA    = {"yaw", "pitch", "x", "y", "z"}
     _NPC       = {"id", "index", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
@@ -64,6 +64,7 @@ class TestContractSchema:
                     "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _WIDGET    = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
     _INTERFACE = {"groupId", "childId", "itemId", "quantity", "bounds", "text"}
+    _MENU_ENTRY = {"option", "target", "identifier", "type", "bounds"}
     _BOUNDS    = {"x", "y", "width", "height"}
     _SLOT      = {"slot", "itemId", "qty"}
     _EVENT_TYPES      = {"xp", "chat", "container", "animation", "varbit", "interacting"}
@@ -132,6 +133,35 @@ class TestContractSchema:
             b = iface["bounds"]
             assert b["width"] > 0,  f"interface bounds width must be > 0: {iface}"
             assert b["height"] > 0, f"interface bounds height must be > 0: {iface}"
+
+    def test_menu_fields(self, contract):
+        menu = contract["menu"]
+        assert "open" in menu
+        assert isinstance(menu["open"], bool)
+        assert isinstance(menu["entries"], list)
+
+    def test_open_menu_has_bounds_and_entries(self, contract):
+        menu = contract["menu"]
+        assert menu["open"] is True, "contract menu must be open"
+        assert self._BOUNDS <= menu.keys()
+        assert len(menu["entries"]) >= 1, "contract open menu must have at least one entry"
+
+    def test_menu_entry_fields(self, contract):
+        for entry in contract["menu"]["entries"]:
+            missing = self._MENU_ENTRY - entry.keys()
+            assert not missing, f"menu entry missing fields: {missing}  entry={entry}"
+            assert self._BOUNDS <= entry["bounds"].keys()
+
+    def test_menu_entries_in_display_order_15px_apart(self, contract):
+        rows = [e["bounds"]["y"] for e in contract["menu"]["entries"]]
+        for prev, nxt in zip(rows, rows[1:]):
+            assert nxt - prev == 15, f"menu entry rows must be 15px apart: {rows}"
+
+    def test_first_menu_entry_is_attack_goblin(self, contract):
+        # The contract models right-clicking a Goblin — Attack must be the top row.
+        first = contract["menu"]["entries"][0]
+        assert first["option"] == "Attack"
+        assert "Goblin" in first["target"]
 
     def test_npc_minimap_fields_present(self, contract):
         for npc in contract["npcs"]:
@@ -276,6 +306,16 @@ class TestContractGameStateIntegration:
 
     def test_interfaces_count(self, state, contract):
         assert len(state.interfaces) == len(contract["interfaces"])
+
+    def test_menu_parsed_into_state(self, state, contract):
+        assert state.menu == contract["menu"]
+        assert state.menu_open() is True
+
+    def test_menu_entry_matching_finds_attack_goblin(self, state):
+        entry = state.menu_entry_matching("Attack", "Goblin")
+        assert entry is not None
+        assert entry["option"] == "Attack"
+        assert "Goblin" in entry["target"]
 
     def test_interface_is_occluded_with_known_widget(self, state, contract):
         """A widget from a real panel group (160) occludes its own centre point.

@@ -154,6 +154,12 @@ public class ContractTest
 	}
 
 	@Test
+	public void topLevelMenuPresent()
+	{
+		assertIsMap("menu", CONTRACT.get("menu"));
+	}
+
+	@Test
 	public void topLevelInventoryPresent()
 	{
 		assertIsList("inventory", CONTRACT.get("inventory"));
@@ -450,6 +456,68 @@ public class ContractTest
 	}
 
 	// ------------------------------------------------------------------ //
+	// Menu fields — matches buildMenuMap() in TickMessageBuilder
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void menuHasOpenAndEntries()
+	{
+		Map<?, ?> menu = map("menu");
+		assertTrue("menu missing 'open'", menu.containsKey("open"));
+		assertTrue("menu.open must be a boolean", menu.get("open") instanceof Boolean);
+		assertIsList("menu.entries", menu.get("entries"));
+	}
+
+	@Test
+	public void openMenuHasBoundsAndNonEmptyEntries()
+	{
+		Map<?, ?> menu = map("menu");
+		assertTrue("contract menu must be open", Boolean.TRUE.equals(menu.get("open")));
+		assertHasFields(menu, "menu", "x", "y", "width", "height", "entries");
+		assertFalse("open menu entries must not be empty", list(menu.get("entries")).isEmpty());
+	}
+
+	@Test
+	public void menuEntriesHaveAllFields()
+	{
+		for (Object e : list(map("menu").get("entries")))
+		{
+			Map<?, ?> entry = castMap("menu entry", e);
+			assertHasFields(entry, "menu entry", "option", "target", "identifier", "type", "bounds");
+			Map<?, ?> bounds = castMap("menu entry.bounds", entry.get("bounds"));
+			assertHasFields(bounds, "menu entry.bounds", "x", "y", "width", "height");
+		}
+	}
+
+	@Test
+	public void menuEntriesAreOrderedTopToBottom()
+	{
+		// Display order (top row first) must have monotonically increasing
+		// row y-coordinates, each MENU_ENTRY_HEIGHT (15px) apart.
+		List<?> entries = list(map("menu").get("entries"));
+		Integer previousY = null;
+		for (Object e : entries)
+		{
+			Map<?, ?> bounds = castMap("menu entry.bounds", castMap("menu entry", e).get("bounds"));
+			int y = ((Number) bounds.get("y")).intValue();
+			if (previousY != null)
+			{
+				assertEquals("menu entry rows must be 15px apart", 15, y - previousY);
+			}
+			previousY = y;
+		}
+	}
+
+	@Test
+	public void firstMenuEntryIsAttackOption()
+	{
+		// The contract models right-clicking a Goblin — "Attack" must be the top entry.
+		Map<?, ?> firstEntry = castMap("menu entry", list(map("menu").get("entries")).get(0));
+		assertEquals("Attack", firstEntry.get("option"));
+		assertEquals("Goblin (level-2)", firstEntry.get("target"));
+	}
+
+	// ------------------------------------------------------------------ //
 	// Minimap fields — minimapX / minimapY on NPC and object entries
 	// ------------------------------------------------------------------ //
 
@@ -647,6 +715,12 @@ public class ContractTest
 	private static List<?> list(String key)
 	{
 		return (List<?>) CONTRACT.get(key);
+	}
+
+	private static List<?> list(Object o)
+	{
+		assertTrue("expected a List, got: " + o, o instanceof List);
+		return (List<?>) o;
 	}
 
 	@SuppressWarnings("unchecked")

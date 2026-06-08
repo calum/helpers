@@ -40,6 +40,7 @@ import net.runelite.api.HashTable;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.ItemContainer;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
@@ -132,6 +133,11 @@ class TickMessageBuilder
 		if (config.exposeInterfaces())
 		{
 			msg.put("interfaces", buildInterfacesList());
+		}
+
+		if (config.exposeMenu())
+		{
+			msg.put("menu", buildMenuMap());
 		}
 
 		// 93 = inventory (INV), 94 = worn equipment (WORN)
@@ -374,6 +380,58 @@ class TickMessageBuilder
 			}
 		}
 		return list;
+	}
+
+	// Pixel layout of the native right-click menu, reverse-engineered in
+	// InteractHighlightOverlay.hoveredMenuEntry: a 19px "Choose Option" header
+	// followed by 15px-tall entry rows. Client.getMenuEntries() returns entries
+	// in reverse display order (last element is the top/first row shown).
+	private static final int MENU_HEADER_HEIGHT = 19;
+	private static final int MENU_ENTRY_HEIGHT = 15;
+
+	private Map<String, Object> buildMenuMap()
+	{
+		Map<String, Object> m = new LinkedHashMap<>();
+		boolean open = client.isMenuOpen();
+		m.put("open", open);
+		if (!open)
+		{
+			m.put("entries", new ArrayList<>());
+			return m;
+		}
+
+		int menuX = client.getMenuX();
+		int menuY = client.getMenuY();
+		int menuWidth = client.getMenuWidth();
+		m.put("x", menuX);
+		m.put("y", menuY);
+		m.put("width", menuWidth);
+		m.put("height", client.getMenuHeight());
+
+		MenuEntry[] menuEntries = client.getMenuEntries();
+		List<Map<String, Object>> entries = new ArrayList<>(menuEntries.length);
+		for (int displayIndex = 0; displayIndex < menuEntries.length; displayIndex++)
+		{
+			MenuEntry entry = menuEntries[menuEntries.length - 1 - displayIndex];
+
+			Map<String, Object> e = new LinkedHashMap<>();
+			e.put("option", entry.getOption());
+			e.put("target", entry.getTarget());
+			e.put("identifier", entry.getIdentifier());
+			e.put("type", entry.getType().getId());
+
+			Map<String, Object> bounds = new LinkedHashMap<>();
+			bounds.put("x", menuX);
+			bounds.put("y", menuY + MENU_HEADER_HEIGHT + displayIndex * MENU_ENTRY_HEIGHT);
+			bounds.put("width", menuWidth);
+			bounds.put("height", MENU_ENTRY_HEIGHT);
+			e.put("bounds", bounds);
+
+			entries.add(e);
+		}
+		m.put("entries", entries);
+
+		return m;
 	}
 
 	private List<Map<String, Object>> buildItemContainerList(int containerId)

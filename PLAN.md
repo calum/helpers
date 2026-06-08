@@ -4,6 +4,106 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-08 (5) — Session Recorder: capture manual play to reverse-engineer routines
+
+### Goal
+
+Add a "Record" feature to the dashboard: capture the full TCP tick stream plus
+the user's real mouse clicks while they play manually, producing a file that
+can be transcribed into a routine afterwards (per the user's request — they
+want to record themselves performing an action sequence, then write the
+equivalent `Routine` state machine from the recording).
+
+### Design decision — resolve clicks against live game state at record time
+
+Bare `(screen_x, screen_y, timestamp)` click logs would force whoever writes
+the routine to manually cross-reference each click against the tick stream
+after the fact (hulls/bounds/camera all change tick-to-tick, so this is
+genuinely hard to do after the session ends). Instead, **`resolve_click()`
+hit-tests the click's canvas coordinate against the *current* tick's geometry
+at the moment it happens** — open menu entries → UI widgets/interfaces →
+entity hulls (NPC/player/object/groundItem, ray-cast polygon test) → viewport
+fallback — and the recorder writes the *resolved* description (e.g. `object
+"Iron rocks" (id=11364) at world (3185,3304)` / `menu entry "Attack Goblin
+(level-2)"`) alongside the raw coordinates. The output reads as an annotated
+action log, close to routine pseudocode already.
+
+### New files
+
+- `recording/click_monitor.py` — daemon thread polling
+  `GetAsyncKeyState(VK_LBUTTON/VK_RBUTTON)` + `GetCursorPos`, mirroring
+  `hotkeys.py`'s no-extra-dependency pattern. Reports button-down transitions
+  only (not held-button repeats), at 10ms poll interval (faster than the 50ms
+  hotkey poll — clicks are short and position precision matters more).
+- `recording/resolver.py` — `resolve_click(canvas_x, canvas_y, game) -> dict`.
+  Always returns a dict (never None) with `kind` ∈ {menuEntry, widget, npc,
+  player, object, groundItem, viewport} plus a human-readable `summary`.
+  Duplicates `fov._point_in_polygon`'s ray-casting algorithm locally rather
+  than importing the module-private helper across packages.
+- `recording/recorder.py` — `SessionRecorder`. Writes JSONL to
+  `~/.gamebridge/recordings/recording-<timestamp>.jsonl`: one `tick` record
+  per tick (raw message verbatim — satisfies "record all the TCP events and
+  game state objects"), one `click` record per resolved click (+ player
+  context: position/animation/interacting-with), bookended by `session_start`/
+  `session_end`. Thread-safe: `record_tick` runs on the GUI thread (via
+  `BridgeTicker`'s queued signal), `record_click` on the click-monitor daemon
+  thread — both serialise file writes through one `threading.Lock`.
+- `ui/recording_tab.py` — new "Recording" dashboard tab: Start/End toggle
+  button, live status (duration/tick-count/click-count), output path, and a
+  scrolling log of resolved clicks as they occur (immediate confirmation that
+  hit-testing is working as expected).
+
+### Controller additions
+
+`GameController` gained two small public coordinate helpers (alongside the
+existing private `_canvas_to_screen`/`_is_canvas_coord_valid`):
+- `screen_to_canvas(sx, sy)` — exact inverse of `_canvas_to_screen` (including
+  the `hull_y_offset` calibration), so a raw OS click position can be
+  hit-tested against `canvasX/Y`/`hull` geometry in the same coordinate space.
+- `is_screen_point_in_window(sx, sy)` — filters out clicks made on other
+  windows (the dashboard itself, browser, etc.) while recording; only in-game
+  clicks are meaningful for reverse-engineering a routine.
+
+### Wiring
+
+`dashboard.py`: added the tab, one line in `_on_tick` (`self._recording_tab
+.on_tick(msg)` — feeds the raw message, since `BridgeTicker` already
+guarantees `self._engine.game` is the matching snapshot by the time `_on_tick`
+fires), and `stop_if_recording()` in `closeEvent` so an in-progress recording
+gets its `session_end` footer instead of being left truncated if the window
+closes mid-session.
+
+### Tests
+
+- `test_recording_resolver.py` — priority ordering (menu > widget > entity >
+  viewport fallback), correct field extraction per kind, hull-less entities
+  skipped, closed-menu ignored.
+- `test_recording_recorder.py` — JSONL structure round-trips
+  (`session_start`/`tick`/`click`/`session_end`), counters match the returned
+  summary, capture calls are safe no-ops outside an active session, file is
+  closed (not locked) after `stop()`. Redirects `RECORDINGS_DIR` to `tmp_path`
+  via monkeypatch — never touches the user's real `~/.gamebridge/recordings`.
+- `test_controller.py` — added `TestScreenToCanvas` (round-trips with
+  `_canvas_to_screen`, applies `hull_y_offset`, None when window missing) and
+  `TestIsScreenPointInWindow` (inclusive top-left / exclusive bottom-right
+  bounds, matching `_is_canvas_coord_valid`'s half-open convention).
+
+All 656 Python tests pass (`python -m pytest scripts/gamebridge/tests/ -q`).
+
+### Open / next steps
+
+- **Not yet live-tested** — needs a real recording session in-game to confirm
+  the click monitor fires correctly, hull hit-testing resolves real clicks as
+  expected, and the JSONL is actually pleasant to transcribe from. Do this
+  before relying on it to build a routine.
+- No GAMEBRIDGE.md changes needed — this is pure Python tooling on the
+  consumer side; the wire format/plugin config is untouched.
+- Possible follow-up if recordings prove noisy: minimap-click resolution
+  (currently falls through to generic `viewport`) and keyboard capture
+  (currently mouse-only) if routines built from recordings need either.
+
+---
+
 ## Session: 2026-06-08 (4) — Phase 4: wiring `MovingTarget` into the click path
 
 ### Goal

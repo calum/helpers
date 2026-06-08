@@ -155,6 +155,37 @@ class GameController:
         y_off = int(_settings.get("hull_y_offset") or 0)
         return left + cx, top + cy - y_off
 
+    def screen_to_canvas(self, sx: float, sy: float) -> Optional[tuple[float, float]]:
+        """Inverse of `_canvas_to_screen` — maps an OS screen coordinate back to
+        canvas space (the coordinate system `canvasX/Y` and `hull` use).
+
+        Used by the session recorder to translate a raw mouse-click position
+        into the same space as entity hulls / widget bounds, so the click can
+        be hit-tested against live game-state geometry. Returns None if the
+        RuneLite window can't be found.
+        """
+        if self._window is None:
+            self.refresh_window()
+        if self._window is None:
+            return None
+        left, top, _, _ = self._window
+        y_off = int(_settings.get("hull_y_offset") or 0)
+        return sx - left, sy - top + y_off
+
+    def is_screen_point_in_window(self, sx: float, sy: float) -> bool:
+        """Return True if the OS screen point lies within the RuneLite client area.
+
+        Used by the session recorder to ignore clicks made on other windows
+        (the dashboard, browser, etc.) while a recording is in progress —
+        only in-game clicks are meaningful for reverse-engineering a routine.
+        """
+        if self._window is None:
+            self.refresh_window()
+        if self._window is None:
+            return False
+        left, top, right, bottom = self._window
+        return left <= sx < right and top <= sy < bottom
+
     def _is_canvas_coord_valid(self, cx: float, cy: float) -> bool:
         """Return True only if the canvas coordinate lies within the game viewport."""
         if self._window is None:
@@ -341,6 +372,58 @@ class GameController:
         self.click_at(cx, cy)
         log.debug("Clicked widget G%d:%d at canvas (%.0f, %.0f)",
                   widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
+
+    def click_menu_entry(self, game_state, option_substr: str, target_substr: Optional[str] = None) -> bool:
+        """Click a right-click context-menu entry matching the given option/target text.
+
+        Non-blocking — looks for a match in the *currently open* menu
+        (``game_state.menu``, via :meth:`GameState.menu_entry_matching`) and
+        clicks the centre of its pre-computed screen bounds if found.
+        Returns True if a match was found and clicked, False if the menu is
+        closed or has no matching entry (the caller should wait for a future
+        tick — the menu may not have opened yet — or give up).
+
+        This is the "verify before you click" pattern: right-click an
+        entity, confirm the expected option/target text is actually present
+        in the menu, then click that exact row — far more reliable than
+        blind left-clicking, especially for moving targets (NPCs walking)
+        or entities partly hidden behind scenery (e.g. a Goblin standing
+        behind a Tree).
+
+        The engine is a single-threaded message loop — like
+        ``click_minimap_entity``, this can't block waiting for the menu to
+        open without freezing the bot on stale data. Spread the gesture
+        across ticks instead, the same "act, then verify next tick" shape
+        ``bring_entity_on_screen``/``click_minimap_entity`` use::
+
+            def attack(self, game, ctrl):
+                if not self._right_clicked:
+                    target = game.nearest_npc_on_screen("Goblin")
+                    if target is None:
+                        return None
+                    ctrl.right_click_entity(target)
+                    self._right_clicked = True
+                    return None
+
+                if ctrl.click_menu_entry(game, "Attack", "Goblin"):
+                    self._right_clicked = False
+                    return "fighting"
+
+                if not game.menu_open():
+                    self._right_clicked = False  # closed without a match — retry
+                return None
+        """
+        entry = game_state.menu_entry_matching(option_substr, target_substr)
+        if entry is None:
+            return False
+
+        b = entry["bounds"]
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        self.click_at(cx, cy)
+        log.debug("Clicked menu entry '%s %s' at canvas (%.0f, %.0f)",
+                  entry.get("option", "?"), entry.get("target", ""), cx, cy)
+        return True
 
     def click_minimap_entity(self, entity: dict, game_state) -> bool:
         """Click the minimap at the entity's pre-computed minimap position.

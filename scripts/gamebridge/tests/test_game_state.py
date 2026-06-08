@@ -1154,3 +1154,117 @@ class TestIsInterfaceOpen:
     def test_empty_interfaces_returns_false(self):
         g = GameState()
         assert g.is_interface_open("bank") is False
+
+
+# --------------------------------------------------------------------------- #
+# Context menu (right-click menu)
+# --------------------------------------------------------------------------- #
+
+def _menu_entry(option: str, target: str = "", x=480, y=379, w=140, h=15, **kw) -> dict:
+    return {"option": option, "target": target,
+            "identifier": kw.get("identifier", 0), "type": kw.get("type", 0),
+            "bounds": {"x": x, "y": y, "width": w, "height": h}}
+
+
+def _open_menu(*entries: dict) -> dict:
+    return {"open": True, "x": 480, "y": 360, "width": 140, "height": 64,
+            "entries": list(entries)}
+
+
+_CLOSED_MENU = {"open": False, "entries": []}
+
+
+class TestMenuOpen:
+    def test_default_menu_is_closed(self):
+        g = GameState()
+        assert g.menu_open() is False
+
+    def test_open_menu_returns_true(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        assert g.menu_open() is True
+
+    def test_closed_menu_returns_false(self):
+        g = GameState()
+        g.menu = _CLOSED_MENU
+        assert g.menu_open() is False
+
+
+class TestMenuEntryMatching:
+    def test_matches_by_option_only(self):
+        g = GameState()
+        g.menu = _open_menu(
+            _menu_entry("Attack", "Goblin (level-2)"),
+            _menu_entry("Examine", "Goblin (level-2)"),
+        )
+        entry = g.menu_entry_matching("Attack")
+        assert entry is not None
+        assert entry["option"] == "Attack"
+
+    def test_matches_by_option_and_target(self):
+        g = GameState()
+        g.menu = _open_menu(
+            _menu_entry("Attack", "Goblin (level-2)"),
+            _menu_entry("Attack", "Guard (level-22)"),
+        )
+        entry = g.menu_entry_matching("Attack", "Guard")
+        assert entry is not None
+        assert entry["target"] == "Guard (level-22)"
+
+    def test_match_is_case_insensitive(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        assert g.menu_entry_matching("attack", "goblin") is not None
+
+    def test_match_is_substring(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Cast", "Goblin (level-2)"))
+        assert g.menu_entry_matching("ast", "Gobl") is not None
+
+    def test_returns_first_match_in_display_order(self):
+        g = GameState()
+        first = _menu_entry("Attack", "Goblin (level-2)", y=379)
+        second = _menu_entry("Attack", "Goblin (level-5)", y=394)
+        g.menu = _open_menu(first, second)
+        assert g.menu_entry_matching("Attack", "Goblin") is first
+
+    def test_no_matching_option_returns_none(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Examine", "Goblin (level-2)"))
+        assert g.menu_entry_matching("Attack") is None
+
+    def test_matching_option_wrong_target_returns_none(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        assert g.menu_entry_matching("Attack", "Guard") is None
+
+    def test_closed_menu_returns_none_even_with_entries(self):
+        g = GameState()
+        g.menu = {"open": False, "entries": [_menu_entry("Attack", "Goblin (level-2)")]}
+        assert g.menu_entry_matching("Attack") is None
+
+    def test_default_state_returns_none(self):
+        g = GameState()
+        assert g.menu_entry_matching("Attack") is None
+
+
+class TestMenuUpdate:
+    def test_update_parses_menu_from_message(self):
+        g = GameState()
+        menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        g.update({"tick": 1, "menu": menu})
+        assert g.menu == menu
+        assert g.menu_open() is True
+
+    def test_missing_menu_key_preserves_existing(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        g.update({"tick": 2})
+        assert g.menu_open() is True
+
+    def test_update_to_closed_menu_clears_entries(self):
+        g = GameState()
+        g.menu = _open_menu(_menu_entry("Attack", "Goblin (level-2)"))
+        g.update({"tick": 2, "menu": _CLOSED_MENU})
+        assert g.menu_open() is False
+        assert g.menu_entry_matching("Attack") is None

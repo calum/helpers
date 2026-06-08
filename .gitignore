@@ -7,6 +7,7 @@ build/
 ### Python ###
 __pycache__/
 *.pyc
+recordings/
 
 ### IntelliJ IDEA ###
 .idea/

@@ -43,7 +43,7 @@ class MeleeFighterRoutine(Routine):
 
     # TODO: read this from the dashboard's NPC-name text box input instead of
     # hardcoding it — for now we always target "GoblinMeleeFighter".
-    NPC_NAME = "Goblin"
+    NPC_NAME = "GoblinMeleeFighter"
 
     LOOT_WINDOW_TICKS = 3       # how long after a kill to watch the corpse tile for drops
     PLAYER_EXCLUSION_TILES = 1  # skip NPCs standing this close to another player
@@ -160,6 +160,14 @@ class MeleeFighterRoutine(Routine):
         _looted_keys the moment we click it (not when it disappears) so a
         failed pickup is never retried — "click and move on" mirrors how a
         human would treat a stuck item.
+
+        A click sets the player walking toward the item's tile, which shifts
+        every other item's canvas position mid-stride — clicking again before
+        the player settles lands on a stale (now wrong) position. So besides
+        one attempt per tick, we also wait for `player_idle()` before each
+        attempt: this holds off the next click until the previous walk (and
+        any pickup animation) has fully resolved and positions are stable
+        again.
         """
         x, y = self._target_pos
 
@@ -167,16 +175,17 @@ class MeleeFighterRoutine(Routine):
                   self.NPC_NAME, x, y)
         log.debug("Ground items at target tile: %s", game.ground_items_at(x, y))
 
-        for item in game.ground_items_at(x, y):
-            key = (item["id"], x, y)
-            if key in self._looted_keys:
-                continue
-            if not item.get("onScreen"):
-                continue  # wait for it to come into view before attempting
+        if game.player_idle():
+            for item in game.ground_items_at(x, y):
+                key = (item["id"], x, y)
+                if key in self._looted_keys:
+                    continue
+                if not item.get("onScreen"):
+                    continue  # wait for it to come into view before attempting
 
-            ctrl.click_entity(item)
-            self._looted_keys.add(key)
-            return None  # one pickup attempt per tick — let the walk settle before the next
+                ctrl.click_entity(item)
+                self._looted_keys.add(key)
+                return None  # one pickup attempt per tick — let the walk settle before the next
 
         if game.tick - self._death_tick >= self.LOOT_WINDOW_TICKS:
             return "find_target"

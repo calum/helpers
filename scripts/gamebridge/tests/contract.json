@@ -217,6 +217,37 @@
     }
   ],
 
+  "menu": {
+    "open": true,
+    "x": 480,
+    "y": 360,
+    "width": 140,
+    "height": 64,
+    "entries": [
+      {
+        "option": "Attack",
+        "target": "Goblin (level-2)",
+        "identifier": 21,
+        "type": 9,
+        "bounds": {"x": 480, "y": 379, "width": 140, "height": 15}
+      },
+      {
+        "option": "Examine",
+        "target": "Goblin (level-2)",
+        "identifier": 21,
+        "type": 25,
+        "bounds": {"x": 480, "y": 394, "width": 140, "height": 15}
+      },
+      {
+        "option": "Cancel",
+        "target": "",
+        "identifier": 0,
+        "type": 36,
+        "bounds": {"x": 480, "y": 409, "width": 140, "height": 15}
+      }
+    ]
+  },
+
   "inventory": [
     {"slot": 0, "itemId": 1440, "qty": 1},
     {"slot": 1, "itemId": -1,   "qty": 0}

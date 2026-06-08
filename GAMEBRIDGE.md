@@ -53,6 +53,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
   "groundItems": [ ... ],
   "widgets":     [ ... ],
   "interfaces":  [ ... ],
+  "menu":        { ... },
   "inventory":   [ ... ],
   "equipment":   [ ... ],
   "events":      [ ... ]
@@ -70,6 +71,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `groundItems` | yes | `exposeGroundItems` (default on) |
 | `widgets` | no | `exposeWidgets` (default **off**) |
 | `interfaces` | no | `exposeInterfaces` (default **on**) |
+| `menu` | no | `exposeMenu` (default **on**) |
 | `inventory` | no | `exposeInventory` (default on) |
 | `equipment` | no | `exposeInventory` (default on) |
 | `events` | yes (may be `[]`) | — |
@@ -404,6 +406,80 @@ def click_minimap(ctrl, game_window_x, game_window_y, entity):
 
 ---
 
+## Context menu (right-click menu)
+
+When `exposeMenu` is enabled (default **on**) the tick message includes a `menu` object describing the native right-click context menu — the "minimenu" the game draws when you right-click an entity. This is **not** a widget/interface; it's drawn directly by the client and exposed via dedicated `Client` API (`isMenuOpen`, `getMenuEntries`, `getMenuX/Y/Width/Height`).
+
+This lets you verify a menu's contents *before* clicking — e.g. right-click a Goblin, confirm an `"Attack Goblin (level-2)"` entry exists, then click that exact row. This is far more reliable than blind left-clicking, especially for moving targets or entities partially obscured by scenery (trees, rocks, other players).
+
+```json
+{
+  "open": true,
+  "x": 480, "y": 360, "width": 140, "height": 64,
+  "entries": [
+    {
+      "option": "Attack",
+      "target": "Goblin (level-2)",
+      "identifier": 21,
+      "type": 9,
+      "bounds": { "x": 480, "y": 379, "width": 140, "height": 15 }
+    },
+    {
+      "option": "Examine",
+      "target": "Goblin (level-2)",
+      "identifier": 21,
+      "type": 25,
+      "bounds": { "x": 480, "y": 394, "width": 140, "height": 15 }
+    },
+    {
+      "option": "Cancel",
+      "target": "",
+      "identifier": 0,
+      "type": 36,
+      "bounds": { "x": 480, "y": 409, "width": 140, "height": 15 }
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `open` | Whether a right-click menu is currently open. When `false`, `entries` is an empty array and `x`/`y`/`width`/`height` are omitted. |
+| `x`, `y`, `width`, `height` | Screen-pixel bounding box of the whole menu (canvas coordinates, top-left origin), only present while open. |
+| `entries[].option` | The action verb shown (e.g. `"Attack"`, `"Walk here"`, `"Examine"`, `"Cancel"`). |
+| `entries[].target` | The target name shown alongside the option, colour-tagged as in-game (e.g. `"Goblin (level-2)"`); empty string if the option has no target. |
+| `entries[].identifier` | Identifier value for the target (mirrors `MenuEntry.getIdentifier()`). |
+| `entries[].type` | Numeric menu action ID (mirrors `MenuEntry.getType().getId()` — see `MenuAction` in `runelite-api`). |
+| `entries[].bounds` | Screen-pixel rectangle of that row — click its centre to select the entry. |
+
+`entries` is already in **display (top-to-bottom) order** — the first element is the top-most row. (The underlying `Client.getMenuEntries()` array is reversed; the plugin un-reverses it and pre-computes each row's pixel bounds — `19px` "Choose Option" header + `15px` per row — so Python never has to know the layout constants.)
+
+The engine drives routines one tick at a time and can't block waiting for the menu to open without freezing on stale data — so spread the gesture across ticks, the same "act, then verify next tick" shape `bring_entity_on_screen`/`click_minimap_entity` already use:
+
+```python
+# State machine spanning ticks: right-click, then verify + click the matching entry
+def attack(self, game, ctrl):
+    if not self._right_clicked:
+        target = game.nearest_npc_on_screen("Goblin")
+        if target is None:
+            return None
+        ctrl.right_click_entity(target)
+        self._right_clicked = True
+        return None
+
+    if ctrl.click_menu_entry(game, "Attack", "Goblin"):
+        self._right_clicked = False
+        return "fighting"
+
+    if not game.menu_open():
+        self._right_clicked = False  # closed without a match — retry next time
+    return None
+```
+
+`GameState.menu` always holds the latest `menu` object (`{"open": False, "entries": []}` when no menu is open). `GameState.menu_entry_matching(option_substr, target_substr=None)` returns the first entry whose `option`/`target` contain the given substrings (case-insensitive substring match), or `None`. `Controller.click_menu_entry(game_state, option_substr, target_substr=None)` looks up the same match and clicks the centre of its `bounds`, returning `True`/`False` to indicate whether a match was found and clicked — non-blocking, just like `click_entity`/`click_minimap_entity`.
+
+---
+
 ## Inventory and Equipment snapshots
 
 When `exposeInventory` is enabled, every tick message contains `inventory` and `equipment` as top-level arrays — polled snapshots of container 93 (inventory) and container 94 (worn equipment):
@@ -697,6 +773,7 @@ def stream_with_reconnect(host='127.0.0.1', port=7070, retry_delay=5.0):
 | `debugAllObjects` | bool | false | Include all objects unconditionally — dev/debug only |
 | `exposeWidgets` | bool | false | Include `widgets` array (inventory/bank/equipment slot bounds) |
 | `exposeInterfaces` | bool | true | Include `interfaces` array — all active, non-hidden widgets from every loaded interface group |
+| `exposeMenu` | bool | true | Include `menu` object — open right-click context menu, entries with option/target text and clickable bounds |
 
 ---
 

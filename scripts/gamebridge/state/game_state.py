@@ -50,6 +50,12 @@ class GameState:
     # Use is_occluded() to test whether a canvas point is behind a UI panel.
     interfaces: List[dict] = field(default_factory=list)
 
+    # The open right-click context menu: {"open": bool, "entries": [...], ...}.
+    # Populated when exposeMenu is on (default true). Entries are in display
+    # (top-to-bottom) order with pre-computed clickable bounds per row.
+    # Use menu_entry_matching() to find an entry by option/target text.
+    menu: dict = field(default_factory=lambda: {"open": False, "entries": []})
+
     # Current interacting-with target name, or None
     interacting_with: Optional[str] = None
 
@@ -116,6 +122,9 @@ class GameState:
 
         if "interfaces" in msg:
             self.interfaces = msg["interfaces"]
+
+        if "menu" in msg:
+            self.menu = msg["menu"]
 
         if "inventory" in msg:
             self.inventory = msg["inventory"]
@@ -316,6 +325,42 @@ class GameState:
     def interfaces_for_group(self, group_id: int) -> List[dict]:
         """Return all interface widgets belonging to the given group ID."""
         return [w for w in self.interfaces if w.get("groupId") == group_id]
+
+    # ------------------------------------------------------------------ #
+    # Context menu (right-click menu)
+    # ------------------------------------------------------------------ #
+
+    def menu_open(self) -> bool:
+        """Return True if a right-click context menu is currently open."""
+        return bool(self.menu.get("open"))
+
+    def menu_entry_matching(self, option_substr: str, target_substr: Optional[str] = None) -> Optional[dict]:
+        """Return the first open menu entry whose option/target contain the given text.
+
+        Matching is case-insensitive substring matching, mirroring how you'd
+        visually scan a right-click menu (e.g. ``option_substr="Attack"``,
+        ``target_substr="Goblin"`` matches an entry with
+        ``option="Attack"``/``target="Goblin (level-2)"``). Returns None if the
+        menu is closed or no entry matches.
+
+        Use this to verify a menu's contents before clicking — see
+        :meth:`controller.Controller.click_menu_entry`, which wraps this
+        lookup and clicks the matched entry's bounds in one step::
+
+            if ctrl.click_menu_entry(game, "Attack", "Goblin"):
+                return "fighting"
+        """
+        if not self.menu_open():
+            return None
+        option_needle = option_substr.lower()
+        target_needle = target_substr.lower() if target_substr else None
+        for entry in self.menu.get("entries", []):
+            if option_needle not in entry.get("option", "").lower():
+                continue
+            if target_needle is not None and target_needle not in entry.get("target", "").lower():
+                continue
+            return entry
+        return None
 
     # ------------------------------------------------------------------ #
     # NPCs

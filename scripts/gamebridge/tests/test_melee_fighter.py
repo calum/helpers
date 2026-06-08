@@ -124,7 +124,7 @@ class TestFindTargetSelection:
         ctrl.click_entity.assert_called_once_with(uncontested_near)
         assert result == "fighting"
         assert r._target_index == uncontested_near["index"]
-        assert r._target_pos == (uncontested_near["worldX"], uncontested_near["worldY"])
+        assert r._target == uncontested_near
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ class TestFindTargetCameraAndSettleBuffer:
         ctrl.click_entity.assert_called_once_with(GOBLIN_OFF_SCREEN)
         assert result == "fighting"
         assert r._target_index == GOBLIN_OFF_SCREEN["index"]
-        assert r._target_pos == (GOBLIN_OFF_SCREEN["worldX"], GOBLIN_OFF_SCREEN["worldY"])
+        assert r._target == GOBLIN_OFF_SCREEN
 
     def test_resets_buffer_when_camera_adjusts_mid_settle(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
@@ -453,6 +453,35 @@ class TestLooting:
         ctrl.reset_mock()
 
         result = r.looting(_make_game(tick=12, ground_items=[BONES, COINS_ON_SCREEN]), ctrl)
+
+        ctrl.click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        assert result is None
+
+    def test_does_not_click_next_item_while_still_walking_to_previous_pickup(self):
+        """The click on the first item starts the player walking toward its
+        tile — every other item's canvas position shifts mid-stride, so a
+        click fired before the player settles lands on a stale position
+        (this was the reported "loots only the top item" bug). We must wait
+        for player_idle() before attempting the next pickup."""
+        game = _make_game(tick=12, ground_items=[BONES, COINS_ON_SCREEN])
+        game._prev_pos = (game.player_pos[0] - 1, game.player_pos[1])  # mid-walk
+        ctrl = _ctrl()
+        r = self._looting_routine()
+        r._looted_keys = {(BONES["id"], 3225, 3215)}
+
+        result = r.looting(game, ctrl)
+
+        ctrl.click_entity.assert_not_called()
+        assert result is None
+
+    def test_clicks_next_item_once_player_settles_after_previous_pickup(self):
+        game = _make_game(tick=13, ground_items=[BONES, COINS_ON_SCREEN])
+        game._prev_pos = game.player_pos  # settled — no movement this tick
+        ctrl = _ctrl()
+        r = self._looting_routine()
+        r._looted_keys = {(BONES["id"], 3225, 3215)}
+
+        result = r.looting(game, ctrl)
 
         ctrl.click_entity.assert_called_once_with(COINS_ON_SCREEN)
         assert result is None

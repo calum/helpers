@@ -42,6 +42,7 @@ from .ui.minimap import MinimapWidget
 from .ui.inventory import InventoryWidget
 from .ui.hull_debug import HullDebugTab
 from .ui.testing_tab import TestingTab
+from .ui.recording_tab import RecordingTab
 from .ui.settings_tab import SettingsTab
 from .hotkeys import start_hotkey_monitor, HOTKEY_STOP, HOTKEY_KILL
 from .bridge_ticker import BridgeTicker, RoutineRunner
@@ -194,9 +195,11 @@ class GameBridgeWindow(QMainWindow):
 
         self._hull_tab = HullDebugTab(engine=self._engine)
         self._testing_tab = TestingTab(ctrl=self._ctrl, engine=self._engine)
+        self._recording_tab = RecordingTab(ctrl=self._ctrl, engine=self._engine)
         self._settings_tab = SettingsTab(on_status=lambda msg: self._status_msg.setText(msg))
         self._tabs.addTab(self._hull_tab, "Hull Debug")
         self._tabs.addTab(self._testing_tab, "Testing")
+        self._tabs.addTab(self._recording_tab, "Recording")
         self._tabs.addTab(self._settings_tab, "Settings")
 
         nearby.layout().addWidget(self._tabs)
@@ -381,6 +384,8 @@ class GameBridgeWindow(QMainWindow):
                 f"color: {C.SUCCESS}; font-weight: 600; font-size: 13px;")
             self._conn_dot.set_connected(True)
             self._status_msg.setText("Connected to RuneLite")
+
+        self._recording_tab.on_tick(msg)
 
         g = self._engine.game
         tick = g.tick
@@ -639,6 +644,7 @@ class GameBridgeWindow(QMainWindow):
         in a socket read with no clean way to interrupt it — so it's left to
         exit with the process, as it always has.
         """
+        self._recording_tab.stop_if_recording()
         self._routine_runner.stop()
         self._routine_runner.wait(2000)
         super().closeEvent(event)

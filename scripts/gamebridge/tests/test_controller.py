@@ -107,6 +107,63 @@ class TestIsCanvasCoordValid:
 
 
 # ---------------------------------------------------------------------------
+# screen_to_canvas / is_screen_point_in_window
+#
+# Used by the session recorder (recording.recording_tab) to translate raw
+# OS click coordinates into the canvas space entity hulls / widget bounds use,
+# and to ignore clicks made on other windows (the dashboard, browser, ...)
+# while a recording is in progress. WINDOW = (left=100, top=200, right=1100,
+# bottom=800).
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+class TestScreenToCanvas:
+    def test_inverts_canvas_to_screen(self, mock_settings):
+        mock_settings.get.return_value = 0
+        ctrl = _ctrl()
+        # canvas_to_screen(50, 50) == (150, 250); the inverse must round-trip.
+        assert ctrl.screen_to_canvas(150, 250) == (50, 50)
+        assert ctrl._canvas_to_screen(*ctrl.screen_to_canvas(150, 250)) == (150, 250)
+
+    def test_applies_hull_y_offset(self, mock_settings):
+        mock_settings.get.return_value = 10
+        ctrl = _ctrl()
+        # cy = sy - top + y_off
+        assert ctrl.screen_to_canvas(150, 250) == (50, 60)
+
+    def test_returns_none_when_window_not_found(self, mock_settings):
+        mock_settings.get.return_value = 0
+        ctrl = GameController(human=_human())
+        ctrl._window = None
+        with patch.object(ctrl, "refresh_window", return_value=False):
+            assert ctrl.screen_to_canvas(150, 250) is None
+
+
+class TestIsScreenPointInWindow:
+    def test_point_inside_window_is_true(self):
+        assert _ctrl().is_screen_point_in_window(600, 400)
+
+    def test_point_at_top_left_corner_is_true(self):
+        assert _ctrl().is_screen_point_in_window(100, 200)
+
+    def test_point_at_bottom_right_edge_is_false(self):
+        # window is (100, 200, 1100, 800) — right/bottom are exclusive
+        assert not _ctrl().is_screen_point_in_window(1100, 800)
+
+    def test_point_left_of_window_is_false(self):
+        assert not _ctrl().is_screen_point_in_window(50, 400)
+
+    def test_point_above_window_is_false(self):
+        assert not _ctrl().is_screen_point_in_window(600, 100)
+
+    def test_no_window_returns_false(self):
+        ctrl = GameController(human=_human())
+        ctrl._window = None
+        with patch.object(ctrl, "refresh_window", return_value=False):
+            assert not ctrl.is_screen_point_in_window(600, 400)
+
+
+# ---------------------------------------------------------------------------
 # _clamp_to_window
 # ---------------------------------------------------------------------------
 
@@ -453,6 +510,64 @@ class TestClickAtGuard:
         mock_mouse.get_position.return_value = (600, 400)
         _ctrl().click_at(-10, 300)
         mock_mouse.wind_mouse.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# click_menu_entry — finds a matching context-menu entry and clicks its bounds
+# ---------------------------------------------------------------------------
+
+def _menu_entry_dict(option="Attack", target="Goblin (level-2)", x=480, y=379, w=140, h=15):
+    return {"option": option, "target": target, "identifier": 21, "type": 9,
+            "bounds": {"x": x, "y": y, "width": w, "height": h}}
+
+
+def _game_state_with_menu_entry(entry):
+    """A minimal game-state stub whose menu_entry_matching returns `entry` (or None)."""
+    stub = MagicMock()
+    stub.menu_entry_matching.return_value = entry
+    return stub
+
+
+class TestClickMenuEntry:
+    def test_no_match_returns_false_and_does_not_click(self):
+        ctrl = _ctrl()
+        ctrl.click_at = MagicMock()
+        game = _game_state_with_menu_entry(None)
+
+        result = ctrl.click_menu_entry(game, "Attack", "Goblin")
+
+        assert result is False
+        ctrl.click_at.assert_not_called()
+
+    def test_match_clicks_centre_of_entry_bounds(self):
+        ctrl = _ctrl()
+        ctrl.click_at = MagicMock()
+        entry = _menu_entry_dict(x=480, y=379, w=140, h=15)
+        game = _game_state_with_menu_entry(entry)
+
+        result = ctrl.click_menu_entry(game, "Attack", "Goblin")
+
+        assert result is True
+        ctrl.click_at.assert_called_once_with(480 + 140 / 2, 379 + 15 / 2)
+
+    def test_lookup_forwards_option_and_target_substrings(self):
+        ctrl = _ctrl()
+        ctrl.click_at = MagicMock()
+        game = _game_state_with_menu_entry(_menu_entry_dict())
+
+        ctrl.click_menu_entry(game, "Attack", "Goblin")
+
+        game.menu_entry_matching.assert_called_once_with("Attack", "Goblin")
+
+    def test_target_substr_optional(self):
+        ctrl = _ctrl()
+        ctrl.click_at = MagicMock()
+        game = _game_state_with_menu_entry(_menu_entry_dict(option="Walk here", target=""))
+
+        result = ctrl.click_menu_entry(game, "Walk here")
+
+        assert result is True
+        game.menu_entry_matching.assert_called_once_with("Walk here", None)
 
 
 # ---------------------------------------------------------------------------
