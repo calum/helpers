@@ -47,7 +47,7 @@ from .ui.components import Card, HDivider, StatBar, ConnectionDot
 from .ui.minimap import MinimapWidget
 from .ui.inventory import InventoryWidget
 from .hotkeys import start_hotkey_monitor, HOTKEY_STOP, HOTKEY_KILL
-from .bridge_ticker import BridgeTicker
+from .bridge_ticker import BridgeTicker, RoutineRunner
 
 # ---------------------------------------------------------------------------
 # Routine registry — add entries here to expose them in the dropdown
@@ -1064,12 +1064,20 @@ class GameBridgeWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _start_ticker(self) -> None:
-        self._ticker = BridgeTicker(host=self._host, port=self._port)
+        self._ticker = BridgeTicker(ingest=self._engine.ingest, host=self._host, port=self._port)
         self._ticker.tick_received.connect(self._on_tick)
         self._ticker.start()
 
+        self._routine_runner = RoutineRunner(self._engine)
+        self._routine_runner.start()
+
     # ------------------------------------------------------------------
     # Tick handler (runs on main thread via Qt signal)
+    #
+    # BridgeTicker has already ingested this tick — self._engine.game is the
+    # published snapshot for it — by the time this slot fires. This handler
+    # only refreshes the display; it never drives the routine (RoutineRunner
+    # does that, on its own thread, off the latest snapshot).
     # ------------------------------------------------------------------
 
     @pyqtSlot(dict)
@@ -1081,11 +1089,6 @@ class GameBridgeWindow(QMainWindow):
                 f"color: {C.SUCCESS}; font-weight: 600; font-size: 13px;")
             self._conn_dot.set_connected(True)
             self._status_msg.setText("Connected to RuneLite")
-
-        try:
-            self._engine.process_tick(msg)
-        except Exception:
-            log.exception("Error processing tick %s", msg.get("tick", "?"))
 
         g = self._engine.game
         tick = g.tick
@@ -1333,6 +1336,23 @@ class GameBridgeWindow(QMainWindow):
             self._reset_routine()
         else:
             super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        """Stop RoutineRunner before the window closes.
+
+        Otherwise it keeps calling engine.drive() against a controller whose
+        window has gone away, and Qt warns about a QThread being destroyed
+        while still running. BridgeTicker has no equivalent stop — it blocks
+        in a socket read with no clean way to interrupt it — so it's left to
+        exit with the process, as it always has.
+        """
+        self._routine_runner.stop()
+        self._routine_runner.wait(2000)
+        super().closeEvent(event)
 
 
 # ---------------------------------------------------------------------------

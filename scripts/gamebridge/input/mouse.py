@@ -15,6 +15,7 @@ import ctypes.wintypes
 import math
 import random
 import time
+from typing import Callable
 
 # ------------------------------------------------------------------ #
 # Windows INPUT structures
@@ -211,3 +212,92 @@ def wind_mouse(
         time.sleep(max(0.001, wait) / 1000.0)
 
     move_to(dest_x, dest_y)
+
+
+# ------------------------------------------------------------------ #
+# WindMouse variant — moving destination, re-evaluated mid-flight
+# ------------------------------------------------------------------ #
+
+def wind_mouse_to_prediction(
+    start_x: float,
+    start_y: float,
+    predict: Callable[[float], tuple[float, float]],
+    gravity: float = 5.0,
+    wind: float = 6.0,
+    min_wait_ms: float = 3.0,
+    max_wait_ms: float = 11.0,
+    max_step: float = 9.0,
+    target_area: float = 12.0,
+    move_speed: float = 0.3,
+    rng: random.Random | None = None,
+) -> None:
+    """
+    Like wind_mouse, but aims at a moving destination instead of a fixed point.
+
+    `predict(at_time)` returns the best-estimate destination (x, y) for a
+    given wall-clock instant (a time.monotonic()-based float — see
+    state.moving_target.MovingTarget.predict). It is re-evaluated on every
+    step of the approach, so the cursor continuously re-aims at where the
+    target is expected to be by the time it arrives — the way a human
+    visually re-tracks a moving target while reaching for it — rather than
+    chasing wherever it was when the move was planned.
+
+    The noisy wind+gravity approach (identical physics to wind_mouse) runs
+    until the cursor is within `target_area` of the latest prediction. At
+    that point — rather than letting the algorithm's noisy fine-approach
+    phase keep chasing a still-moving point all the way to dist < 1.0, which
+    would be slow and could overshoot a target that has since changed
+    direction — it performs one final, precise "lock-on" correction: a fresh
+    prediction, landed on directly via move_to().
+    """
+    if rng is None:
+        rng = random
+
+    sqrt3 = math.sqrt(3)
+    sqrt5 = math.sqrt(5)
+
+    cx, cy = float(start_x), float(start_y)
+    wx, wy = 0.0, 0.0
+    vx, vy = 0.0, 0.0
+    step = max_step * max(0.4, 1.0 - move_speed * 0.6)
+
+    dest_x, dest_y = predict(time.monotonic())
+    total_dist = math.hypot(dest_x - cx, dest_y - cy)
+
+    dist = total_dist
+    steps = 0
+    while dist > target_area and steps < 10_000:
+        dest_x, dest_y = predict(time.monotonic())
+
+        w_mag = min(wind, dist)
+        wx = wx / sqrt3 + (rng.random() * 2.0 - 1.0) * w_mag / sqrt5
+        wy = wy / sqrt3 + (rng.random() * 2.0 - 1.0) * w_mag / sqrt5
+
+        vx += wx + gravity * (dest_x - cx) / dist
+        vy += wy + gravity * (dest_y - cy) / dist
+
+        v_mag = math.hypot(vx, vy)
+        if v_mag > step:
+            rand_step = step / 2.0 + rng.random() * step / 2.0
+            vx = vx / v_mag * rand_step
+            vy = vy / v_mag * rand_step
+
+        cx += vx
+        cy += vy
+        steps += 1
+
+        dist = math.hypot(dest_x - cx, dest_y - cy)
+        move_to(cx, cy)
+
+        progress = 1.0 - dist / max(1.0, total_dist)
+        ease = 4.0 * progress * (1.0 - progress)
+        wait = max_wait_ms - (max_wait_ms - min_wait_ms) * ease
+        wait *= 1.0 + move_speed * 1.5
+        wait += rng.gauss(0.0, wait * 0.12)
+        time.sleep(max(0.001, wait) / 1000.0)
+
+    # Lock-on correction: re-predict one last time and land precisely on the
+    # freshest estimate, rather than the (possibly now-stale) point the
+    # approach was converging toward.
+    final_x, final_y = predict(time.monotonic())
+    move_to(final_x, final_y)

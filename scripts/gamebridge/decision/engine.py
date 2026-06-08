@@ -9,10 +9,25 @@ The engine also handles:
   • Break scheduling (via HumanEmulator.should_take_break)
   • Routine swapping at any time
   • Emergency stop (set_routine(None) or stop())
+
+Ingest vs. drive
+────────────────
+process_tick() does both steps inline — fine for single-threaded callers
+(tests, main.py) where the whole pipeline runs on one thread.
+
+The dashboard instead calls ingest() and drive() from two separate threads
+(BridgeTicker / RoutineRunner — see bridge_ticker.py): a Routine's actions
+(mouse movement, click pauses, scheduled breaks) block for human-like
+durations, and running them on the same thread that reads the TCP stream
+would stall GameState updates for as long as the action takes — leaving the
+routine to act on stale data. Splitting them means ingestion always keeps
+GameState current, and drive() always reacts to the very latest snapshot
+rather than one queued behind a backlog of stale ticks.
 """
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -51,6 +66,11 @@ class DecisionEngine:
         self._on_break = False
         self._break_until: float = 0.0
         self._break_duration: float = 0.0
+        # Set by ingest() each time a new GameState snapshot is published;
+        # the routine-driver loop waits on this instead of polling so it
+        # picks up the latest snapshot as soon as it's available without
+        # busy-spinning. See wait_for_snapshot().
+        self._new_snapshot = threading.Event()
 
     # ------------------------------------------------------------------
     # Routine management
@@ -77,16 +97,57 @@ class DecisionEngine:
     # Tick processing
     # ------------------------------------------------------------------
 
-    def process_tick(self, msg: dict) -> None:
+    def ingest(self, msg: dict) -> None:
         """
-        Apply a raw tick message and run one step of the active routine.
+        Apply a raw tick message and publish the result as the latest snapshot.
 
-        Call this for every message yielded by client.stream().
+        Builds the new GameState on a private clone of the previous one, then
+        publishes it with a single attribute assignment — so drive() (running
+        on another thread) always sees either the previous, fully-formed
+        snapshot or the new one, never one that's mid-update.
+
+        Call this for every message yielded by client.stream(). Never call
+        this from the same loop that also runs routine actions — see the
+        module docstring.
         """
-        self._game.update(msg)
+        new_state = self._game.clone()
+        new_state.update(msg)
+        self._game = new_state
+        self._new_snapshot.set()
 
-        if self._routine is None:
+    def wait_for_snapshot(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until ingest() has published a snapshot since the last call
+        (or this is the first call), or timeout elapses.
+
+        Returns True if a new snapshot is available, False on timeout. The
+        routine-driver loop uses this to wake exactly when there's fresh
+        state to react to, rather than polling on a fixed interval.
+        """
+        fired = self._new_snapshot.wait(timeout)
+        self._new_snapshot.clear()
+        return fired
+
+    def drive(self) -> None:
+        """
+        Run one decision step against the latest published GameState snapshot.
+
+        Captures the active routine in a local variable up front: if
+        set_routine() swaps it concurrently mid-call, this call finishes
+        against the routine it started with — "finish the current tick, then
+        swap" — and the new routine takes over on the next drive() call.
+        """
+        routine = self._routine
+        if routine is None:
             return
+
+        game = self._game
+        # Feed the controller's EntityTracker before the routine acts on this
+        # snapshot, so click_entity/move_to_entity/right_click_entity can
+        # build MovingTarget predictions from up-to-date velocity. Must
+        # happen here (not in ingest(), which runs on a different thread) —
+        # see GameController.track_entities for the cross-thread rationale.
+        self._ctrl.track_entities(game)
 
         # Interruption management — apply mood multipliers and pause when away
         if self._scheduler is not None:
@@ -122,7 +183,18 @@ class DecisionEngine:
                 self._break_until = now + duration
                 return
 
-        self._routine.tick(self._game, self._ctrl)
+        routine.tick(game, self._ctrl)
+
+    def process_tick(self, msg: dict) -> None:
+        """
+        Apply a raw tick message and run one step of the active routine.
+
+        Convenience for single-threaded callers (tests, main.py) — equivalent
+        to ingest() followed by drive(). The dashboard calls them separately
+        from different threads instead; see the module docstring.
+        """
+        self.ingest(msg)
+        self.drive()
 
     # ------------------------------------------------------------------
     # Accessors

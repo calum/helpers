@@ -13,12 +13,14 @@ import logging
 import time
 from typing import Callable, Optional
 
-from ..human.emulator import HumanEmulator
+from ..human.emulator import ClickIntent, HumanEmulator
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
 from ..input.keyboard import Key
 from .. import settings as _settings
 from ..fov import decide_camera_action
+from ..state.entity_tracker import EntityTracker
+from ..state.moving_target import MovingTarget
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +115,10 @@ class GameController:
 
     def __init__(self, human: Optional[HumanEmulator] = None):
         self._human = human or HumanEmulator()
+        # Cross-tick velocity for moving targets — see track_entities() and
+        # _plan_moving_click(). Owned and driven entirely by this controller
+        # (fed once per drive() cycle), never touched from the ingest thread.
+        self._tracker = EntityTracker()
         self._window: Optional[tuple[int, int, int, int]] = None
         self.min_click_interval: float = 0.0
         self._last_entity_click: float = 0.0
@@ -170,6 +176,67 @@ class GameController:
         return max(left, min(sx, right - 1)), max(top, min(sy, bottom - 1))
 
     # ------------------------------------------------------------------
+    # Entity tracking — feeds MovingTarget predictions in click paths below
+    # ------------------------------------------------------------------
+
+    def track_entities(self, game_state) -> None:
+        """Feed the latest snapshot to the internal EntityTracker.
+
+        click_entity / move_to_entity / right_click_entity use the resulting
+        per-tick canvas velocity (via _plan_moving_click → MovingTarget) to
+        predict where a moving target will be by the time the cursor arrives,
+        rather than aiming at its now-stale last-seen position.
+
+        Call this exactly once per tick, from DecisionEngine.drive() — the
+        same single thread that goes on to run routine.tick() and (via it)
+        the click methods. Never call it from ingest(): that runs on a
+        different thread, and EntityTracker is a plain mutable object with
+        none of GameState.clone()'s cross-thread snapshot guarantees: a
+        concurrent update()/lookup pair would race. EntityTracker.update()
+        normalises velocity by the actual tick delta, so it tolerates
+        drive() skipping snapshots under load — calling it only when drive()
+        actually has a routine to run is correct, not lossy.
+        """
+        self._tracker.update(game_state)
+
+    def _plan_moving_click(
+        self, entity: dict, cur_x: float, cur_y: float,
+    ) -> tuple[ClickIntent, Callable[[float], tuple[float, float]]]:
+        """Plan a click on a possibly-moving entity.
+
+        Builds a MovingTarget from the entity's current canvas position and
+        the tracker's canvas velocity (None if untracked/stationary — the
+        target then predicts as static), and returns:
+
+          - `intent`: timing/manner (pauses, move_speed, double_click) planned
+            against the target's *currently* predicted screen position. These
+            are properties of how the human acts, not tied to a specific point
+            in space, so one ClickIntent for the whole action is correct.
+          - `predict`: a screen-space callable for wind_mouse_to_prediction.
+            It re-evaluates MovingTarget.predict on every call, converts
+            canvas → screen, and adds intent's Gaussian click-error as a
+            *fixed offset* captured once up front — so the cursor consistently
+            misses by the same human "miss vector" relative to wherever the
+            target ends up, rather than drifting toward a stale snapshot
+            position. Clamping to the window is applied per-call too, which
+            doubles as a guard against wild over-extrapolation.
+
+        Caller must already have checked entity["onScreen"] and
+        _is_canvas_coord_valid — this assumes both hold.
+        """
+        now = time.monotonic()
+        target = MovingTarget.from_entity(entity, self._tracker.velocity(entity, "canvas"), now)
+        sx, sy = self._canvas_to_screen(*target.predict(now))
+        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        err_x, err_y = intent.actual_x - sx, intent.actual_y - sy
+
+        def predict(at_time: float) -> tuple[float, float]:
+            px, py = self._canvas_to_screen(*target.predict(at_time))
+            return self._clamp_to_window(px + err_x, py + err_y)
+
+        return intent, predict
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -191,7 +258,7 @@ class GameController:
     # ------------------------------------------------------------------
 
     def move_to_entity(self, entity: dict) -> None:
-        """Move the mouse to an on-screen entity with WindMouse movement."""
+        """Move the mouse to an on-screen entity, tracking it if it moves."""
         if not entity.get("onScreen"):
             return
         cx, cy = entity["canvasX"], entity["canvasY"]
@@ -199,15 +266,13 @@ class GameController:
             log.warning("move_to_entity: %s canvas (%d, %d) outside viewport — skipping",
                         entity.get("name", "?"), cx, cy)
             return
-        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
-        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
 
     def click_entity(self, entity: dict) -> None:
-        """Left-click an on-screen entity."""
+        """Left-click an on-screen entity, tracking it if it moves."""
         if not entity.get("onScreen"):
             log.debug("click_entity: %s is off-screen", entity.get("name", "?"))
             return
@@ -226,13 +291,11 @@ class GameController:
                 now - self._last_entity_click, self.min_click_interval,
             )
             return
-        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
-        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_left()
 
@@ -241,11 +304,11 @@ class GameController:
             mouse_input.click_left()
 
         self._last_entity_click = time.monotonic()
-        log.debug("Clicked %s at screen (%.0f, %.0f)", entity.get("name", "?"), sx, sy)
+        log.debug("Clicked %s (canvas %.0f, %.0f)", entity.get("name", "?"), cx, cy)
         self._after_click()
 
     def right_click_entity(self, entity: dict) -> None:
-        """Right-click an on-screen entity."""
+        """Right-click an on-screen entity, tracking it if it moves."""
         if not entity.get("onScreen"):
             return
         cx, cy = entity["canvasX"], entity["canvasY"]
@@ -253,13 +316,11 @@ class GameController:
             log.warning("right_click_entity: %s canvas (%d, %d) outside viewport — skipping",
                         entity.get("name", "?"), cx, cy)
             return
-        sx, sy = self._canvas_to_screen(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
-        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
-        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
         mouse_input.click_right()
 

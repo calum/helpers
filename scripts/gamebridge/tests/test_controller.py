@@ -30,6 +30,7 @@ from scripts.gamebridge.controller.controller import (
 )
 from scripts.gamebridge.human.emulator import KeyHoldIntent
 from scripts.gamebridge.input.keyboard import Key
+from scripts.gamebridge.state.moving_target import TICK_DURATION_S
 
 # ---------------------------------------------------------------------------
 # Window fixture: left=100, top=200, right=1100, bottom=800  →  1000×600 canvas
@@ -60,7 +61,12 @@ def _ctrl(window=WINDOW) -> GameController:
 
 
 def _entity(cx: int, cy: int, on_screen: bool = True, name: str = "Thing") -> dict:
-    return {"name": name, "onScreen": on_screen, "canvasX": cx, "canvasY": cy}
+    """An NPC-shaped entity dict — has the `id`/`index` fields EntityTracker's
+    generic velocity() dispatcher needs to route without KeyError (it's never
+    actually fed through tracker.update(), so the lookup always misses and
+    returns None — i.e. "no velocity data", same as any freshly-tracked
+    entity gets on its first tick)."""
+    return {"name": name, "onScreen": on_screen, "canvasX": cx, "canvasY": cy, "id": 1, "index": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +202,8 @@ class TestClickEntityGuard:
             actual_x=50000.0, actual_y=50000.0,   # far outside
         )
         ctrl.click_entity(_entity(500, 300, on_screen=True))
-        wind_args = mock_mouse.wind_mouse.call_args.args
-        actual_x, actual_y = wind_args[2], wind_args[3]
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+        actual_x, actual_y = predict(0.0)
         assert actual_x <= 1099   # right - 1
         assert actual_y <= 799    # bottom - 1
         mock_mouse.click_left.assert_called_once()
@@ -206,7 +212,89 @@ class TestClickEntityGuard:
         """No mouse movement at all when the entity is rejected."""
         self._setup(mock_mouse, mock_settings)
         _ctrl().click_entity(_entity(cx=-50, cy=300, on_screen=True))
-        mock_mouse.wind_mouse.assert_not_called()
+        mock_mouse.wind_mouse_to_prediction.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# click_entity / move_to_entity / right_click_entity — moving-target prediction
+#
+# All three route through _plan_moving_click, so exercising it via click_entity
+# covers the shared behaviour; TestMoveToEntityGuard/TestRightClickEntityGuard
+# above already confirm the other two also call wind_mouse_to_prediction.
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestPlanMovingClick:
+    """Verify the predict() callable handed to wind_mouse_to_prediction tracks
+    the entity using EntityTracker-derived canvas velocity."""
+
+    def _setup(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+
+    def test_tracker_queried_in_canvas_space_for_this_entity(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = None
+
+        entity = _entity(500, 300, on_screen=True)
+        ctrl.click_entity(entity)
+
+        ctrl._tracker.velocity.assert_called_once_with(entity, "canvas")
+
+    def test_stationary_entity_predicts_a_fixed_point(self, mock_mouse, mock_settings):
+        """No velocity data -> MovingTarget is static -> predict() always
+        returns the same (clamped, error-offset) screen point, exactly like
+        the pre-Phase-4 one-shot wind_mouse aim point."""
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = None
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True))
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == predict(1000.0) == pytest.approx((700.0, 450.0))
+
+    def test_moving_entity_is_extrapolated_by_tracker_velocity(self, mock_mouse, mock_settings):
+        """With known canvas velocity, predict(at_time) must extrapolate
+        linearly by elapsed ticks — proportionally, in screen space, with the
+        human's click-error preserved as a constant offset (see
+        _plan_moving_click)."""
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = (10.0, -4.0)   # px/tick, canvas space
+
+        with patch("scripts.gamebridge.controller.controller.time.monotonic", return_value=1000.0):
+            ctrl.click_entity(_entity(500, 300, on_screen=True))
+
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+        x0, y0 = predict(1000.0)
+        x1, y1 = predict(1000.0 + TICK_DURATION_S)
+        x2, y2 = predict(1000.0 + TICK_DURATION_S * 2)
+
+        assert (x1 - x0, y1 - y0) == pytest.approx((10.0, -4.0))
+        assert (x2 - x0, y2 - y0) == pytest.approx((20.0, -8.0))
+
+    def test_predict_result_stays_clamped_to_window_as_target_moves(self, mock_mouse, mock_settings):
+        """Even far-future predictions that would extrapolate outside the
+        viewport must stay inside the window — the same guarantee
+        click error clamping gives a stationary target."""
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = (500.0, 500.0)  # wildly fast
+
+        with patch("scripts.gamebridge.controller.controller.time.monotonic", return_value=1000.0):
+            ctrl.click_entity(_entity(500, 300, on_screen=True))
+
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+        x, y = predict(1000.0 + TICK_DURATION_S * 50)
+        assert 100 <= x <= 1099
+        assert 200 <= y <= 799
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +314,7 @@ class TestRightClickEntityGuard:
         mock_settings.get.return_value = 0
         mock_mouse.get_position.return_value = (600, 400)
         _ctrl().right_click_entity(_entity(cx=CANVAS_W + 1, cy=300, on_screen=True))
-        mock_mouse.wind_mouse.assert_not_called()
+        mock_mouse.wind_mouse_to_prediction.assert_not_called()
 
     def test_valid_entity_right_clicked(self, mock_mouse, mock_settings):
         mock_settings.get.return_value = 0
@@ -244,8 +332,8 @@ class TestRightClickEntityGuard:
             actual_x=50000.0, actual_y=50000.0,
         )
         ctrl.right_click_entity(_entity(500, 300, on_screen=True))
-        wind_args = mock_mouse.wind_mouse.call_args.args
-        actual_x, actual_y = wind_args[2], wind_args[3]
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+        actual_x, actual_y = predict(0.0)
         assert actual_x <= 1099   # right - 1
         assert actual_y <= 799    # bottom - 1
         mock_mouse.click_right.assert_called_once()
@@ -262,19 +350,19 @@ class TestMoveToEntityGuard:
         mock_settings.get.return_value = 0
         mock_mouse.get_position.return_value = (600, 400)
         _ctrl().move_to_entity(_entity(cx=5000, cy=300, on_screen=True))
-        mock_mouse.wind_mouse.assert_not_called()
+        mock_mouse.wind_mouse_to_prediction.assert_not_called()
 
     def test_off_screen_no_mouse_move(self, mock_mouse, mock_settings):
         mock_settings.get.return_value = 0
         mock_mouse.get_position.return_value = (600, 400)
         _ctrl().move_to_entity(_entity(500, 300, on_screen=False))
-        mock_mouse.wind_mouse.assert_not_called()
+        mock_mouse.wind_mouse_to_prediction.assert_not_called()
 
     def test_valid_entity_mouse_moves(self, mock_mouse, mock_settings):
         mock_settings.get.return_value = 0
         mock_mouse.get_position.return_value = (600, 400)
         _ctrl().move_to_entity(_entity(500, 300, on_screen=True))
-        mock_mouse.wind_mouse.assert_called_once()
+        mock_mouse.wind_mouse_to_prediction.assert_called_once()
 
     def test_human_emulator_error_clamped_to_window(self, mock_mouse, mock_settings):
         """Gaussian click error that would land outside the window is clamped."""
@@ -286,8 +374,8 @@ class TestMoveToEntityGuard:
             actual_x=50000.0, actual_y=50000.0,
         )
         ctrl.move_to_entity(_entity(500, 300, on_screen=True))
-        wind_args = mock_mouse.wind_mouse.call_args.args
-        actual_x, actual_y = wind_args[2], wind_args[3]
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+        actual_x, actual_y = predict(0.0)
         assert actual_x <= 1099   # right - 1
         assert actual_y <= 799    # bottom - 1
 

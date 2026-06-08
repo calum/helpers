@@ -318,6 +318,71 @@ class TestTopLevelInventoryEquipment:
 
 
 # ---------------------------------------------------------------------------
+# clone() — snapshot isolation for cross-thread publishing
+# ---------------------------------------------------------------------------
+
+class TestClone:
+    def test_clone_has_same_values(self):
+        g = GameState()
+        g.update(_base_msg(tick=5, inventory=[_slot(0, 440)]))
+        g.update({"tick": 5, "events": [
+            {"type": "xp", "skill": "MINING", "xp": 500, "level": 10, "boostedLevel": 10},
+        ]})
+        c = g.clone()
+        assert c.tick == g.tick
+        assert c.inventory == g.inventory
+        assert c.xp == g.xp
+
+    def test_later_update_does_not_change_clone_inventory(self):
+        """A clone published as a snapshot must stay frozen even as the
+        original keeps receiving ticks — update() replaces the inventory list
+        wholesale, so the clone's reference to the old list must be untouched."""
+        g = GameState()
+        g.update(_base_msg(inventory=[_slot(0, 440)]))
+        c = g.clone()
+        g.update(_base_msg(tick=2, inventory=[_slot(0, 995), _slot(1, 1440)]))
+        assert c.inventory == [_slot(0, 440)]
+        assert g.inventory != c.inventory
+
+    def test_later_update_does_not_change_clone_xp(self):
+        """xp is mutated in place by _apply_event — clone() must give it its
+        own dict, or updating the original would corrupt the published snapshot."""
+        g = GameState()
+        g.update({"tick": 1, "events": [
+            {"type": "xp", "skill": "MINING", "xp": 500, "level": 10, "boostedLevel": 10},
+        ]})
+        c = g.clone()
+        g.update({"tick": 2, "events": [
+            {"type": "xp", "skill": "MINING", "xp": 600, "level": 10, "boostedLevel": 10},
+        ]})
+        assert c.xp["MINING"] == 500
+        assert g.xp["MINING"] == 600
+
+    def test_later_update_does_not_change_clone_chat_log(self):
+        """chat_log is appended to in place — clone() must give it its own deque."""
+        g = GameState()
+        g.update({"tick": 1, "events": [{"type": "chat", "msgType": "GAMEMESSAGE", "message": "first"}]})
+        c = g.clone()
+        g.update({"tick": 2, "events": [{"type": "chat", "msgType": "GAMEMESSAGE", "message": "second"}]})
+        assert [m["message"] for m in c.chat_log] == ["first"]
+        assert [m["message"] for m in g.chat_log] == ["first", "second"]
+
+    def test_clone_update_does_not_affect_original(self):
+        """The reverse direction: updating a clone must not corrupt the
+        original a concurrent reader might still hold."""
+        g = GameState()
+        g.update({"tick": 1, "events": [
+            {"type": "xp", "skill": "MINING", "xp": 500, "level": 10, "boostedLevel": 10},
+        ]})
+        c = g.clone()
+        c.update({"tick": 2, "events": [
+            {"type": "xp", "skill": "MINING", "xp": 600, "level": 10, "boostedLevel": 10},
+        ]})
+        assert g.xp["MINING"] == 500
+        assert c.xp["MINING"] == 600
+
+
+# ---------------------------------------------------------------------------
 # XP events
 # ---------------------------------------------------------------------------
 

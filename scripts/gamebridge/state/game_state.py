@@ -6,6 +6,7 @@ Read-only from outside; write only via update().
 """
 from __future__ import annotations
 
+import copy
 import math
 from collections import deque
 from dataclasses import dataclass, field
@@ -61,6 +62,30 @@ class GameState:
     # ------------------------------------------------------------------ #
     # Core update
     # ------------------------------------------------------------------ #
+
+    def clone(self) -> "GameState":
+        """Return a copy safe to publish as an immutable snapshot.
+
+        update() replaces most container fields wholesale (a fresh list/dict
+        each tick), so a shallow copy can share those references safely — the
+        original keeps the old ones, the clone gets new ones on its next
+        update(). The exception is the handful of fields _apply_event()
+        mutates *in place* (xp/levels/boosted_levels/varbits/last_xp_tick/
+        chat_log) — those need fresh copies, or updating the clone would also
+        mutate the snapshot a concurrent reader still holds.
+
+        Used by DecisionEngine.ingest() to publish each tick's GameState as a
+        stable snapshot the routine-driver thread can read without it changing
+        underneath it — see PLAN.md for the threading rationale.
+        """
+        new = copy.copy(self)
+        new.xp = dict(self.xp)
+        new.levels = dict(self.levels)
+        new.boosted_levels = dict(self.boosted_levels)
+        new.varbits = dict(self.varbits)
+        new.last_xp_tick = dict(self.last_xp_tick)
+        new.chat_log = deque(self.chat_log, maxlen=200)
+        return new
 
     def update(self, msg: dict) -> None:
         """Apply a raw tick message from the GameBridge stream."""

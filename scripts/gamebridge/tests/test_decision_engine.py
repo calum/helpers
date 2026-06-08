@@ -18,9 +18,14 @@ from scripts.gamebridge.state.game_state import GameState
 # ---------------------------------------------------------------------------
 
 class _Ctrl:
-    """Minimal controller stub with the one attribute DecisionEngine writes."""
+    """Minimal controller stub with the attributes/methods DecisionEngine
+    writes to or calls each drive() cycle."""
     def __init__(self):
         self.min_click_interval: float = 0.0
+        self.tracked_states: list = []
+
+    def track_entities(self, game_state) -> None:
+        self.tracked_states.append(game_state)
 
 
 def _engine(human=None) -> DecisionEngine:
@@ -215,6 +220,160 @@ class TestProcessTickRoutine:
         e.set_routine(_CtrlCapture())
         e.process_tick(_msg())
         assert _CtrlCapture.received_ctrl is ctrl
+
+
+# ---------------------------------------------------------------------------
+# ingest() / drive() split — see DecisionEngine module docstring.
+#
+# The dashboard runs these on separate threads (BridgeTicker / RoutineRunner)
+# so a routine's blocking actions never stall game-state ingestion.
+# process_tick() remains ingest()+drive() for single-threaded callers.
+# ---------------------------------------------------------------------------
+
+class TestIngestDriveSplit:
+    def test_ingest_publishes_a_new_snapshot(self):
+        e = _engine()
+        original = e.game
+        e.ingest(_msg(tick=5))
+        assert e.game is not original
+        assert e.game.tick == 5
+
+    def test_ingest_does_not_run_the_routine(self):
+        e = _engine()
+        r = _NopRoutine()
+        e.set_routine(r)
+        e.ingest(_msg(tick=1))
+        assert r.tick_count == 0
+
+    def test_drive_runs_against_the_latest_ingested_snapshot(self):
+        e = _engine()
+        r = _NopRoutine()
+        e.set_routine(r)
+        e.ingest(_msg(tick=7))
+        e.drive()
+        assert r.tick_count == 1
+        assert e.game.tick == 7
+
+    def test_drive_without_a_prior_ingest_uses_initial_snapshot(self):
+        e = _engine()
+        r = _NopRoutine()
+        e.set_routine(r)
+        e.drive()
+        assert r.tick_count == 1
+        assert e.game.tick == 0
+
+    def test_process_tick_is_ingest_then_drive(self):
+        e = _engine()
+        r = _NopRoutine()
+        e.set_routine(r)
+        e.process_tick(_msg(tick=3))
+        assert r.tick_count == 1
+        assert e.game.tick == 3
+
+    def test_drive_feeds_the_controllers_entity_tracker_with_the_current_snapshot(self):
+        """drive() must hand the controller the same snapshot the routine is
+        about to react to — and do it before routine.tick() runs, so any
+        MovingTarget predictions the routine triggers use up-to-date
+        velocity. See GameController.track_entities / PLAN.md "Phase 4"."""
+        ctrl = _Ctrl()
+        e = DecisionEngine(ctrl=ctrl)
+        r = _NopRoutine()
+        e.set_routine(r)
+
+        e.ingest(_msg(tick=11))
+        e.drive()
+
+        assert len(ctrl.tracked_states) == 1
+        assert ctrl.tracked_states[0] is e.game
+        assert ctrl.tracked_states[0].tick == 11
+
+    def test_drive_does_not_feed_the_tracker_when_idle(self):
+        """No routine -> nothing will click -> no point tracking yet."""
+        ctrl = _Ctrl()
+        e = DecisionEngine(ctrl=ctrl)
+        e.ingest(_msg(tick=1))
+        e.drive()
+        assert ctrl.tracked_states == []
+
+    def test_tracker_is_fed_before_the_routine_runs(self):
+        """The routine (and any clicks it triggers) must see a tracker that
+        already knows about *this* snapshot — not the previous one."""
+        class _Recorder(Routine):
+            tracked_count_at_tick = None
+
+            @initial_state
+            def watch(self, game, ctrl):
+                _Recorder.tracked_count_at_tick = len(ctrl.tracked_states)
+                return None
+
+        ctrl = _Ctrl()
+        e = DecisionEngine(ctrl=ctrl)
+        e.set_routine(_Recorder())
+        e.ingest(_msg(tick=1))
+        e.drive()
+
+        assert _Recorder.tracked_count_at_tick == 1
+
+
+class TestWaitForSnapshot:
+    def test_true_after_ingest(self):
+        e = _engine()
+        e.ingest(_msg(tick=1))
+        assert e.wait_for_snapshot(timeout=0) is True
+
+    def test_false_when_already_consumed(self):
+        e = _engine()
+        e.ingest(_msg(tick=1))
+        e.wait_for_snapshot(timeout=0)
+        assert e.wait_for_snapshot(timeout=0) is False
+
+    def test_true_again_after_a_further_ingest(self):
+        e = _engine()
+        e.ingest(_msg(tick=1))
+        e.wait_for_snapshot(timeout=0)
+        e.ingest(_msg(tick=2))
+        assert e.wait_for_snapshot(timeout=0) is True
+
+    def test_false_with_no_ingest_at_all(self):
+        e = _engine()
+        assert e.wait_for_snapshot(timeout=0) is False
+
+
+# ---------------------------------------------------------------------------
+# Routine-swap timing — "finish the current tick, then swap"
+#
+# drive() captures the active routine in a local variable up front, so a
+# concurrent set_routine() call can never interrupt a routine mid-tick.
+# ---------------------------------------------------------------------------
+
+class TestRoutineSwapTiming:
+    def test_swap_requested_mid_tick_completes_current_routine_first(self):
+        e = _engine()
+        r2 = _NopRoutine()
+
+        class _SwapsMidTick(Routine):
+            def __init__(self):
+                self.ticked = False
+                super().__init__()
+
+            @initial_state
+            def run(self, game, ctrl):
+                e.set_routine(r2)   # simulate a concurrent swap request
+                self.ticked = True  # this call must still finish against r1
+                return None
+
+        r1 = _SwapsMidTick()
+        e.set_routine(r1)
+        e.ingest(_msg(tick=1))
+        e.drive()
+
+        assert r1.ticked is True
+        assert r2.tick_count == 0
+        assert e.routine is r2  # set_routine() itself is still immediate/visible
+
+        e.ingest(_msg(tick=2))
+        e.drive()
+        assert r2.tick_count == 1  # swap takes effect starting from the next drive()
 
 
 # ---------------------------------------------------------------------------
