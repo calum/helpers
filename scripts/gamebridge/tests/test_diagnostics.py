@@ -142,10 +142,29 @@ class TestDescribeClickMinimap:
 # ---------------------------------------------------------------------------
 
 class TestDescribeIsOccluded:
-    def test_reports_occluded(self):
+    def test_reports_occluding_panel_by_name_and_bounds(self):
+        """groupId 149 is registered as "inventory" — the friendly name plus
+        bounds is what lets you tell a real panel from a bogus registry hit."""
         game = _game(interfaces=[OCCLUDING_PANEL])
         msg = diagnostics.describe_is_occluded(game, ORE)
-        assert "occluded by a UI panel" in msg
+        assert "occluded by inventory (G149:0)" in msg
+        assert "(280, 280) 60×60" in msg
+
+    def test_reports_a_different_panel_by_its_own_name(self):
+        """Sanity check that the label tracks the actual matching widget, not a fixed one."""
+        chatbox_panel = {"groupId": 162, "childId": 0, "bounds": {"x": 280, "y": 280, "width": 60, "height": 60}}
+        game = _game(interfaces=[chatbox_panel])
+        msg = diagnostics.describe_is_occluded(game, ORE)
+        assert "occluded by chatbox (G162:0)" in msg
+
+    def test_ignores_sub_widget_bounds(self):
+        """Only a panel's root (childId 0) should ever be reported — its
+        children report their own small, often-stale bounds that produced
+        "occluded" reports for entities nowhere near the visible panel."""
+        sub_widget = {"groupId": 149, "childId": 12, "bounds": {"x": 300, "y": 300, "width": 5, "height": 5}}
+        game = _game(interfaces=[sub_widget])
+        msg = diagnostics.describe_is_occluded(game, ORE)
+        assert "clear of any UI panel" in msg
 
     def test_reports_clear(self):
         game = _game(interfaces=[])

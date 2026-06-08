@@ -3,6 +3,12 @@
 Captures a screenshot of the RuneLite client and draws coloured overlays for
 the selected NPC/object hull, widget bounds, or interface bounds, so that
 hull-detection and interface-filter logic can be debugged visually.
+
+Selecting an on-screen object or NPC also marks its `canvasX`/`canvasY` —
+the exact point `GameState.is_occluded` tests, which can sit somewhere
+visually surprising relative to the hull outline — with a crosshair, and
+outlines whichever registered panel (if any) is found sitting on it. That's
+the live, visual answer to "why does is_occluded say this is blocked?".
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .. import settings as _settings
+from ..state import interfaces as iface_registry
 from ..controller.controller import _find_window_by_prefix
 from ..widget_ids import BankDepositBox, Bankmain, Inventory, Wornitems
 from .theme import C, _iface_color
@@ -435,6 +442,32 @@ class HullDebugTab(QWidget):
                     f"NPC '{target_npc.get('name','?')}' has no hull "
                     f"(off-screen or hull-filtered).")
 
+        # The point `is_occluded` actually tests is canvasX/canvasY — the
+        # game's reported click point, not the hull centroid drawn above (the
+        # two can differ). Marking it — and outlining whatever panel is found
+        # sitting on it — is what turns a confusing "occluded" verdict into
+        # something visible: a real panel in the way, or a registry entry
+        # whose bounds/group don't mean what we think.
+        for target, kind in ((target_obj, "Object"), (target_npc, "NPC")):
+            if target is None:
+                continue
+            cx, cy = target.get("canvasX"), target.get("canvasY")
+            if cx is None or cy is None:
+                continue
+            blocker = g.occluding_widget_at(cx, cy)
+            self._draw_crosshair(painter, cx, cy - y_off, "#ff3b3b" if blocker else "#3fb950")
+            if blocker is None:
+                status_parts.append(f"{kind} click point ({cx:.0f},{cy:.0f}) is clear.")
+                continue
+            b = blocker.get("bounds") or {}
+            if b.get("width", 0) > 0 and b.get("height", 0) > 0:
+                self._draw_rect_focus(painter, b, y_off, "#ff3b3b")
+            gid = blocker.get("groupId", "?")
+            cid = blocker.get("childId", "?")
+            bname = iface_registry.name_for(gid)
+            label = f"{bname} (G{gid}:{cid})" if bname else f"G{gid}:{cid}"
+            status_parts.append(f"{kind} click point ({cx:.0f},{cy:.0f}) is blocked by {label}.")
+
         if not status_parts:
             if show_all_widgets:
                 status_parts.append(f"Showing {len(self._hull_last_widgets)} widgets.")
@@ -492,6 +525,24 @@ class HullDebugTab(QWidget):
             painter.setFont(font)
             painter.setPen(QColor(color))
             painter.drawText(QPointF(rx + 2, ry + 9), f"G{gid}:{cid}")
+
+    def _draw_crosshair(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        color_hex: str,
+        size: float = 8.0,
+    ) -> None:
+        """Mark one exact canvas point — the spot `is_occluded` tests, which
+        (unlike a hull's centroid) is the game's own reported click point and
+        can land somewhere visually surprising relative to the hull outline."""
+        color = QColor(color_hex)
+        painter.setPen(QPen(color, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(x - size, y), QPointF(x + size, y))
+        painter.drawLine(QPointF(x, y - size), QPointF(x, y + size))
+        painter.drawEllipse(QPointF(x, y), size * 0.6, size * 0.6)
 
     def _draw_rect_focus(
         self,

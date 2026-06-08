@@ -14,6 +14,7 @@ import pytest
 
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.iron_mining import IronMiningRoutine
+from scripts.gamebridge.routines.interaction import OCCLUSION_NUDGE_YAW
 from scripts.gamebridge.state.game_state import GameState
 from scripts.gamebridge.widget_ids import BankDepositBox
 
@@ -307,7 +308,14 @@ class TestIdleSettleBuffer:
         assert result is None
 
     def test_walk_to_bank_does_not_click_while_player_moving(self):
-        """walk_to_bank must not issue a walk command while player is already en route."""
+        """walk_to_bank must not issue a walk command while player is already en route.
+
+        Gating order matches `InteractionRoutine.approach` (shared with
+        find_ore/find_target): camera/occlusion is settled first so the
+        entity's on-screen position is current, then the idle check gates
+        the click — so bring_entity_on_screen *is* still called while moving,
+        it just never reaches click_entity until the player stops.
+        """
         game = _make_game(tick=2, inventory_full=True, player_x=3210, player_y=3210)
         game._prev_pos = (3209, 3210)  # player moved this tick
         game.camera = {"yaw": 0, "pitch": 256}
@@ -315,8 +323,6 @@ class TestIdleSettleBuffer:
         ctrl.bring_entity_on_screen.return_value = True
         result = _routine().walk_to_bank(game, ctrl)
         ctrl.click_entity.assert_not_called()
-        # bring_entity_on_screen should not even be called — idle check fires first
-        ctrl.bring_entity_on_screen.assert_not_called()
         assert result is None
 
     def test_find_ore_resets_buffer_when_camera_adjusts(self):
@@ -326,13 +332,13 @@ class TestIdleSettleBuffer:
         ctrl.bring_entity_on_screen.return_value = True
 
         r = _routine()
-        r.find_ore(game, ctrl)           # tick 1: sets _idle_since_tick=1
-        assert r._idle_since_tick == 1
+        r.find_ore(game, ctrl)           # tick 1: sets _approach_idle_since_tick=1
+        assert r._approach_idle_since_tick == 1
 
         ctrl.bring_entity_on_screen.return_value = False
         game.tick = 2
         r.find_ore(game, ctrl)           # tick 2: camera adjust resets buffer
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_find_ore_resets_buffer_when_player_moves(self):
         """If the player starts moving while the buffer is active, the buffer resets."""
@@ -341,17 +347,17 @@ class TestIdleSettleBuffer:
         ctrl.bring_entity_on_screen.return_value = True
 
         r = _routine()
-        r.find_ore(game, ctrl)           # tick 1: sets _idle_since_tick=1
-        assert r._idle_since_tick == 1
+        r.find_ore(game, ctrl)           # tick 1: sets _approach_idle_since_tick=1
+        assert r._approach_idle_since_tick == 1
 
         game.tick = 2
         game._prev_pos = game.player_pos
         game.player = {**game.player, "worldX": 3222}  # moved
         r.find_ore(game, ctrl)           # tick 2: player moving resets buffer
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_find_ore_buffer_resets_after_successful_click(self):
-        """_idle_since_tick returns to -1 after the click fires so the next ore uses a fresh buffer."""
+        """_approach_idle_since_tick returns to -1 after the click fires so the next ore uses a fresh buffer."""
         game = self._idle_game(tick=1)
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
@@ -360,7 +366,7 @@ class TestIdleSettleBuffer:
         r.find_ore(game, ctrl)  # tick 1: buffer start
         game.tick = 2
         r.find_ore(game, ctrl)  # tick 2: click
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +377,11 @@ class TestIdleSettleBuffer:
 # groupId 149 = inventory — a real, separate occluding panel (see
 # state/interfaces.py). The toplevel viewport container (161) is excluded
 # from occlusion checks, so fixtures must use an actual panel group here.
+# childId 0 — only a panel's root widget (whose bounds span the whole panel)
+# is checked; sub-widgets report their own small, often-stale bounds.
 OCCLUDING_PANEL = {
     "groupId": 149,
-    "childId": 30,
+    "childId": 0,
     "itemId": -1,
     "quantity": 0,
     "bounds": {"x": 570, "y": 20, "width": 150, "height": 150},
@@ -420,15 +428,16 @@ class TestOcclusionGuard:
         assert result is None
 
     def test_find_ore_adjusts_camera_when_occluded(self):
-        """Occlusion triggers a camera adjustment attempt to clear the entity."""
+        """Occlusion triggers an explicit camera nudge to clear the entity —
+        `bring_entity_on_screen` is a no-op once `onScreen` is already true,
+        so a real rotation (`rotate_camera`) is what actually moves it."""
         game = self._game_with_panel([ORE_ON_SCREEN])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
 
         _routine().find_ore(game, ctrl)
 
-        assert ctrl.bring_entity_on_screen.call_count == 2
-        ctrl.bring_entity_on_screen.assert_called_with(ORE_ON_SCREEN, game)
+        ctrl.rotate_camera.assert_called_once_with(Key.RIGHT, OCCLUSION_NUDGE_YAW)
 
     def test_find_ore_resets_idle_buffer_when_occluded(self):
         """Occlusion must reset the settle buffer like any other camera disruption."""
@@ -437,9 +446,9 @@ class TestOcclusionGuard:
         ctrl.bring_entity_on_screen.return_value = True
 
         r = _routine()
-        r._idle_since_tick = 1
+        r._approach_idle_since_tick = 1
         r.find_ore(game, ctrl)
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_find_ore_clicks_when_on_screen_and_clear(self):
         """Sanity check: an on-screen ore outside any UI panel is still clickable."""

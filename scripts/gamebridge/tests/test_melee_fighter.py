@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.melee_fighter import MeleeFighterRoutine
+from scripts.gamebridge.routines.interaction import OCCLUSION_NUDGE_YAW
 from scripts.gamebridge.state.game_state import GameState
 
 
@@ -189,12 +191,12 @@ class TestFindTargetCameraAndSettleBuffer:
         r = _routine()
 
         r.find_target(game, ctrl)
-        assert r._idle_since_tick == 1
+        assert r._approach_idle_since_tick == 1
 
         ctrl.bring_entity_on_screen.return_value = False
         game.tick = 2
         r.find_target(game, ctrl)
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_resets_buffer_when_player_moves(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
@@ -203,13 +205,13 @@ class TestFindTargetCameraAndSettleBuffer:
         r = _routine()
 
         r.find_target(game, ctrl)
-        assert r._idle_since_tick == 1
+        assert r._approach_idle_since_tick == 1
 
         game.tick = 2
         game._prev_pos = game.player_pos
         game.player = {**game.player, "worldX": game.player["worldX"] + 1}
         r.find_target(game, ctrl)
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_buffer_resets_after_right_click(self):
         game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
@@ -220,7 +222,7 @@ class TestFindTargetCameraAndSettleBuffer:
         r.find_target(game, ctrl)   # tick 1: buffer start
         game.tick = 2
         r.find_target(game, ctrl)   # tick 2: right-clicks — gesture started
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
 
 # ---------------------------------------------------------------------------
@@ -308,9 +310,11 @@ class TestFindTargetMenuVerification:
 # ---------------------------------------------------------------------------
 
 # groupId 149 = inventory — a real occluding panel (see state/interfaces.py).
+# childId 0 — only a panel's root widget (whose bounds span the whole panel)
+# is checked; sub-widgets report their own small, often-stale bounds.
 OCCLUDING_PANEL = {
     "groupId": 149,
-    "childId": 30,
+    "childId": 0,
     "itemId": -1,
     "quantity": 0,
     "bounds": {"x": 570, "y": 20, "width": 150, "height": 150},
@@ -338,14 +342,16 @@ class TestFindTargetOcclusionGuard:
         assert result is None
 
     def test_adjusts_camera_when_occluded(self):
+        """Occlusion triggers an explicit camera nudge to clear the entity —
+        `bring_entity_on_screen` is a no-op once `onScreen` is already true,
+        so a real rotation (`rotate_camera`) is what actually moves it."""
         game = self._game_with_panel(GOBLIN_OCCLUDED)
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
 
         _routine().find_target(game, ctrl)
 
-        assert ctrl.bring_entity_on_screen.call_count == 2
-        ctrl.bring_entity_on_screen.assert_called_with(GOBLIN_OCCLUDED, game)
+        ctrl.rotate_camera.assert_called_once_with(Key.RIGHT, OCCLUSION_NUDGE_YAW)
 
     def test_resets_idle_buffer_when_occluded(self):
         game = self._game_with_panel(GOBLIN_OCCLUDED)
@@ -353,9 +359,9 @@ class TestFindTargetOcclusionGuard:
         ctrl.bring_entity_on_screen.return_value = True
 
         r = _routine()
-        r._idle_since_tick = 1
+        r._approach_idle_since_tick = 1
         r.find_target(game, ctrl)
-        assert r._idle_since_tick == -1
+        assert r._approach_idle_since_tick == -1
 
     def test_attacks_when_on_screen_and_clear(self):
         game = self._game_with_panel(GOBLIN_CLEAR)

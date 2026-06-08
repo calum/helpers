@@ -4,6 +4,56 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-08 (8) — Extracted shared `InteractionRoutine` base class
+
+### Goal
+
+`iron_mining.py` and `melee_fighter.py` had grown three near-identical
+tick-by-tick gating blocks (camera/occlusion/idle-settle, and "verify before
+you click" menu confirmation). Extract the reusable parts into a shared base
+so future routines (banking, questing, etc.) don't re-derive them.
+
+### Findings / Decisions
+
+- New module `routines/interaction.py` — `InteractionRoutine(Routine)` with
+  two helpers, both designed to be called once per tick and never block:
+  - **`approach(game, ctrl, entity) -> bool`** — collapses the
+    bring-on-screen → occlusion-check → `player_idle()` → one-tick-settle-
+    buffer chain that appeared in `find_ore`, `walk_to_bank`, and
+    `find_target`. Returns `True` exactly once it's safe to click (and resets
+    its own `_approach_idle_since_tick` buffer for the next cycle), so call
+    sites collapse to `if not self.approach(game, ctrl, entity): return None`.
+  - **`verified_menu_click(game, ctrl, verb, target_name) -> MenuClick`** —
+    collapses the right-click-then-confirm-the-row flow shared by
+    `find_target` (Attack) and `looting` (Take): returns a `MenuClick` enum
+    (`CONFIRMED` / `ABANDONED` / `PENDING`, the last dismissing a stuck-open
+    menu via `ctrl.dismiss_menu`).
+- **Found and fixed a gating-order inconsistency**: `find_ore`/`find_target`
+  checked camera/occlusion *before* `player_idle()`, but `walk_to_bank`
+  checked idle *first*. No comment explained the difference — looked like
+  incidental drift rather than a deliberate design choice, so `approach()`
+  standardises on the camera-first order (2-of-3 sites already used it).
+  Net effect: `walk_to_bank` now still calls `bring_entity_on_screen` while
+  the player is mid-walk (previously skipped) — functionally equivalent
+  (still won't click until idle), just consistent gating order everywhere.
+  Updated `test_walk_to_bank_does_not_click_while_player_moving` accordingly.
+- `IronMiningRoutine` and `MeleeFighterRoutine` now extend
+  `InteractionRoutine`; their private `_idle_since_tick` fields were removed
+  in favour of the shared `_approach_idle_since_tick` (tests renamed to match).
+- New `tests/test_interaction.py` — unit-tests the two helpers in isolation
+  (mocked `game`/`ctrl`) covering camera/occlusion/idle/settle-buffer gating
+  and all three `verified_menu_click` outcomes. 685 tests pass overall.
+
+### Open / next steps
+
+- `_nearest_available_npc` (melee_fighter) and the ore/bank lookup in
+  iron_mining weren't extracted — they're thin wrappers around
+  `GameState.nearest_object`/`npcs_named` plus routine-specific filtering, not
+  worth abstracting yet. Revisit if a third routine needs "nearest X excluding
+  Y" with different exclusion predicates.
+
+---
+
 ## Session: 2026-06-08 (7) — Live-play feedback: stuck menu fix + occlusion TOCTOU + reachability backlog
 
 ### Goal

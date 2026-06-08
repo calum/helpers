@@ -41,7 +41,8 @@ from __future__ import annotations
 import logging
 from typing import Optional, TYPE_CHECKING
 
-from ..base import Routine, initial_state
+from ..base import initial_state
+from ..interaction import InteractionRoutine
 from ...input.keyboard import Key
 from ...widget_ids import BankDepositBox
 
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class IronMiningRoutine(Routine):
+class IronMiningRoutine(InteractionRoutine):
     """Mine iron ore rocks, bank when full, repeat."""
 
     ORE_NAME = "Iron rocks"
@@ -64,7 +65,6 @@ class IronMiningRoutine(Routine):
         super().__init__()
         self.mining_start_tick: Optional[int] = None
         self._deposit_clicked_tick: int = -99
-        self._idle_since_tick: int = -1  # one-tick settle buffer: set on first idle tick, click the next
 
     # ------------------------------------------------------------------
     # States
@@ -73,7 +73,8 @@ class IronMiningRoutine(Routine):
     @initial_state
     def find_ore(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Scan for the nearest iron ore rock.
+        Scan for the nearest iron ore rock and click it once it's safe to
+        do so (see `InteractionRoutine.approach`).
         If inventory is already full, skip straight to banking.
         """
         if game.inventory_full():
@@ -86,27 +87,10 @@ class IronMiningRoutine(Routine):
             log.debug("No %s in scene, waiting…", self.ORE_NAME)
             return None
 
-        if not ctrl.bring_entity_on_screen(ore, game):
-            log.debug("%s at (%d,%d) not visible — adjusting camera", self.ORE_NAME, ore["worldX"], ore["worldY"])
-            self._idle_since_tick = -1
-            return None
-
-        if ore.get("onScreen") and game.is_occluded(ore["canvasX"], ore["canvasY"]):
-            log.debug("%s is hidden behind a UI panel — adjusting camera", self.ORE_NAME)
-            ctrl.bring_entity_on_screen(ore, game)
-            self._idle_since_tick = -1
-            return None
-
-        if not game.player_idle():
-            self._idle_since_tick = -1
-            return None
-
-        if self._idle_since_tick == -1:
-            self._idle_since_tick = game.tick
+        if not self.approach(game, ctrl, ore):
             return None
 
         ctrl.click_entity(ore)
-        self._idle_since_tick = -1
         self.mining_start_tick = game.tick
         return "mining"
 
@@ -149,8 +133,8 @@ class IronMiningRoutine(Routine):
 
     def walk_to_bank(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Click the nearest bank deposit box to walk toward it.
-        Transition to deposit once we're adjacent.
+        Click the nearest bank deposit box to walk toward it (see
+        `InteractionRoutine.approach`). Transition to deposit once adjacent.
         """
         if game.inventory_empty():
             return "find_ore"
@@ -164,27 +148,10 @@ class IronMiningRoutine(Routine):
         if game.player_near(box, tiles=2):
             return "deposit"
 
-        if not game.player_idle():
-            self._idle_since_tick = -1
-            return None
-
-        if not ctrl.bring_entity_on_screen(box, game):
-            log.debug("%s not visible — adjusting camera", self.BANK_NAME)
-            self._idle_since_tick = -1
-            return None
-
-        if box.get("onScreen") and game.is_occluded(box["canvasX"], box["canvasY"]):
-            log.debug("%s is hidden behind a UI panel — adjusting camera", self.BANK_NAME)
-            ctrl.bring_entity_on_screen(box, game)
-            self._idle_since_tick = -1
-            return None
-
-        if self._idle_since_tick == -1:
-            self._idle_since_tick = game.tick
+        if not self.approach(game, ctrl, box):
             return None
 
         ctrl.click_entity(box)
-        self._idle_since_tick = -1
         return None  # walking
 
     def deposit(self, game: "GameState", ctrl: "GameController") -> Optional[str]:

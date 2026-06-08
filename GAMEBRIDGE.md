@@ -169,7 +169,7 @@ def yaw_delta(current_yaw, target_yaw):
 | `id` | NPC composition/definition ID — **shared** by every instance of the same NPC type (e.g. all "Goblin"s have the same `id`) |
 | `index` | Per-instance world index — **unique** to this specific NPC; use it to track one individual across ticks (e.g. "did the Goblin I attacked die?"). May be reused by a different NPC after this one despawns, so only rely on it across short windows. |
 | `onScreen` | `true` when the NPC has a visible convex hull in the current frame |
-| `canvasX` / `canvasY` | Centre of the hull bounding box in screen pixels; `null` when off-screen |
+| `canvasX` / `canvasY` | Vertex-average centroid of the convex hull in screen pixels — guaranteed to fall *inside* the polygon (unlike the bounding-box centre, which can land outside a skewed hull); `null` when off-screen |
 | `hull` | Array of `[x, y]` screen-pixel pairs forming the clickable polygon; `null` when off-screen or excluded by the hull filter |
 | `minimapX` / `minimapY` | Canvas pixel coordinates of this entity on the minimap; `null` when the entity is beyond minimap range |
 
@@ -605,7 +605,7 @@ When an entity is excluded by the filter, `hull` is `null` but all other fields 
 
 ## Canvas coordinates and clicking
 
-`canvasX/Y` is the screen-pixel centre of the entity's bounding box — useful for direct mouse automation if you know the game window's screen origin:
+`canvasX/Y` is the vertex-average centroid of the entity's convex hull, in screen pixels — useful for direct mouse automation if you know the game window's screen origin. It is computed from the hull polygon itself (not its bounding box), so for convex shapes it's mathematically guaranteed to land inside the polygon — unlike a bounding-box centre, which for a hull skewed by viewing angle can fall outside the visible shape entirely (causing both wrong click targets and false "occluded" reads when checked against UI panel bounds):
 
 ```python
 import pyautogui  # pip install pyautogui

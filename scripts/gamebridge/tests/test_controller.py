@@ -513,6 +513,61 @@ class TestClickAtGuard:
 
 
 # ---------------------------------------------------------------------------
+# right_click_at / right_click_widget — viewport guard
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestRightClickAtGuard:
+    def test_negative_x_blocked(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        _ctrl().right_click_at(-10, 300)
+        mock_mouse.click_right.assert_not_called()
+
+    def test_beyond_canvas_width_blocked(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        _ctrl().right_click_at(CANVAS_W + 100, 300)
+        mock_mouse.click_right.assert_not_called()
+
+    def test_valid_coord_right_clicked(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = MagicMock(
+            pre_move_pause=0.0, post_move_pause=0.0, double_click=False,
+            actual_x=650.0, actual_y=450.0,
+        )
+        ctrl.right_click_at(500, 300)
+        mock_mouse.click_right.assert_called_once()
+        mock_mouse.click_left.assert_not_called()
+
+    def test_wind_mouse_not_called_when_blocked(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        _ctrl().right_click_at(-10, 300)
+        mock_mouse.wind_mouse.assert_not_called()
+
+    def test_right_click_widget_uses_bounds_centre(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        ctrl.right_click_at = MagicMock()
+        widget = {"groupId": 149, "childId": 3, "bounds": {"x": 100, "y": 200, "width": 32, "height": 32}}
+        ctrl.right_click_widget(widget)
+        ctrl.right_click_at.assert_called_once_with(100 + 32 / 2, 200 + 32 / 2)
+
+    def test_right_click_widget_without_bounds_does_nothing(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        ctrl.right_click_at = MagicMock()
+        ctrl.right_click_widget({"groupId": 149, "childId": 3})
+        ctrl.right_click_at.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # click_menu_entry — finds a matching context-menu entry and clicks its bounds
 # ---------------------------------------------------------------------------
 

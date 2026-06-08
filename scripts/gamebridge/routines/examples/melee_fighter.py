@@ -29,7 +29,8 @@ from __future__ import annotations
 import logging
 from typing import Optional, Set, Tuple, TYPE_CHECKING
 
-from ..base import Routine, initial_state
+from ..base import initial_state
+from ..interaction import InteractionRoutine, MenuClick
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class MeleeFighterRoutine(Routine):
+class MeleeFighterRoutine(InteractionRoutine):
     """Attack the nearest uncontested NPC by name, loot its drops, repeat."""
 
     # TODO: read this from the dashboard's NPC-name text box input instead of
@@ -62,7 +63,6 @@ class MeleeFighterRoutine(Routine):
         self._target_pos: Optional[Tuple[int, int]] = None
         self._death_tick: Optional[int] = None
         self._looted_keys: Set[Tuple[int, int, int]] = set()
-        self._idle_since_tick: int = -1
         self._fight_start_tick: Optional[int] = None
         self._attack_target: Optional[dict] = None
         self._loot_target: Optional[dict] = None
@@ -86,24 +86,18 @@ class MeleeFighterRoutine(Routine):
         reading the menu back removes that ambiguity entirely.
         """
         if self._attack_target is not None:
-            if ctrl.click_menu_entry(game, "Attack", self.NPC_NAME):
+            outcome = self.verified_menu_click(game, ctrl, "Attack", self.NPC_NAME)
+
+            if outcome is MenuClick.CONFIRMED:
                 self._target_index = self._attack_target["index"]
                 self._target = self._attack_target
                 self._fight_start_tick = game.tick
                 self._attack_target = None
                 return "fighting"
 
-            if not game.menu_open():
-                log.debug("Menu closed without an Attack %s entry — retrying", self.NPC_NAME)
+            if outcome is MenuClick.ABANDONED:
                 self._attack_target = None
-                return None
 
-            # The menu is open but doesn't have the row we need — it won't
-            # close on its own (right-click menus don't time out), so the
-            # routine would otherwise sit here forever. Move the cursor off
-            # it so the client dismisses it, then retarget once it's gone.
-            log.debug("Menu open without an Attack %s entry — dismissing it", self.NPC_NAME)
-            ctrl.dismiss_menu(game)
             return None
 
         target = self._nearest_available_npc(game)
@@ -112,27 +106,11 @@ class MeleeFighterRoutine(Routine):
             log.debug("No available %s in scene, waiting…", self.NPC_NAME)
             return None
 
-        if not ctrl.bring_entity_on_screen(target, game):
-            self._idle_since_tick = -1
-            return None
-
-        if target.get("onScreen") and game.is_occluded(target["canvasX"], target["canvasY"]):
-            log.debug("%s is hidden behind a UI panel — adjusting camera", self.NPC_NAME)
-            ctrl.bring_entity_on_screen(target, game)
-            self._idle_since_tick = -1
-            return None
-
-        if not game.player_idle():
-            self._idle_since_tick = -1
-            return None
-
-        if self._idle_since_tick == -1:
-            self._idle_since_tick = game.tick
+        if not self.approach(game, ctrl, target):
             return None
 
         ctrl.right_click_entity(target)
         self._attack_target = target
-        self._idle_since_tick = -1
         return None
 
     def fighting(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -213,21 +191,14 @@ class MeleeFighterRoutine(Routine):
         log.debug("Ground items at target tile: %s", game.ground_items_at(x, y))
 
         if self._loot_target is not None:
-            key = (self._loot_target["id"], x, y)
-            if ctrl.click_menu_entry(game, "Take", self._loot_target.get("name")):
-                self._looted_keys.add(key)
+            outcome = self.verified_menu_click(game, ctrl, "Take", self._loot_target.get("name"))
+
+            if outcome is MenuClick.CONFIRMED:
+                self._looted_keys.add((self._loot_target["id"], x, y))
                 self._loot_target = None
-            elif not game.menu_open():
-                log.debug("Menu closed without a Take %s entry — retrying",
-                          self._loot_target.get("name"))
+            elif outcome is MenuClick.ABANDONED:
                 self._loot_target = None
-            else:
-                # Same "stuck open menu" hazard as find_target — nothing
-                # closes it for us, so move the cursor off it and retry
-                # the pickup once it's gone.
-                log.debug("Menu open without a Take %s entry — dismissing it",
-                          self._loot_target.get("name"))
-                ctrl.dismiss_menu(game)
+
             return None
 
         if game.player_idle():

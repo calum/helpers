@@ -551,8 +551,17 @@ class TickMessageBuilder
 		m.put("onScreen", onScreen);
 		if (onScreen)
 		{
-			m.put("canvasX", b.x + b.width / 2);
-			m.put("canvasY", b.y + b.height / 2);
+			// The hull's bounding-box centre can land outside the polygon
+			// itself — convex hulls viewed at an angle are skewed
+			// quadrilaterals, not axis-aligned rectangles, so their bbox
+			// centre is frequently in empty space (or even over a UI panel
+			// the visible shape doesn't actually overlap). The vertex
+			// average of a convex polygon is always inside it — a convex
+			// combination of the polygon's own points — so it's both a
+			// reliable click target and a faithful point for occlusion checks.
+			int[] centroid = hullCentroid(hull, b);
+			m.put("canvasX", centroid[0]);
+			m.put("canvasY", centroid[1]);
 			m.put("hull", hullFilter.matches(id, name) ? hullPoints(hull) : null);
 		}
 		else
@@ -629,6 +638,33 @@ class TickMessageBuilder
 			it.next();
 		}
 		return points.toArray(new int[0][]);
+	}
+
+	private int[] hullCentroid(Shape hull, Rectangle bounds)
+	{
+		long sumX = 0;
+		long sumY = 0;
+		int count = 0;
+		float[] coords = new float[6];
+		PathIterator it = hull.getPathIterator(null);
+		while (!it.isDone())
+		{
+			int type = it.currentSegment(coords);
+			if (type == PathIterator.SEG_MOVETO || type == PathIterator.SEG_LINETO)
+			{
+				sumX += (int) coords[0];
+				sumY += (int) coords[1];
+				count++;
+			}
+			it.next();
+		}
+
+		if (count == 0)
+		{
+			return new int[]{bounds.x + bounds.width / 2, bounds.y + bounds.height / 2};
+		}
+
+		return new int[]{(int) (sumX / count), (int) (sumY / count)};
 	}
 
 	private int[] minimapPoint(LocalPoint lp)

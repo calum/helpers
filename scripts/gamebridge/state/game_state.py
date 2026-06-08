@@ -254,17 +254,52 @@ class GameState:
     # Interfaces
     # ------------------------------------------------------------------ #
 
+    def occluding_widget_at(self, canvas_x: float, canvas_y: float) -> Optional[dict]:
+        """Return the occluding UI widget covering this canvas point, or None.
+
+        Same whitelist `is_occluded` documents — only widgets whose group is
+        registered with ``occludes=True`` in ``state/interfaces.py`` are
+        checked. Returns the first match (raw widget dict, with ``groupId``,
+        ``childId`` and ``bounds``) so callers needing to know *which* panel
+        is in the way — diagnostics, logging — don't have to re-walk the list
+        themselves; ``is_occluded`` is just this with the result reduced to a
+        bool.
+
+        Only the panel's *root* widget (``childId == 0``) is checked — its
+        ``bounds`` is the panel's full rectangle. Sub-widgets (item sprites,
+        text labels, scrollbars, ...) report their own small bounds *within*
+        that rectangle, often at stale positions while the panel is closed or
+        scrolled, which produced "occluded by inventory (G149:34)" reports for
+        canvas points nowhere near the actual visible panel. The root's
+        rectangle already covers every sub-widget that matters for blocking a
+        click, so checking children adds false positives without adding
+        coverage.
+        """
+        for w in self.interfaces:
+            if w.get("childId", -1) != 0:
+                continue
+            if not iface_registry.occludes(w.get("groupId", -1)):
+                continue
+            b = w.get("bounds")
+            if not b:
+                continue
+            if (b["x"] <= canvas_x < b["x"] + b["width"] and
+                    b["y"] <= canvas_y < b["y"] + b["height"]):
+                return w
+        return None
+
     def is_occluded(self, canvas_x: float, canvas_y: float) -> bool:
         """Return True if the canvas point lies inside any occluding UI widget.
 
         Call this before clicking an on-screen entity to avoid hitting a UI
         panel (bank, inventory, chatbox, etc.) instead of the entity.
 
-        Only widgets whose group is explicitly registered as occluding in
-        ``state/interfaces.py`` (``occludes(group_id)`` returns True) are
-        checked — everything else (viewport/root containers, always-on chrome
-        like orbs, xp counters, the minimap, ...) is ignored. The
-        ``interfaces`` array dumps every loaded group indiscriminately, and
+        Only a panel's root widget (``childId == 0``, whose ``bounds`` spans
+        the whole panel) in a group explicitly registered as occluding in
+        ``state/interfaces.py`` (``occludes(group_id)`` returns True) is
+        checked — everything else (sub-widgets, viewport/root containers,
+        always-on chrome like orbs, xp counters, the minimap, ...) is
+        ignored. The ``interfaces`` array dumps every loaded group indiscriminately, and
         most of it visually overlaps the canvas without actually blocking a
         click, so checking the full list (or even just excluding viewport
         roots) produced false "occluded" reports for entities sitting behind
@@ -278,17 +313,10 @@ class GameState:
                     ctrl.click_entity(entity)
                 else:
                     ctrl.bring_entity_on_screen(entity, game)
+
+        See `occluding_widget_at` if you need to know *which* widget matched.
         """
-        for w in self.interfaces:
-            if not iface_registry.occludes(w.get("groupId", -1)):
-                continue
-            b = w.get("bounds")
-            if not b:
-                continue
-            if (b["x"] <= canvas_x < b["x"] + b["width"] and
-                    b["y"] <= canvas_y < b["y"] + b["height"]):
-                return True
-        return False
+        return self.occluding_widget_at(canvas_x, canvas_y) is not None
 
     def is_interface_open(self, name: str) -> bool:
         """Return True if any widget from the named interface group is active.

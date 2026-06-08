@@ -35,6 +35,7 @@ from .routines.base import Routine
 from .routines.examples.iron_mining import IronMiningRoutine
 from .routines.examples.gold_mining import GoldMiningRoutine
 from .routines.examples.melee_fighter import MeleeFighterRoutine
+from .routines.examples.fish_and_cook import FishAndCookRoutine
 
 from .ui.theme import C, STYLESHEET, _qc, _iface_color, _hms, _yaw_dir
 from .ui.components import Card, HDivider, StatBar, ConnectionDot
@@ -55,6 +56,7 @@ ROUTINES: dict[str, Type[Routine]] = {
     "Iron Mining": IronMiningRoutine,
     "Gold Mining": GoldMiningRoutine,
     "Melee Fighter": MeleeFighterRoutine,
+    "FishAndCook": FishAndCookRoutine,
 }
 
 # ---------------------------------------------------------------------------

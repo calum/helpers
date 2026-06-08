@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 
+from .state import interfaces as iface_registry
+
 if TYPE_CHECKING:
     from .controller.controller import GameController
     from .state.game_state import GameState
@@ -55,14 +57,39 @@ def describe_click_minimap(ctrl: "GameController", game: "GameState", entity: di
 
 
 def describe_is_occluded(game: "GameState", entity: dict) -> str:
-    """Test the entity's canvas position against the live UI panel list."""
+    """Test the entity's canvas position against the live UI panel list,
+    naming the specific panel found in the way — its registered name, group
+    id and bounds — rather than a bare yes/no. When the result looks wrong
+    (an entity reported occluded in open space, say), that's exactly what's
+    needed to tell whether a real panel is sitting there or a registry entry
+    whose bounds/group don't mean what we think (see `state.interfaces` and
+    `GameState.occluding_widget_at`).
+
+    Only groups registered with ``occludes=True`` ever match — and every
+    such entry carries a name — so the label is always `name (G<id>:<child>)`,
+    never a bare id.
+    """
     name = entity.get("name", "?")
     cx, cy = entity.get("canvasX"), entity.get("canvasY")
     if cx is None or cy is None:
         return f"'{name}' has no canvas position (off screen) — cannot test occlusion."
-    occluded = game.is_occluded(cx, cy)
-    state = "occluded by a UI panel" if occluded else "clear of any UI panel"
-    return f"'{name}' at canvas ({cx:.0f}, {cy:.0f}) is {state}."
+
+    widget = game.occluding_widget_at(cx, cy)
+    if widget is None:
+        return f"'{name}' at canvas ({cx:.0f}, {cy:.0f}) is clear of any UI panel."
+
+    gid = widget.get("groupId", "?")
+    cid = widget.get("childId", "?")
+    label = f"{iface_registry.name_for(gid)} (G{gid}:{cid})"
+    b = widget.get("bounds") or {}
+    bounds = (
+        f"({b['x']}, {b['y']}) {b['width']}×{b['height']}"
+        if b else "no bounds reported"
+    )
+    return (
+        f"'{name}' at canvas ({cx:.0f}, {cy:.0f}) is occluded by "
+        f"{label} — bounds {bounds}."
+    )
 
 
 def describe_is_on_screen(entity: dict) -> str:

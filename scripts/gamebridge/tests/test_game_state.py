@@ -1077,6 +1077,54 @@ class TestIsOccluded:
         assert g.is_occluded(800, 450) is False
 
 
+class TestOccludingWidgetAt:
+    """`is_occluded` is just this reduced to a bool — same whitelist, same matching."""
+
+    def test_returns_the_matching_widget(self):
+        g = GameState()
+        widget = _iface_widget(149, 0, 100, 200, 50, 50)
+        g.interfaces = [widget]
+        assert g.occluding_widget_at(125, 225) is widget
+
+    def test_returns_none_when_clear(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(149, 0, 100, 200, 50, 50)]
+        assert g.occluding_widget_at(400, 300) is None
+
+    def test_ignores_non_occluding_groups(self):
+        """A viewport root spanning the point must not be returned — it isn't occluding."""
+        g = GameState()
+        g.interfaces = [_iface_widget(161, 0, 0, 0, 1600, 900)]
+        assert g.occluding_widget_at(800, 450) is None
+
+    def test_returns_first_match_among_several(self):
+        g = GameState()
+        first = _iface_widget(149, 0, 100, 100, 100, 100)
+        second = _iface_widget(162, 0, 120, 120, 50, 50)
+        g.interfaces = [first, second]
+        assert g.occluding_widget_at(125, 125) is first
+
+    def test_ignores_sub_widgets_even_when_their_bounds_match(self):
+        """A child widget (item sprite, label, ...) reports its own small,
+        often-stale bounds within the panel — only the root (childId 0) whose
+        bounds span the whole panel should ever be reported as occluding."""
+        g = GameState()
+        g.interfaces = [_iface_widget(149, 34, 125, 225, 10, 10)]
+        assert g.occluding_widget_at(128, 228) is None
+
+    def test_root_widget_still_matches_when_sub_widget_also_present(self):
+        g = GameState()
+        root = _iface_widget(149, 0, 100, 200, 50, 50)
+        child = _iface_widget(149, 7, 110, 210, 10, 10)
+        g.interfaces = [child, root]
+        assert g.occluding_widget_at(115, 215) is root
+
+    def test_is_occluded_reflects_the_same_lookup(self):
+        g = GameState()
+        g.interfaces = [_iface_widget(149, 0, 100, 200, 50, 50)]
+        assert g.is_occluded(125, 225) == (g.occluding_widget_at(125, 225) is not None)
+
+
 class TestFindInterfaceWidget:
     def test_finds_matching_widget(self):
         g = GameState()

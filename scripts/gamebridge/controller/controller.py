@@ -373,6 +373,20 @@ class GameController:
         log.debug("Clicked widget G%d:%d at canvas (%.0f, %.0f)",
                   widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
 
+    def right_click_widget(self, widget: dict) -> None:
+        """Right-click the centre of a UI widget slot — e.g. to open an
+        inventory item's context menu and read back a "Drop"/"Use" entry
+        with `GameState.menu_entry_matching` before clicking it."""
+        b = widget.get("bounds")
+        if not b:
+            log.debug("right_click_widget: widget has no bounds")
+            return
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        self.right_click_at(cx, cy)
+        log.debug("Right-clicked widget G%d:%d at canvas (%.0f, %.0f)",
+                  widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
+
     def click_menu_entry(self, game_state, option_substr: str, target_substr: Optional[str] = None) -> bool:
         """Click a right-click context-menu entry matching the given option/target text.
 
@@ -601,6 +615,22 @@ class GameController:
         mouse_input.click_left()
         self._after_click()
 
+    def right_click_at(self, canvas_x: float, canvas_y: float) -> None:
+        """Right-click at an absolute canvas coordinate."""
+        if not self._is_canvas_coord_valid(canvas_x, canvas_y):
+            log.warning("right_click_at: canvas (%.0f, %.0f) outside viewport — skipping",
+                        canvas_x, canvas_y)
+            return
+        sx, sy = self._canvas_to_screen(canvas_x, canvas_y)
+        cur_x, cur_y = mouse_input.get_position()
+        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        time.sleep(intent.pre_move_pause)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        time.sleep(intent.post_move_pause)
+        mouse_input.click_right()
+        self._after_click()
+
     # ------------------------------------------------------------------
     # Keyboard actions
     # ------------------------------------------------------------------
@@ -616,14 +646,39 @@ class GameController:
         kb_input.press_key(key)
         log.debug("Pressed key '%s'", key)
 
+    def rotate_camera(self, key: str, yaw_amount: float) -> None:
+        """
+        Hold a yaw-rotation key (`Key.LEFT`/`Key.RIGHT`) for roughly the hold
+        time needed to cover `yaw_amount` yaw units, via the HumanEmulator's
+        key-hold intent. Low-level primitive that always rotates — unlike
+        `rotate_camera_to`, it has no opinion on whether any particular
+        entity is currently on-screen, so it also works for nudging the
+        camera to steer an *already on-screen* entity out from behind an
+        occluding UI panel (panels sit at fixed canvas positions; rotating
+        the camera changes where the entity itself projects to).
+        """
+        intended_hold_ms = yaw_amount / CAMERA_YAW_SPEED
+        intent = self._human.plan_key_hold(intended_hold_ms)
+
+        time.sleep(intent.pre_hold_pause)
+        kb_input.press_key(key, hold_ms=intent.hold_ms)
+        time.sleep(intent.post_hold_pause)
+
+        log.debug(
+            "Rotated camera %s by ~%d yaw units (intended %.0f ms, actual %.0f ms)",
+            "LEFT" if key == Key.LEFT else "RIGHT",
+            yaw_amount,
+            intended_hold_ms,
+            intent.hold_ms,
+        )
+
     def rotate_camera_to(self, entity: dict, game_state) -> bool:
         """
         Rotate the camera toward an off-screen entity using arrow keys.
 
-        Computes the shortest-arc yaw delta, asks the HumanEmulator for a
-        human-like key-hold intent, then holds LEFT or RIGHT until the estimated
-        angle is covered.  The caller should return None from its routine state
-        after this call so the next tick delivers fresh game state to verify.
+        Computes the shortest-arc yaw delta and hands it to `rotate_camera`.
+        The caller should return None from its routine state after this call
+        so the next tick delivers fresh game state to verify.
 
         Returns True if the entity was already on-screen (no rotation performed),
         False if a rotation was executed.
@@ -642,20 +697,7 @@ class GameController:
             key = Key.RIGHT
             actual_delta = delta
 
-        intended_hold_ms = actual_delta / CAMERA_YAW_SPEED
-        intent = self._human.plan_key_hold(intended_hold_ms)
-
-        time.sleep(intent.pre_hold_pause)
-        kb_input.press_key(key, hold_ms=intent.hold_ms)
-        time.sleep(intent.post_hold_pause)
-
-        log.debug(
-            "Rotated camera %s by ~%d yaw units (intended %.0f ms, actual %.0f ms)",
-            "LEFT" if key == Key.LEFT else "RIGHT",
-            actual_delta,
-            intended_hold_ms,
-            intent.hold_ms,
-        )
+        self.rotate_camera(key, actual_delta)
         return False
 
     def bring_entity_on_screen(self, entity: dict, game_state) -> bool:
