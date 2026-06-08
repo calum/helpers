@@ -425,6 +425,49 @@ class GameController:
                   entry.get("option", "?"), entry.get("target", ""), cx, cy)
         return True
 
+    def dismiss_menu(self, game_state) -> None:
+        """Move the mouse off an open context menu so the client closes it.
+
+        Right-click menus don't time out on their own — the client only
+        closes them once the cursor moves clear of their bounds (then
+        auto-closes after a beat) or something else is clicked. When
+        ``click_menu_entry`` can't find the row it's looking for (e.g. the
+        right-click landed on the wrong entity, or the entity walked off
+        mid-gesture), nothing else will ever dismiss that stale menu — a
+        caller that just kept waiting for a match would hang forever.
+
+        Picks whichever side of the menu — left or right — has more
+        clearance and aims for its midpoint, so the cursor lands well
+        outside the menu's bounding box regardless of where it opened on
+        screen. Safe to call every tick the menu remains stuck open: once
+        the cursor is already at the target point, ``wind_mouse`` is a
+        no-op move.
+        """
+        if self._window is None:
+            self.refresh_window()
+        if self._window is None:
+            return
+
+        left, top, right, bottom = self._window
+        canvas_w, canvas_h = right - left, bottom - top
+
+        mx = game_state.menu.get("x", 0)
+        my = game_state.menu.get("y", 0)
+        mw = game_state.menu.get("width", 0)
+        mh = game_state.menu.get("height", 0)
+
+        space_left, space_right = mx, canvas_w - (mx + mw)
+        target_x = mx / 2 if space_left >= space_right else mx + mw + space_right / 2
+        target_y = min(max(my + mh / 2, 0), canvas_h - 1)
+
+        sx, sy = self._canvas_to_screen(target_x, target_y)
+        cur_x, cur_y = mouse_input.get_position()
+        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        time.sleep(intent.pre_move_pause)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        log.debug("Dismissing menu — moved mouse to canvas (%.0f, %.0f)", target_x, target_y)
+
     def click_minimap_entity(self, entity: dict, game_state) -> bool:
         """Click the minimap at the entity's pre-computed minimap position.
 

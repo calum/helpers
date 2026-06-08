@@ -96,6 +96,14 @@ class MeleeFighterRoutine(Routine):
             if not game.menu_open():
                 log.debug("Menu closed without an Attack %s entry — retrying", self.NPC_NAME)
                 self._attack_target = None
+                return None
+
+            # The menu is open but doesn't have the row we need — it won't
+            # close on its own (right-click menus don't time out), so the
+            # routine would otherwise sit here forever. Move the cursor off
+            # it so the client dismisses it, then retarget once it's gone.
+            log.debug("Menu open without an Attack %s entry — dismissing it", self.NPC_NAME)
+            ctrl.dismiss_menu(game)
             return None
 
         target = self._nearest_available_npc(game)
@@ -213,6 +221,13 @@ class MeleeFighterRoutine(Routine):
                 log.debug("Menu closed without a Take %s entry — retrying",
                           self._loot_target.get("name"))
                 self._loot_target = None
+            else:
+                # Same "stuck open menu" hazard as find_target — nothing
+                # closes it for us, so move the cursor off it and retry
+                # the pickup once it's gone.
+                log.debug("Menu open without a Take %s entry — dismissing it",
+                          self._loot_target.get("name"))
+                ctrl.dismiss_menu(game)
             return None
 
         if game.player_idle():

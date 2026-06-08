@@ -248,6 +248,24 @@ class TestFindTargetMenuVerification:
         assert r._attack_target == GOBLIN_ON_SCREEN
         assert result is None
 
+    def test_dismisses_menu_open_without_a_match(self):
+        """Right-click menus don't time out — if the row we need never shows
+        up (e.g. the click landed on a tile or another entity), nothing else
+        will close the menu. The routine must actively move the mouse off it
+        rather than wait on it forever (this was observed live: the bot sat
+        stuck with the menu open until the cursor was nudged away by hand)."""
+        game = _make_game(tick=5)
+        game.menu = {"open": True, "entries": []}
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        r = self._mid_gesture_routine()
+
+        result = r.find_target(game, ctrl)
+
+        ctrl.dismiss_menu.assert_called_once_with(game)
+        assert r._attack_target == GOBLIN_ON_SCREEN
+        assert result is None
+
     def test_retries_when_menu_closes_without_a_match(self):
         """The menu closed without ever showing "Attack Goblin" — e.g. the
         right-click landed on a tile or another entity. Reset and let
@@ -545,6 +563,23 @@ class TestLooting:
 
         assert r._loot_target is None
         assert r._looted_keys == set()
+        assert result is None
+
+    def test_dismisses_menu_open_without_a_take_match(self):
+        """Same "stuck open menu" hazard as find_target — a right-click menu
+        that never shows the "Take Bones" row won't close on its own, so the
+        routine must actively move the mouse off it rather than wait forever."""
+        game = _make_game(tick=11, ground_items=[BONES])
+        ctrl = _ctrl()
+        ctrl.click_menu_entry.return_value = False
+        game.menu = {"open": True, "entries": []}
+        r = self._looting_routine()
+        r._loot_target = BONES
+
+        result = r.looting(game, ctrl)
+
+        ctrl.dismiss_menu.assert_called_once_with(game)
+        assert r._loot_target == BONES
         assert result is None
 
     def test_does_not_reattempt_already_looted_item(self):

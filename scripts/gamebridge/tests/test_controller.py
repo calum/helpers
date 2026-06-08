@@ -571,6 +571,73 @@ class TestClickMenuEntry:
 
 
 # ---------------------------------------------------------------------------
+# dismiss_menu — moves the cursor clear of an open context menu so the
+# client closes it (menus don't time out on their own — see melee_fighter's
+# "menu open without a match" hazard)
+# ---------------------------------------------------------------------------
+
+def _game_state_with_menu(x, y, width, height):
+    stub = MagicMock()
+    stub.menu = {"open": True, "x": x, "y": y, "width": width, "height": height}
+    return stub
+
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestDismissMenu:
+    def test_moves_mouse_clear_of_menu(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        game = _game_state_with_menu(x=480, y=379, width=140, height=64)
+
+        ctrl.dismiss_menu(game)
+
+        mock_mouse.wind_mouse.assert_called_once()
+
+    def test_aims_left_when_menu_hugs_right_edge(self, mock_mouse, mock_settings):
+        """Canvas is 1000px wide; a menu at x=900 w=80 has ~900px clearance to
+        its left and ~20px to its right — dismiss_menu should aim left, landing
+        outside (left of) the menu's bounds."""
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        game = _game_state_with_menu(x=900, y=100, width=80, height=64)
+
+        ctrl.dismiss_menu(game)
+
+        sx, sy = ctrl._human.plan_click.call_args.args[:2]
+        canvas_x, _ = ctrl.screen_to_canvas(sx, sy)
+        assert canvas_x < 900
+
+    def test_aims_right_when_menu_hugs_left_edge(self, mock_mouse, mock_settings):
+        """A menu at x=10 w=80 has ~10px clearance to its left and ~910px to
+        its right — dismiss_menu should aim right, landing outside (right of)
+        the menu's bounds."""
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        game = _game_state_with_menu(x=10, y=100, width=80, height=64)
+
+        ctrl.dismiss_menu(game)
+
+        sx, sy = ctrl._human.plan_click.call_args.args[:2]
+        canvas_x, _ = ctrl.screen_to_canvas(sx, sy)
+        assert canvas_x > 90
+
+    def test_no_window_does_not_move_mouse(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        ctrl = GameController(human=_human())
+        ctrl._window = None
+        game = _game_state_with_menu(x=480, y=379, width=140, height=64)
+
+        with patch.object(ctrl, "refresh_window", return_value=False):
+            ctrl.dismiss_menu(game)
+
+        mock_mouse.wind_mouse.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # rotate_camera_to
 # ---------------------------------------------------------------------------
 

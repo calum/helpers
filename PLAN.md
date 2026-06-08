@@ -4,6 +4,120 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-08 (7) — Live-play feedback: stuck menu fix + occlusion TOCTOU + reachability backlog
+
+### Goal
+
+Triage three issues the user observed running `MeleeFighterRoutine` live:
+1. The bot got stuck with an empty/non-matching right-click menu open — had
+   to manually wiggle the mouse to free it.
+2. The bot sometimes tried to fight an NPC standing behind a door.
+3. The bot sometimes right-clicked a Goblin that was occluded by a UI panel
+   — is `is_occluded`/the occlusion guard buggy, or does the routine just
+   not check?
+
+### Findings
+
+1. **Confirmed bug — stuck on a menu with no matching entry.** In both
+   `find_target` and `looting`, the "menu open without a match" branch only
+   handled two cases: a verified click (commit) or the menu having already
+   *closed* (reset and retry). A menu that stays *open* with no matching row
+   — e.g. the right-click landed on a tile/another entity instead of the
+   NPC/item — fell through neither branch and the routine returned `None`
+   forever. Right-click menus don't time out on their own in OSRS; nothing
+   else would ever close it. → added `GameController.dismiss_menu()`
+   (`controller.py`), which moves the cursor to whichever side of the menu's
+   bounding box has more clearance so the client auto-closes it, and wired
+   both routine branches to call it when stuck. Once the menu closes,
+   the existing "closed without a match → reset and retry" path takes over.
+2. **Occlusion check exists and is correct — this is a TOCTOU gap, not a
+   missing/buggy check.** `find_target` *does* call
+   `game.is_occluded(target["canvasX"], target["canvasY"])` immediately
+   before issuing the right-click, on a freshly re-fetched `target` each
+   tick (`melee_fighter.py:111`). The gap: `ctrl.right_click_entity()`
+   then performs a real-time, animated mouse move
+   (`wind_mouse_to_prediction`, governed by `HumanEmulator` move-speed —
+   can take hundreds of ms of wall-clock time) *before* `click_right()`
+   actually fires. A UI element (level-up box, chat overlay, random event,
+   trade request, ...) can pop open and cover the target's canvas position
+   during that window — passing the check, then having the physical click
+   land on the new panel instead. `_onscreen_canvas_pos` (the shared guard
+   inside `right_click_entity`/`click_entity`) checks on-screen + viewport
+   bounds but has no occlusion awareness at all — occlusion is entirely the
+   caller's responsibility, checked once, too early.
+   → **Not fixed this session** (would need an occlusion re-check the
+   instant before `click_right()`/`click_left()` fires inside
+   `_onscreen_canvas_pos` or the click methods themselves — see Open/next
+   steps).
+3. **NPC-behind-a-door is a missing capability, not a bug** — the routine
+   has no notion of walkability/pathing, so it can't tell "in line of sight
+   and clickable" from "visible through a window/doorway but not actually
+   reachable". Needs real plugin support (walkable-tile data isn't currently
+   in the wire format) — see top-priority backlog item below.
+
+### Fixes applied
+
+- **`controller.py`**: added `GameController.dismiss_menu(game_state)` —
+  moves the cursor to the more-spacious side of the open menu's bounding
+  box (left/right midpoint) via the same `_human.plan_click` → `wind_mouse`
+  path `click_at` uses, minus the click. Idempotent — safe to call every
+  tick the menu remains stuck (cursor-already-there is a no-op move).
+  4 new tests in `TestDismissMenu` (`test_controller.py`).
+- **`melee_fighter.py`**: `find_target`/`looting` now call `dismiss_menu`
+  when the menu is open but lacks the expected `Attack <NPC_NAME>`/
+  `Take <item>` row, instead of waiting on it indefinitely. New tests
+  `test_dismisses_menu_open_without_a_match` /
+  `test_dismisses_menu_open_without_a_take_match`.
+
+### Tests
+
+`python -m pytest scripts/gamebridge/tests/test_controller.py
+scripts/gamebridge/tests/test_melee_fighter.py -q` — 132 passed.
+No GAMEBRIDGE.md changes — pure Python, no plugin/wire-format changes.
+
+### Open / next steps — TOP PRIORITY: walkable tiles + `is_reachable`
+
+- **Add walkable-tile data to the wire format and an `is_reachable(entity)` /
+  `is_reachable(world_x, world_y)` helper to `GameState`.** This is the
+  underlying fix for "NPC behind a door": today the routine can only ask
+  "is it visible/on-screen/unoccluded", never "can I actually path to it".
+  Sketch:
+  - Plugin side (`TickMessageBuilder`/`GameBridgePlugin`): RuneLite's
+    `Client` exposes per-tile collision data via `getCollisionMaps()` /
+    `CollisionData.getFlags()` (bitmask of `CollisionDataFlag` — blocked
+    movement directions, wall presence, etc.) for the loaded scene region.
+    Need to figure out the right granularity to ship per tick (probably
+    just the flags for tiles in/near the player's local area, not the
+    whole loaded region — bandwidth) and add it as a new optional
+    category (config-gated like `exposeMenu`/hull filter, default off
+    until proven useful, given the payload size concern).
+  - Python side: a reachability helper that walks the flag grid (simple
+    BFS/flood-fill from the player's tile, bounded by render distance)
+    rather than naive Chebyshev distance — "nearest by tile distance" is
+    exactly what currently lets the routine target a Goblin one tile away
+    through a wall.
+  - Both `_nearest_available_npc` (melee_fighter) and any future
+    object-interaction routine would gate target selection on
+    `is_reachable(...)` the same way they already gate on
+    `entity_near_other_player`.
+  - Update `GAMEBRIDGE.md` per the Game Bridge maintenance rule — this is
+    a wire-format addition (new tick category + config key).
+- **Occlusion TOCTOU** (finding 2 above): move the `is_occluded` check (or
+  an equivalent one) to fire immediately before the physical click inside
+  `_onscreen_canvas_pos`/`right_click_entity`/`click_entity`, re-resolving
+  the entity's *current* canvas position from a fresh game-state read right
+  before `click_right()`/`click_left()` — not just once, early, by the
+  caller. Lower priority than reachability (rarer — needs a UI panel to pop
+  mid-gesture — and usually self-corrects via the existing miss-click/
+  menu-verification retry paths), but a real, reproducible bug.
+- **Still not live-tested**: the `dismiss_menu` fix is unit-tested but
+  unverified against a real stuck-menu scenario in actual play — worth
+  confirming in a follow-up session that nudging the cursor to the
+  computed dismiss point reliably closes the native minimenu in practice
+  (timing/distance may need tuning against real client behaviour).
+
+---
+
 ## Session: 2026-06-08 (6) — Live recording analysis: fixed melee_fighter + resolver bug
 
 ### Goal
