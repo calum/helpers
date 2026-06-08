@@ -281,10 +281,14 @@ class TestFindTargetOcclusionGuard:
 # ---------------------------------------------------------------------------
 
 class TestFighting:
-    def _engaged_routine(self, target_index: int = 42, target_pos=(3221, 3219)) -> MeleeFighterRoutine:
+    def _engaged_routine(self, target_index: int = 42, target_pos=(3221, 3219),
+                         fight_start_tick: int = 4) -> MeleeFighterRoutine:
         r = _routine()
         r._target_index = target_index
+        r._target = {**GOBLIN_ON_SCREEN, "index": target_index,
+                     "worldX": target_pos[0], "worldY": target_pos[1]}
         r._target_pos = target_pos
+        r._fight_start_tick = fight_start_tick
         return r
 
     def test_stays_fighting_while_target_still_present(self):
@@ -298,6 +302,19 @@ class TestFighting:
         result = r.fighting(game, _ctrl())
         assert result == "looting"
         assert r._death_tick == 5
+
+    def test_uses_last_seen_position_as_death_tile_not_click_time_position(self):
+        """NPCs walk around mid-fight — the corpse appears wherever it died,
+        not where it was standing when we first clicked it, so `_target`
+        must be refreshed from live state every tick it's still present."""
+        moved_goblin = {**GOBLIN_ON_SCREEN, "worldX": 3250, "worldY": 3260}
+        r = self._engaged_routine()  # clicked it at (3221, 3219)
+
+        r.fighting(_make_game(tick=5, npcs=[moved_goblin]), _ctrl())  # still alive, moved
+        result = r.fighting(_make_game(tick=6, npcs=[]), _ctrl())     # now it's gone
+
+        assert result == "looting"
+        assert r._target_pos == (3250, 3260)
 
     def test_clears_looted_keys_on_transition_to_looting(self):
         game = _make_game(tick=5, npcs=[])
@@ -320,6 +337,54 @@ class TestFighting:
         game = _make_game(tick=5, npcs=[other, GOBLIN_ON_SCREEN])
         result = self._engaged_routine().fighting(game, _ctrl())
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# fighting — miss-click detection via combat xp drops
+# ---------------------------------------------------------------------------
+
+class TestFightingMissclickDetection:
+    def _engaged_routine(self, fight_start_tick: int) -> MeleeFighterRoutine:
+        r = _routine()
+        r._target_index = 42
+        r._target = GOBLIN_ON_SCREEN
+        r._target_pos = (3221, 3219)
+        r._fight_start_tick = fight_start_tick
+        return r
+
+    def test_keeps_fighting_within_timeout_when_no_xp_yet(self):
+        """A real attack takes a tick or two to land — don't bail early."""
+        game = _make_game(tick=10, npcs=[GOBLIN_ON_SCREEN])
+        r = self._engaged_routine(fight_start_tick=5)  # 5 ticks elapsed, <= timeout
+        result = r.fighting(game, _ctrl())
+        assert result is None
+
+    def test_returns_to_find_target_when_no_xp_drop_after_timeout(self):
+        """No combat xp landed within MISCLICK_TIMEOUT_TICKS — assume the
+        click missed (e.g. hit a tile/entity behind the NPC) and re-target."""
+        game = _make_game(tick=20, npcs=[GOBLIN_ON_SCREEN])
+        r = self._engaged_routine(fight_start_tick=5)  # 15 ticks elapsed, > timeout
+        result = r.fighting(game, _ctrl())
+        assert result == "find_target"
+
+    def test_keeps_fighting_past_timeout_once_xp_drop_seen(self):
+        """Any combat xp received since the click confirms it landed — keep
+        fighting even if there's a later lull between hits."""
+        game = _make_game(tick=20, npcs=[GOBLIN_ON_SCREEN])
+        game.last_xp_tick["STRENGTH"] = 7
+        r = self._engaged_routine(fight_start_tick=5)  # 15 ticks elapsed, > timeout
+        result = r.fighting(game, _ctrl())
+        assert result is None
+
+    def test_ignores_xp_drops_that_predate_the_current_attack(self):
+        """An xp drop logged before we clicked this target (e.g. from the
+        previous kill) must not be mistaken for confirmation that this
+        attack landed."""
+        game = _make_game(tick=20, npcs=[GOBLIN_ON_SCREEN])
+        game.last_xp_tick["ATTACK"] = 3  # before fight_start_tick
+        r = self._engaged_routine(fight_start_tick=5)  # 15 ticks elapsed, > timeout
+        result = r.fighting(game, _ctrl())
+        assert result == "find_target"
 
 
 # ---------------------------------------------------------------------------

@@ -48,13 +48,18 @@ class MeleeFighterRoutine(Routine):
     LOOT_WINDOW_TICKS = 3       # how long after a kill to watch the corpse tile for drops
     PLAYER_EXCLUSION_TILES = 1  # skip NPCs standing this close to another player
 
+    MISCLICK_TIMEOUT_TICKS = 10  # ticks to wait for combat xp before assuming a miss-click
+    COMBAT_XP_SKILLS = ("ATTACK", "STRENGTH", "DEFENCE", "HITPOINTS")
+
     def __init__(self):
         super().__init__()
         self._target_index: Optional[int] = None
+        self._target: Optional[dict] = None
         self._target_pos: Optional[Tuple[int, int]] = None
         self._death_tick: Optional[int] = None
         self._looted_keys: Set[Tuple[int, int, int]] = set()
         self._idle_since_tick: int = -1
+        self._fight_start_tick: Optional[int] = None
 
     # ------------------------------------------------------------------
     # States
@@ -94,21 +99,51 @@ class MeleeFighterRoutine(Routine):
         ctrl.click_entity(target)
         self._idle_since_tick = -1
         self._target_index = target["index"]
-        self._target_pos = (target["worldX"], target["worldY"])
+        self._target = target
+        self._fight_start_tick = game.tick
         return "fighting"
 
     def fighting(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
         Wait while we fight the target, tracking it by its unique world
         index (its composition `id` is shared with every NPC of the same
-        type, so it can't tell two Goblins apart).  Once it's no longer in
-        the `npcs` list we assume it died — corpses despawn quickly and we
-        don't get an explicit death event — and start watching its tile for
-        loot.
+        type, so it can't tell two Goblins apart).
+
+        Miss-click detection: a landed attack produces a combat xp drop
+        (Attack/Strength/Defence/Hitpoints — whichever the current style
+        trains) within a couple of ticks. If MISCLICK_TIMEOUT_TICKS pass
+        since we clicked the target with no xp in any of those skills, the
+        click likely missed (e.g. landed on a tile or another entity behind
+        it), so we drop back to find_target and try again. Once we've seen
+        one xp drop we stop checking — combat naturally has gaps between
+        hits and we already know the click landed.
+
+        Once the target is no longer in the `npcs` list we assume it died
+        — corpses despawn quickly and we don't get an explicit death event
+        — and start watching its tile for loot. NPCs walk around mid-fight,
+        so we refresh `_target` from live state every tick it's still
+        present; the last refresh before it vanishes is our best guess at
+        its death tile.
         """
-        if any(n.get("index") == self._target_index for n in game.npcs):
+        live_target = next((n for n in game.npcs if n.get("index") == self._target_index), None)
+
+        if live_target is not None:
+            self._target = live_target
+
+            got_xp_drop = any(
+                game.last_xp_tick.get(skill, -1) >= self._fight_start_tick
+                for skill in self.COMBAT_XP_SKILLS
+            )
+            ticks_since_click = game.tick - self._fight_start_tick
+
+            if not got_xp_drop and ticks_since_click > self.MISCLICK_TIMEOUT_TICKS:
+                log.debug("No combat xp within %d ticks of attacking %s — assuming a "
+                          "miss-click, re-targeting", ticks_since_click, self.NPC_NAME)
+                return "find_target"
+
             return None  # still alive — keep fighting
 
+        self._target_pos = (self._target["worldX"], self._target["worldY"])
         log.debug("%s (index=%d) is gone — assuming it died at %s",
                   self.NPC_NAME, self._target_index, self._target_pos)
         self._death_tick = game.tick
@@ -127,6 +162,10 @@ class MeleeFighterRoutine(Routine):
         human would treat a stuck item.
         """
         x, y = self._target_pos
+
+        log.debug("Watching for loot on %s's corpse tile at (%d, %d)…",
+                  self.NPC_NAME, x, y)
+        log.debug("Ground items at target tile: %s", game.ground_items_at(x, y))
 
         for item in game.ground_items_at(x, y):
             key = (item["id"], x, y)
