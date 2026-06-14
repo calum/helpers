@@ -4,6 +4,59 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-14 (5) — click_live/right_click_live: continuous live-hull tracking
+
+### Goal
+
+`InteractionRoutine.right_click_live`/`click_live` subscribed to a live
+hullUpdate (~20ms cadence) but only used it for a single one-shot position
+refresh (`_with_live_hull`) before handing off to
+`GameController.click_entity`/`right_click_entity`. Those build a `predict`
+closure (`_plan_moving_click`) that re-evaluates on every `wind_mouse_to_prediction`
+step but extrapolates purely from `MovingTarget`'s tick-rate (~600ms) canvas
+velocity — it never re-checks the live hullUpdate, so the "live" data was
+stale by the time the click landed.
+
+### Findings / Decisions
+
+- `conn.messages()` only drains the socket (and thus refreshes
+  `BridgeConnection.hull_updates`) between ticks. In headless `--routine`
+  mode (`main.py`, single-threaded `for msg in conn.messages(): process_tick`)
+  `hull_updates` is frozen during a click's `time.sleep`/mouse-move calls. In
+  dashboard mode, `BridgeTicker` runs `ingest()` on a separate thread (see
+  `decision/engine.py`), so `hull_updates` *does* keep updating mid-click —
+  continuous tracking only pays off there, but degrades to today's behaviour
+  elsewhere.
+- Fix: added `GameController._live_hull_canvas_pos(sub_id, entity)` (returns
+  the latest matching/on-screen live canvas pos, or `None`) and
+  `_plan_live_click(entity, sub_id, cur_x, cur_y)` — same as
+  `_plan_moving_click` but `predict()` polls `_live_hull_canvas_pos` on every
+  call, falling back to `MovingTarget.predict` when no fresher live data
+  exists.
+- `click_entity`/`right_click_entity` gained an optional `sub_id` kwarg that
+  switches them onto `_plan_live_click`. `click_live`/`right_click_live` now
+  pass `sub_id=self.LIVE_HULL_SUB_ID`.
+
+### Tests
+
+`scripts/gamebridge/tests/test_controller.py::TestPlanLiveClick` (fallback on
+no connection/no update/wrong entity/off-screen, tracks live position, and
+re-polls on every `predict()` call — not just once). Updated
+`test_interaction.py` and the routine tests
+(`test_iron_mining.py`/`test_gold_mining.py`/`test_melee_fighter.py`/
+`test_fish_and_cook.py`) for the new `sub_id=` kwarg on
+`click_entity`/`right_click_entity` mocks. `python -m pytest
+scripts/gamebridge/tests/ -q` → 871 passed, 10 skipped.
+
+### Open / next steps
+
+- Live tracking is currently a no-op outside dashboard mode (single-threaded
+  headless `--routine` runner doesn't refresh `hull_updates` mid-click). If
+  headless live-tracking matters, `main.py` would need its own ingest thread
+  like the dashboard's `BridgeTicker`.
+
+---
+
 ## Session: 2026-06-14 (4) — Game world movement research & innovation task
 
 ### Goal

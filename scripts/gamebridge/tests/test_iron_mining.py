@@ -230,7 +230,7 @@ class TestCameraRotationInRoutine:
         # Tick 2: settle complete — clicks and transitions to mining
         game.tick = 2
         result = r.find_ore(game, ctrl)
-        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN)
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result == "mining"
 
     def test_walk_to_bank_adjusts_camera_when_not_visible(self):
@@ -275,7 +275,7 @@ class TestCameraRotationInRoutine:
         # Tick 2: settle complete — clicks to start walking
         game.tick = 2
         result = r.walk_to_bank(game, ctrl)
-        ctrl.click_entity.assert_called_once_with(MINE_CART_OFF_SCREEN)
+        ctrl.click_entity.assert_called_once_with(MINE_CART_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result is None
 
 
@@ -461,7 +461,7 @@ class TestOcclusionGuard:
         game.tick += 1
         result = r.find_ore(game, ctrl)    # tick 2: settle complete — click fires
 
-        ctrl.click_entity.assert_called_once_with(ORE_ON_SCREEN_CLEAR)
+        ctrl.click_entity.assert_called_once_with(ORE_ON_SCREEN_CLEAR, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result == "mining"
 
     def test_walk_to_bank_does_not_click_when_occluded(self):

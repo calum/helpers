@@ -192,23 +192,27 @@ class InteractionRoutine(Routine):
 
     def click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
         """Subscribe to `entity` for live hull updates, then left-click it
-        using the freshest available canvas position.
+        using the freshest available canvas position — and keep tracking
+        those live updates while the cursor is moving towards it (see
+        `GameController._plan_live_click`).
 
         `kind` is one of "npc"/"object"/"player"/"groundItem" — see
         `GameController.subscribe_to`.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
-        ctrl.click_entity(self._with_live_hull(ctrl, entity))
+        ctrl.click_entity(self._with_live_hull(ctrl, entity), sub_id=self.LIVE_HULL_SUB_ID)
 
     def right_click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
         """Subscribe to `entity` for live hull updates, then right-click it
-        using the freshest available canvas position.
+        using the freshest available canvas position — and keep tracking
+        those live updates while the cursor is moving towards it (see
+        `GameController._plan_live_click`).
 
         `kind` is one of "npc"/"object"/"player"/"groundItem" — see
         `GameController.subscribe_to`.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
-        ctrl.right_click_entity(self._with_live_hull(ctrl, entity))
+        ctrl.right_click_entity(self._with_live_hull(ctrl, entity), sub_id=self.LIVE_HULL_SUB_ID)
 
     # ------------------------------------------------------------------
     # Dropping inventory items

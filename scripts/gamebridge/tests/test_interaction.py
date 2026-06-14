@@ -206,7 +206,7 @@ class TestClickLive:
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY)
+        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
 
     def test_clicks_original_entity_when_hull_update_not_found(self):
         ctrl = MagicMock()
@@ -214,7 +214,7 @@ class TestClickLive:
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY)
+        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
 
     def test_clicks_original_entity_when_hull_update_for_different_entity(self):
         ctrl = MagicMock()
@@ -224,7 +224,7 @@ class TestClickLive:
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY)
+        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
 
     def test_clicks_with_refreshed_position_when_hull_update_matches(self):
         ctrl = MagicMock()
@@ -237,12 +237,15 @@ class TestClickLive:
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        clicked = ctrl.click_entity.call_args[0][0]
+        call = ctrl.click_entity.call_args
+        clicked = call[0][0]
         assert clicked["canvasX"] == 555
         assert clicked["canvasY"] == 444
         assert clicked["hull"] == [[550, 440], [560, 440], [560, 450], [550, 450]]
         # Fields outside _LIVE_HULL_FIELDS (e.g. id) are preserved from entity.
         assert clicked["id"] == ENTITY["id"]
+        # The click keeps tracking this subscription while the cursor moves.
+        assert call.kwargs["sub_id"] == InteractionRoutine.LIVE_HULL_SUB_ID
 
     def test_name_match_is_case_insensitive(self):
         ctrl = MagicMock()
@@ -275,7 +278,7 @@ class TestRightClickLive:
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
-        ctrl.right_click_entity.assert_called_once_with(ENTITY)
+        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
 
     def test_right_clicks_with_refreshed_position_when_hull_update_matches(self):
         ctrl = MagicMock()
@@ -286,9 +289,11 @@ class TestRightClickLive:
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
-        clicked = ctrl.right_click_entity.call_args[0][0]
+        call = ctrl.right_click_entity.call_args
+        clicked = call[0][0]
         assert clicked["canvasX"] == 321
         assert clicked["canvasY"] == 123
+        assert call.kwargs["sub_id"] == InteractionRoutine.LIVE_HULL_SUB_ID
 
 
 # ---------------------------------------------------------------------------

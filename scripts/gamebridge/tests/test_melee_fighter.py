@@ -129,7 +129,7 @@ class TestFindTargetSelection:
         game.tick = 3
         result = r.find_target(game, ctrl)   # tick 3: "Attack Goblin" verified — commits
 
-        ctrl.right_click_entity.assert_called_once_with(uncontested_near)
+        ctrl.right_click_entity.assert_called_once_with(uncontested_near, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         ctrl.click_menu_entry.assert_called_once_with(game, "Attack", r.NPC_NAME)
         assert result == "fighting"
         assert r._target_index == uncontested_near["index"]
@@ -172,7 +172,7 @@ class TestFindTargetCameraAndSettleBuffer:
 
         game.tick = 2
         result = r.find_target(game, ctrl)   # tick 2: settle complete — right-clicks
-        ctrl.right_click_entity.assert_called_once_with(GOBLIN_OFF_SCREEN)
+        ctrl.right_click_entity.assert_called_once_with(GOBLIN_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._attack_target == GOBLIN_OFF_SCREEN
         assert result is None
 
@@ -376,7 +376,7 @@ class TestFindTargetOcclusionGuard:
         game.tick += 1
         result = r.find_target(game, ctrl)   # tick 4: "Attack Goblin" verified — commits
 
-        ctrl.right_click_entity.assert_called_once_with(GOBLIN_CLEAR)
+        ctrl.right_click_entity.assert_called_once_with(GOBLIN_CLEAR, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result == "fighting"
 
 
@@ -516,7 +516,7 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.right_click_entity.assert_called_once_with(BONES)
+        ctrl.right_click_entity.assert_called_once_with(BONES, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._loot_target == BONES
         assert r._looted_keys == set()
         assert result is None
@@ -619,7 +619,7 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.right_click_entity.assert_called_once_with(BONES)
+        ctrl.right_click_entity.assert_called_once_with(BONES, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result is None
 
     def test_picks_up_items_one_full_gesture_at_a_time(self):
@@ -646,7 +646,7 @@ class TestLooting:
         # tick 13: re-resolved from live state — start a fresh gesture on Coins
         result = r.looting(_make_game(tick=13, ground_items=[COINS_ON_SCREEN]), ctrl)
 
-        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._loot_target == COINS_ON_SCREEN
         assert result is None
 
@@ -676,7 +676,7 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN)
+        ctrl.right_click_entity.assert_called_once_with(COINS_ON_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result is None
 
     def test_stays_in_looting_before_window_elapses_with_nothing_to_loot(self):
@@ -699,7 +699,7 @@ class TestLooting:
 
         result = r.looting(game, ctrl)
 
-        ctrl.right_click_entity.assert_called_once_with(BONES)
+        ctrl.right_click_entity.assert_called_once_with(BONES, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._loot_target == BONES
         assert result is None
 

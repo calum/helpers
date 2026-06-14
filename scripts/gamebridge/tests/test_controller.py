@@ -388,6 +388,148 @@ class TestPlanMovingClick:
 
 
 # ---------------------------------------------------------------------------
+# click_entity / right_click_entity with sub_id — live hullUpdate tracking
+#
+# _plan_live_click differs from _plan_moving_click only in what predict()
+# does: on every call it re-checks ctrl.hull_update(sub_id) and, if a fresh
+# matching/on-screen entity is there, tracks that canvas position directly;
+# otherwise it falls back to the same MovingTarget extrapolation as
+# _plan_moving_click. With WINDOW=(100,200,1100,800) and the stationary
+# MovingTarget seeded at canvas (500,300), _canvas_to_screen(500,300) =
+# (600,500) and _human().plan_click always returns actual_x/y=(700,450), so
+# the fallback err offset is (+100,-50) — see TestPlanMovingClick.
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestPlanLiveClick:
+    FALLBACK = pytest.approx((700.0, 450.0))
+
+    def _setup(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+
+    def _ctrl_with_connection(self, hull_updates=None) -> GameController:
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = None
+        conn = MagicMock(spec=BridgeConnection)
+        conn.hull_updates = {} if hull_updates is None else hull_updates
+        ctrl.set_connection(conn)
+        return ctrl
+
+    def test_no_connection_falls_back_to_moving_target(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._tracker = MagicMock()
+        ctrl._tracker.velocity.return_value = None
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == self.FALLBACK
+
+    def test_no_hull_update_yet_falls_back_to_moving_target(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection()
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == self.FALLBACK
+
+    def test_hull_update_not_found_falls_back_to_moving_target(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection({"click_target": {"found": False}})
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == self.FALLBACK
+
+    def test_hull_update_off_screen_falls_back_to_moving_target(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection({
+            "click_target": {"found": True, "name": "Fishing spot", "onScreen": False},
+        })
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == self.FALLBACK
+
+    def test_hull_update_for_different_entity_falls_back_to_moving_target(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection({
+            "click_target": {
+                "found": True, "name": "Gold rocks",
+                "onScreen": True, "canvasX": 999, "canvasY": 999,
+            },
+        })
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == self.FALLBACK
+
+    def test_tracks_live_hull_position_when_available(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection({
+            "click_target": {
+                "found": True, "name": "Fishing spot",
+                "onScreen": True, "canvasX": 520, "canvasY": 340,
+            },
+        })
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        # canvas (520,340) -> screen (620,540) -> + fallback err (100,-50)
+        assert predict(0.0) == pytest.approx((720.0, 490.0))
+
+    def test_predict_repolls_hull_update_on_every_call(self, mock_mouse, mock_settings):
+        """The whole point of _plan_live_click: predict() must reflect a
+        hullUpdate that arrives *after* the click was planned, not just a
+        one-shot snapshot taken up front."""
+        self._setup(mock_mouse, mock_settings)
+        hull_updates = {
+            "click_target": {
+                "found": True, "name": "Fishing spot",
+                "onScreen": True, "canvasX": 520, "canvasY": 340,
+            },
+        }
+        ctrl = self._ctrl_with_connection(hull_updates)
+
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Fishing spot"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == pytest.approx((720.0, 490.0))
+
+        # A fresher hullUpdate arrives mid-flight.
+        hull_updates["click_target"] = {
+            "found": True, "name": "Fishing spot",
+            "onScreen": True, "canvasX": 560, "canvasY": 380,
+        }
+
+        assert predict(1.0) == pytest.approx((760.0, 530.0))
+
+    def test_right_click_entity_with_sub_id_tracks_live_hull_position(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_connection({
+            "click_target": {
+                "found": True, "name": "Goblin",
+                "onScreen": True, "canvasX": 520, "canvasY": 340,
+            },
+        })
+
+        ctrl.right_click_entity(_entity(500, 300, on_screen=True, name="Goblin"), sub_id="click_target")
+        predict = mock_mouse.wind_mouse_to_prediction.call_args.args[2]
+
+        assert predict(0.0) == pytest.approx((720.0, 490.0))
+        mock_mouse.click_right.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # right_click_entity — viewport guard
 # ---------------------------------------------------------------------------
 

@@ -160,7 +160,7 @@ class TestFindSpotTargeting:
         game.tick = 101
         r.find_spot(game, ctrl)            # tick 101: settled — right-click issued
 
-        ctrl.right_click_entity.assert_called_once_with(SPOT)
+        ctrl.right_click_entity.assert_called_once_with(SPOT, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._spot_target == SPOT
 
 
@@ -293,7 +293,7 @@ class TestFindFire:
 
         game.tick = 2
         result = r.find_fire(game, ctrl)        # tick 2: settled — clicks to walk over
-        ctrl.click_entity.assert_called_once_with(FIRE_NEARBY)
+        ctrl.click_entity.assert_called_once_with(FIRE_NEARBY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result is None
 
     def test_picks_the_nearest_fire_in_range(self):
@@ -590,7 +590,7 @@ class TestCooking:
 
         result = r.cooking(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(FIRE)
+        ctrl.click_entity.assert_called_once_with(FIRE, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._cook_selected is False
         assert result is None
 
@@ -659,7 +659,7 @@ class TestCookingFireDespawn:
 
         result = r.cooking(game, ctrl)
 
-        ctrl.click_entity.assert_called_once_with(FIRE)
+        ctrl.click_entity.assert_called_once_with(FIRE, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert r._cook_selected is False
         assert result is None
 

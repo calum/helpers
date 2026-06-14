@@ -275,6 +275,57 @@ class GameController:
 
         return intent, predict
 
+    def _live_hull_canvas_pos(self, sub_id: str, entity: dict) -> Optional[tuple[float, float]]:
+        """Return the freshest known canvas position for `entity` from the
+        `sub_id` live hullUpdate subscription (~20ms cadence), or None if no
+        fresher position is available right now.
+
+        Falls back to None (caller then uses the MovingTarget extrapolation)
+        when there's no connection, no hullUpdate has arrived yet, the update
+        is for a different entity (a retarget is in flight), or the live
+        entity is currently off-screen — all normal transient states that
+        shouldn't make a click aim at nothing.
+        """
+        update = self.hull_update(sub_id)
+        if not update or not update.get("found") or not update.get("onScreen"):
+            return None
+        if (update.get("name") or "").lower() != (entity.get("name") or "").lower():
+            return None
+        cx, cy = update.get("canvasX"), update.get("canvasY")
+        if cx is None or cy is None:
+            return None
+        return cx, cy
+
+    def _plan_live_click(
+        self, entity: dict, sub_id: str, cur_x: float, cur_y: float,
+    ) -> tuple[ClickIntent, Callable[[float], tuple[float, float]]]:
+        """Like _plan_moving_click, but predict() also polls the `sub_id`
+        live hullUpdate subscription (~20ms cadence) on every call, tracking
+        that position directly whenever a fresh one is available and falling
+        back to the MovingTarget tick-velocity extrapolation otherwise.
+
+        This is what makes click_live/right_click_live actually "live": the
+        per-tick MovingTarget extrapolation alone can drift over the course
+        of a multi-step wind_mouse approach, but re-checking the live hullbox
+        on every step lets the cursor continuously re-aim at the entity's
+        true current position. See InteractionRoutine.click_live /
+        right_click_live, which subscribe `entity` under `sub_id` before
+        calling click_entity/right_click_entity with this `sub_id`.
+        """
+        now = time.monotonic()
+        target = MovingTarget.from_entity(entity, self._tracker.velocity(entity, "canvas"), now)
+        sx, sy = self._canvas_to_screen(*target.predict(now))
+        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        err_x, err_y = intent.actual_x - sx, intent.actual_y - sy
+
+        def predict(at_time: float) -> tuple[float, float]:
+            live = self._live_hull_canvas_pos(sub_id, entity)
+            cx, cy = live if live is not None else target.predict(at_time)
+            px, py = self._canvas_to_screen(cx, cy)
+            return self._clamp_to_window(px + err_x, py + err_y)
+
+        return intent, predict
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -325,8 +376,13 @@ class GameController:
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
 
-    def click_entity(self, entity: dict) -> None:
-        """Left-click an on-screen entity, tracking it if it moves."""
+    def click_entity(self, entity: dict, sub_id: Optional[str] = None) -> None:
+        """Left-click an on-screen entity, tracking it if it moves.
+
+        If `sub_id` is given, the click also tracks that entity's live
+        hullUpdate subscription while the cursor is moving towards it — see
+        _plan_live_click and InteractionRoutine.click_live.
+        """
         pos = self._onscreen_canvas_pos(entity, "click_entity")
         if pos is None:
             return
@@ -339,7 +395,10 @@ class GameController:
             )
             return
         cur_x, cur_y = mouse_input.get_position()
-        intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
+        if sub_id is not None:
+            intent, predict = self._plan_live_click(entity, sub_id, cur_x, cur_y)
+        else:
+            intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
@@ -354,12 +413,20 @@ class GameController:
         log.debug("Clicked %s (canvas %.0f, %.0f)", entity.get("name", "?"), cx, cy)
         self._after_click()
 
-    def right_click_entity(self, entity: dict) -> None:
-        """Right-click an on-screen entity, tracking it if it moves."""
+    def right_click_entity(self, entity: dict, sub_id: Optional[str] = None) -> None:
+        """Right-click an on-screen entity, tracking it if it moves.
+
+        If `sub_id` is given, the click also tracks that entity's live
+        hullUpdate subscription while the cursor is moving towards it — see
+        _plan_live_click and InteractionRoutine.right_click_live.
+        """
         if self._onscreen_canvas_pos(entity, "right_click_entity") is None:
             return
         cur_x, cur_y = mouse_input.get_position()
-        intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
+        if sub_id is not None:
+            intent, predict = self._plan_live_click(entity, sub_id, cur_x, cur_y)
+        else:
+            intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
