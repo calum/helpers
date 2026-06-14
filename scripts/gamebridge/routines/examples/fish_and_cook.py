@@ -345,12 +345,12 @@ class FishAndCookRoutine(InteractionRoutine):
 
     def dropping(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Shift-drop every cooked and burnt fish, one at a time, via
-        `InteractionRoutine.drop_item` (`DropMode.SHIFT_CLICK`) — Shift is
-        held for the whole sequence and released once nothing matching
-        `DROP_ITEM_IDS` remains, heading back to fishing.
+        Drop every cooked, raw, and burnt fish via Shift-click.
+
+        The helper queues all matching inventory widgets, clicks each once,
+        and retries on subsequent ticks if any items remain.
         """
-        if self.drop_item(game, ctrl, self.DROP_ITEM_IDS, mode=DropMode.SHIFT_CLICK):
+        if self.drop_items_shift_click(game, ctrl, self.DROP_ITEM_IDS):
             return None
         return "find_spot"
 

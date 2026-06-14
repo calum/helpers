@@ -75,6 +75,7 @@ class InteractionRoutine(Routine):
         super().__init__()
         self._approach_idle_since_tick: int = -1
         self._drop_target: Optional[dict] = None
+        self._drop_queue: list[dict] = []
 
     # ------------------------------------------------------------------
     # Approach
@@ -275,3 +276,37 @@ class InteractionRoutine(Routine):
         ctrl.right_click_widget(widget)
         self._drop_target = widget
         return True
+
+    def drop_items_shift_click(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        item_ids,
+        group_id: int = Inventory.GROUP,
+    ) -> bool:
+        """
+        Shift-drop every inventory item whose `itemId` is in `item_ids`.
+
+        The first tick it sees any matching widgets it queues them all, holds
+        Shift once, and clicks each queued widget one time. If any items remain
+        on a later tick, the method rebuilds the queue and retries them again.
+
+        Returns True while there are still matching items to clear and the
+        caller should remain in the drop state, False once no matching item
+        remains and Shift can be released.
+        """
+        if not self._drop_queue:
+            self._drop_queue = [
+                w for w in game.widgets
+                if w.get("groupId") == group_id and w.get("itemId") in item_ids
+            ]
+
+        if self._drop_queue:
+            ctrl.hold_key(Key.SHIFT)
+            for widget in self._drop_queue:
+                ctrl.click_widget(widget)
+            self._drop_queue = []
+            return True
+
+        ctrl.release_key(Key.SHIFT)
+        return False

@@ -733,6 +733,38 @@ class TestDropping:
         assert _routine().dropping(game, ctrl) is None
         ctrl.release_key.assert_not_called()
 
+    def test_queues_all_matching_items_for_one_pass(self):
+        cooked = _inv_widget(315, child_id=2)
+        burnt = _inv_widget(FishAndCookRoutine.BURNT_FISH_ID, child_id=5)
+        raw = _inv_widget(FishAndCookRoutine.RAW_SHRIMP_ID, child_id=3)
+        game = _make_game(widgets=[_inv_widget(590), cooked, burnt, raw])
+        ctrl = _ctrl()
+        r = _routine()
+
+        assert r.dropping(game, ctrl) is None
+
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_has_calls([
+            ((cooked,),),
+            ((burnt,),),
+            ((raw,),),
+        ])
+        assert r._drop_queue == []
+
+    def test_retry_if_items_remain_after_clicks(self):
+        cooked = _inv_widget(315, child_id=2)
+        game = _make_game(widgets=[_inv_widget(590), cooked])
+        ctrl = _ctrl()
+        r = _routine()
+
+        assert r.dropping(game, ctrl) is None
+        assert r._drop_queue == []
+
+        # Item still present on the next tick: queue and click again.
+        game.widgets = [_inv_widget(590), cooked]
+        assert r.dropping(game, ctrl) is None
+        assert ctrl.click_widget.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # stopped — terminal state
