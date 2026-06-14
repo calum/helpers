@@ -11,11 +11,18 @@ To add a new check: write a ``describe_*`` function here, then register it in
 """
 from __future__ import annotations
 
+import ctypes
 from typing import Optional, TYPE_CHECKING
 
 from . import settings as _settings
 from .input import keyboard as kb_input
 from .state import interfaces as iface_registry
+
+# The real Win32 INPUT struct is sized to its largest union member
+# (MOUSEINPUT): 40 bytes on 64-bit Windows, 28 bytes on 32-bit. SendInput
+# validates cbSize against this and rejects mismatches with
+# ERROR_INVALID_PARAMETER (87).
+_EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
 
 if TYPE_CHECKING:
     from .controller.controller import GameController
@@ -172,12 +179,20 @@ def describe_sendinput_diagnostics() -> str:
     window_name = _settings.get("window_name")
 
     lines = [
-        f"sizeof(INPUT) = {info['struct_size']} (expected 28 on 64-bit Windows)",
+        f"sizeof(INPUT) = {info['struct_size']} (expected {_EXPECTED_INPUT_SIZE})",
         f"Foreground window: 0x{info['foreground_hwnd']:08X} "
         f"class={info['foreground_class']!r} title={info['foreground_title']!r}",
         f"SendInput(shift) returned {info['sendinput_result']}, "
         f"GetLastError={info['last_error']}",
     ]
+
+    if info["struct_size"] != _EXPECTED_INPUT_SIZE:
+        lines.append(
+            f"WARNING: sizeof(INPUT) is {info['struct_size']}, not "
+            f"{_EXPECTED_INPUT_SIZE} — the INPUT struct layout is wrong for "
+            f"this platform, so SendInput will reject every call with "
+            f"ERROR_INVALID_PARAMETER (87)."
+        )
 
     if window_name.lower() not in info["foreground_title"].lower():
         lines.append(

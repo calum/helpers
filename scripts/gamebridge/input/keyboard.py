@@ -49,7 +49,13 @@ class _KEYBDINPUT(ctypes.Structure):
 
 
 class _INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", _KEYBDINPUT)]
+    # The real Win32 INPUT union is sized to its largest member (MOUSEINPUT,
+    # 32 bytes on x64), giving sizeof(INPUT) == 40. KEYBDINPUT alone is only
+    # 24 bytes, which would make sizeof(_INPUT) == 32 — SendInput validates
+    # cbSize against the real 40-byte INPUT size and rejects anything else
+    # with ERROR_INVALID_PARAMETER (87). Pad the union to MOUSEINPUT's size
+    # so the struct layout matches what SendInput expects.
+    _fields_ = [("ki", _KEYBDINPUT), ("_padding", ctypes.c_byte * 32)]
 
 
 class _INPUT(ctypes.Structure):

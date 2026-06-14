@@ -305,7 +305,7 @@ class TestDescribeTypeText:
 
 def _sendinput_info(**overrides) -> dict:
     info = {
-        "struct_size": 28,
+        "struct_size": diagnostics._EXPECTED_INPUT_SIZE,
         "foreground_hwnd": 0x1234,
         "foreground_title": "RuneLite - Calum",
         "foreground_class": "SunAwtFrame",
@@ -346,3 +346,18 @@ class TestDescribeSendInputDiagnostics:
                    return_value=_sendinput_info(sendinput_result=0, last_error=0)):
             msg = diagnostics.describe_sendinput_diagnostics()
         assert "BlockInput" in msg
+
+    def test_warns_when_struct_size_does_not_match_platform(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info(struct_size=diagnostics._EXPECTED_INPUT_SIZE - 8)):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "WARNING" in msg
+        assert "INPUT struct layout is wrong" in msg
+
+    def test_no_struct_size_warning_when_size_matches_platform(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info()):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "INPUT struct layout is wrong" not in msg

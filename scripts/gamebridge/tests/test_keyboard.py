@@ -287,7 +287,13 @@ class TestSendInputDiagnostics:
         assert info["foreground_class"] == "SunAwtFrame"
         assert info["sendinput_result"] == 1
         assert info["last_error"] == 0
-        assert info["struct_size"] == ctypes.sizeof(_INPUT)
+        # The real Win32 INPUT struct is sized to its largest union member
+        # (MOUSEINPUT): 40 bytes on 64-bit Windows, 28 on 32-bit. A mismatch
+        # here means SendInput will reject every call with
+        # ERROR_INVALID_PARAMETER (87) — see PLAN.md.
+        expected_size = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+        assert info["struct_size"] == expected_size
+        assert ctypes.sizeof(_INPUT) == expected_size
 
     def test_sends_shift_down_then_up(self):
         mock_windll = _mock_windll()

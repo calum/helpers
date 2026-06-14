@@ -4,6 +4,76 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-14 (3) — Root cause found: keyboard `_INPUT` struct was the wrong size, SendInput rejected every key event
+
+### Goal
+
+The new `tests/integration/test_keyboard_integration.py` suite (added in the
+previous session) was failing — 5 of 6 tests timed out waiting for key events
+from the Tk harness, while the equivalent mouse integration tests all passed.
+Investigate and fix.
+
+### Root cause
+
+Used the new `sendinput_diagnostics()` directly (focus the harness entry,
+call it, then `press_key("a")`): `sendinput_result: 0, last_error: 87`
+(`ERROR_INVALID_PARAMETER`) and `struct_size: 32`. **`SendInput` was rejecting
+every keyboard event outright** — nothing was ever delivered, regardless of
+foreground window or UIPI/BlockInput (the things the previous session's
+diagnostics were built to detect).
+
+The real Win32 `INPUT` union is sized to its **largest member**, `MOUSEINPUT`
+(32 bytes on x64 — 5×4-byte fields + an 8-byte `dwExtraInfo` pointer, rounded
+up to 8-byte alignment), giving `sizeof(INPUT) == 40` on 64-bit Windows.
+`mouse.py`'s `_INPUT_UNION` only ever needed `mi: MOUSEINPUT`, so it
+incidentally already had the correct 40-byte total size — which is why mouse
+SendInput worked and keyboard didn't.
+
+`keyboard.py`'s `_INPUT_UNION` only contained `ki: _KEYBDINPUT` (24 bytes on
+x64), giving `sizeof(_INPUT) == 32`. `SendInput` validates the `cbSize`
+parameter (`ctypes.sizeof(inp)`) against the *real* 40-byte `INPUT` size and
+fails the whole call with `ERROR_INVALID_PARAMETER` if it doesn't match —
+silently, with zero keys delivered.
+
+Also found and fixed a **misleading red herring**: `diagnostics.py`'s
+`describe_sendinput_diagnostics()` hardcoded the message `"sizeof(INPUT) = {N}
+(expected 28 on 64-bit Windows)"`. 28 is actually the **32-bit** `sizeof(INPUT)`
+(no 8-byte pointer alignment needed) — on 64-bit the correct expected value is
+40. This wrong "expected" value is presumably why the original `_INPUT_UNION`
+was never sized correctly in the first place.
+
+### Fix
+
+- `scripts/gamebridge/input/keyboard.py`: `_INPUT_UNION` now has a second
+  field `("_padding", ctypes.c_byte * 32)` alongside `ki`, padding the union
+  to `MOUSEINPUT`'s 32 bytes so `sizeof(_INPUT) == 40` on x64 (28 on 32-bit,
+  matching `mouse.py`'s `_INPUT` which already had this size for free via
+  `mi: MOUSEINPUT`).
+- `scripts/gamebridge/diagnostics.py`: added `_EXPECTED_INPUT_SIZE = 40 if
+  ctypes.sizeof(ctypes.c_void_p) == 8 else 28` (platform-aware) and used it in
+  `describe_sendinput_diagnostics()`'s message; added a new `WARNING` line
+  when `struct_size != _EXPECTED_INPUT_SIZE` — this is the check that would
+  have immediately surfaced this exact bug.
+
+### Verification
+
+- Re-ran `sendinput_diagnostics()` after the fix: `struct_size: 40,
+  sendinput_result: 1, last_error: 0`, and the Tk harness received the
+  expected `Shift_L` down/up + `a` down/up key events.
+- `GAMEBRIDGE_INTEGRATION=1 python -m pytest scripts/gamebridge/tests/ -v` →
+  **871 passed** (up from 859; +10 integration tests now actually run and
+  pass, +2 new diagnostics tests for the struct-size warning).
+
+### Open / next steps
+
+- This should also fix the in-game "keys not registering" issue from the
+  previous two sessions — the `hold_key`(shift)+modifier-tracking question is
+  now moot, since *no* scan-code key event was ever reaching any window. Worth
+  a live playtest to confirm shift-click-to-drop etc. now work, but not
+  required to close out this bug (covered by the integration suite).
+
+---
+
 ## Session: 2026-06-14 (2) — Keyboard test/debug controls added to dashboard Testing tab
 
 ### Goal
