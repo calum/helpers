@@ -128,9 +128,11 @@ class TestFindSpotInventoryBranches:
         game = _make_game(inventory=_full_inventory_with(590, 1511))
         assert _routine().find_spot(game, _ctrl()) == "find_fire"
 
-    def test_full_without_logs_stops(self):
+    def test_full_without_logs_also_goes_to_find_fire(self):
+        """find_spot no longer special-cases missing logs — find_fire decides
+        whether to cook (fire reused/lit) or drop the raw catch instead."""
         game = _make_game(inventory=_full_inventory_with(590, 315, 315))
-        assert _routine().find_spot(game, _ctrl()) == "stopped"
+        assert _routine().find_spot(game, _ctrl()) == "find_fire"
 
     def test_full_check_short_circuits_targeting(self):
         """Inventory-full branch must win even with a spot in the scene — no clicks issued."""
@@ -226,9 +228,11 @@ class TestFishing:
         game = _make_game(tick=105, inventory=_full_inventory_with(590, 1511), npcs=[SPOT])
         assert self._routine_tracking().fishing(game, _ctrl()) == "find_fire"
 
-    def test_full_without_logs_stops(self):
+    def test_full_without_logs_also_goes_to_find_fire(self):
+        """fishing no longer special-cases missing logs — find_fire decides
+        whether to cook (fire reused/lit) or drop the raw catch instead."""
         game = _make_game(tick=105, inventory=_full_inventory_with(590, 315), npcs=[SPOT])
-        assert self._routine_tracking().fishing(game, _ctrl()) == "stopped"
+        assert self._routine_tracking().fishing(game, _ctrl()) == "find_fire"
 
     def test_spot_gone_retargets(self):
         game = _make_game(tick=105, npcs=[])
@@ -261,11 +265,11 @@ class TestFishing:
 
 class TestFindFire:
     def test_no_fire_in_scene_lights_own(self):
-        game = _make_game(objects=[])
+        game = _make_game(objects=[], inventory=_inventory_with(FishAndCookRoutine.LOGS_ID))
         assert _routine().find_fire(game, _ctrl()) == "step_aside"
 
     def test_fire_beyond_search_radius_lights_own(self):
-        game = _make_game(objects=[FIRE_FAR])
+        game = _make_game(objects=[FIRE_FAR], inventory=_inventory_with(FishAndCookRoutine.LOGS_ID))
         assert _routine().find_fire(game, _ctrl()) == "step_aside"
 
     def test_adjacent_fire_in_range_starts_cooking(self):
@@ -312,6 +316,24 @@ class TestNearestFireInRange:
         farther = {**FIRE_NEARBY, "worldX": 3228}
         game = _make_game(objects=[FIRE_FAR, farther, FIRE_NEARBY])
         assert _routine()._nearest_fire_in_range(game) == FIRE_NEARBY
+
+
+class TestFindFireNoLogs:
+    """No Fire nearby and nothing to light one with — drop the raw catch
+    instead of getting stuck (the routine no longer stops outright)."""
+
+    def test_no_fire_no_logs_drops_raw_fish(self):
+        game = _make_game(objects=[], inventory=_inventory_with(FishAndCookRoutine.RAW_SHRIMP_ID))
+        assert _routine().find_fire(game, _ctrl()) == "dropping"
+
+    def test_fire_beyond_search_radius_no_logs_drops_raw_fish(self):
+        game = _make_game(objects=[FIRE_FAR], inventory=_inventory_with(FishAndCookRoutine.RAW_SHRIMP_ID))
+        assert _routine().find_fire(game, _ctrl()) == "dropping"
+
+    def test_fire_in_range_still_cooks_even_without_logs(self):
+        """A reusable Fire doesn't need logs at all — cook regardless."""
+        game = _make_game(objects=[FIRE], inventory=_inventory_with(FishAndCookRoutine.RAW_SHRIMP_ID))
+        assert _routine().find_fire(game, _ctrl()) == "cooking"
 
 
 # ---------------------------------------------------------------------------
@@ -648,11 +670,11 @@ class TestCookingFireDespawn:
 
 class TestDropping:
     def test_no_matching_item_returns_to_find_spot(self):
-        game = _make_game(widgets=[_inv_widget(590), _inv_widget(317)])
+        game = _make_game(widgets=[_inv_widget(590), _inv_widget(1511)])
         assert _routine().dropping(game, _ctrl()) == "find_spot"
 
     def test_no_matching_item_releases_shift(self):
-        game = _make_game(widgets=[_inv_widget(590), _inv_widget(317)])
+        game = _make_game(widgets=[_inv_widget(590), _inv_widget(1511)])
         ctrl = _ctrl()
         _routine().dropping(game, ctrl)
         ctrl.release_key.assert_called_once_with(Key.SHIFT)
@@ -685,6 +707,23 @@ class TestDropping:
 
         ctrl.hold_key.assert_called_once_with(Key.SHIFT)
         ctrl.click_widget.assert_called_once_with(burnt)
+        assert result is None
+
+    def test_holds_shift_and_clicks_raw_fish(self):
+        """
+        Raw shrimp/anchovies are now in DROP_ITEM_IDS — when find_fire sends
+        us here with no fire and no logs, the raw catch must get dropped
+        instead of stalling the routine forever.
+        """
+        raw = _inv_widget(FishAndCookRoutine.RAW_SHRIMP_ID, child_id=3)
+        game = _make_game(widgets=[_inv_widget(590), raw])
+        ctrl = _ctrl()
+        r = _routine()
+
+        result = r.dropping(game, ctrl)
+
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_called_once_with(raw)
         assert result is None
 
     def test_stays_in_dropping_while_items_remain(self):

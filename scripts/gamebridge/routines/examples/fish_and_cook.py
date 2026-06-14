@@ -4,21 +4,24 @@ Fish & Cook routine.
 Nets shrimp/anchovies at a fishing spot, then heads off to cook the catch
 once the inventory fills up — using any `Fire` already standing within
 `FIRE_SEARCH_RADIUS` tiles, or lighting a fresh one with logs and a
-tinderbox if none is found. Drops the results, then goes back to fishing.
-Stops outright if it ever runs out of logs — without them it can't make a
-fire and the loop can't continue.
+tinderbox if none is found. If no Fire is nearby and there are no logs to
+light one with, the raw fish are dropped uncooked instead. Drops the
+results, then goes back to fishing. Can still halt mid-attempt if it runs
+out of logs while lighting a fire — without them it can't make a fire and
+the loop can't continue.
 
 State flow
 ──────────
 
   find_spot    → (spot netted)                          → fishing
-  fishing      → (inventory full, no logs)              → stopped
-  fishing      → (inventory full, has logs)             → find_fire
+  fishing      → (inventory full)                       → find_fire
 
   find_fire    → (Fire within FIRE_SEARCH_RADIUS tiles) → cooking
-  find_fire    → (no Fire nearby)                       → step_aside
+  find_fire    → (no Fire nearby, has logs)             → step_aside
+  find_fire    → (no Fire nearby, no logs)              → dropping
 
   step_aside   → (settled on a fresh tile)              → light_fire
+  light_fire   → (out of logs mid-attempt)              → stopped
   light_fire   → (logs + tinderbox combined)            → confirm_fire
   confirm_fire → (Fire spawned and confirmed nearby)    → cooking
   confirm_fire → (xp timeout / no Fire appeared)        → step_aside
