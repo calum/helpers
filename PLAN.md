@@ -4,6 +4,73 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-14 (2) — Keyboard test/debug controls added to dashboard Testing tab
+
+### Goal
+
+The hardware keyboard emulation (scan-code `SendInput`, see session below) is
+still not behaving correctly in practice. Rather than guess again, add
+on-demand controls to the dashboard's Testing tab so the bot's keyboard
+primitives can be triggered live against a running RuneLite client, with
+debug output explaining exactly what was sent and why it might not have
+landed.
+
+### Findings / Decisions
+
+- Added a "Keyboard" section to `ui/testing_tab.py` below the existing
+  entity-diagnostics grid: a key-name `QLineEdit` plus **Press key / Hold
+  key / Release key / Release all keys** buttons, a text `QLineEdit` plus
+  **Type text** button, and a **SendInput diagnostics** button. All log to
+  the existing output `QTextEdit` via the same `_log()` helper.
+- New pure (`describe_*`) helpers in `diagnostics.py`, following the existing
+  no-Qt pattern so they're unit-testable without a display:
+  - `describe_press_key`/`describe_hold_key`/`describe_release_key`/
+    `describe_release_all_keys`/`describe_type_text` wrap the corresponding
+    `GameController` methods, reporting the resulting `_held_keys` set (or a
+    "no-op" message for empty input / already-held / not-held).
+  - `describe_sendinput_diagnostics` calls a new
+    `input.keyboard.sendinput_diagnostics()` and turns the raw numbers into an
+    explanation: reports the **foreground window** (title/class) — since
+    `SendInput` delivers to whatever window has focus, a misdirected target
+    is the most common "nothing happens" cause and isn't visible from the
+    Java side at all — plus `SendInput`'s return value and `GetLastError`,
+    flagging `ERROR_ACCESS_DENIED` (5, UIPI) vs. a `0`-with-no-error result
+    (BlockInput/AV) vs. success. Compares the foreground title against the
+    configured `window_name` setting to warn when RuneLite isn't focused.
+- `input/keyboard.py`:
+  - `sendinput_diagnostics()` — sends a harmless Shift down/up via the
+    existing `_send_scan` path to the current foreground window and returns
+    `struct_size`, `foreground_hwnd/title/class`, `sendinput_result`,
+    `last_error`. Effectively a non-interactive, reusable version of the
+    interactive checks that used to live in `tools/debug_keyboard.py`
+    (removed in the "big clean up" commit).
+  - `_send_scan` now returns `(SendInput result, GetLastError())` instead of
+    `None` — additive, existing callers (`press_key`/`key_down`/`key_up`)
+    ignore the return value.
+- Tests: `test_keyboard.py` (`TestSendInputDiagnostics`,
+  `TestSendScanReturnsResultAndError`, mocking `ctypes.windll`),
+  `test_diagnostics.py` (one `TestDescribe*` class per new helper, including
+  a `_make_ctrl()` stub whose `hold_key`/`release_key`/`release_all_keys`
+  side-effect a real `_held_keys` set so messages reflect the resulting
+  state). Full suite: `python -m pytest scripts/gamebridge/tests/ -v` → 859
+  passed (up from 826).
+
+### Open / next steps
+
+- Use the new Testing-tab controls in-game to actually narrow down why
+  scan-code injection (from the session below) still isn't registering —
+  start with **SendInput diagnostics** to confirm RuneLite is the foreground
+  window and `SendInput` itself isn't being blocked, then **Hold key**
+  (shift) + alt-tab to RuneLite to check whether the client's modifier
+  tracking picks it up.
+- If `SendInput diagnostics` reports RuneLite focused and a clean
+  result/error but the client still doesn't react, the next suspect is the
+  RS client reading raw input via a different API (e.g. `GetRawInputData`)
+  that scan-code `SendInput` doesn't satisfy — would need a packet-level
+  capture to confirm.
+
+---
+
 ## Session: 2026-06-14 — `keyboard.py` rewritten for hardware scan-code injection
 
 ### Goal
@@ -146,6 +213,38 @@ sequence, the way a real player would, not tapped per click.
   shift-click's "Drop" isn't the desired left-click default action.
 
 ---
+
+## Session: 2026-06-14 (3) — Windows SendInput integration harness and hardware-state tests
+
+### Goal
+
+Validate the GameBridge Windows SendInput path with a real GUI target window and OS-level key state assertions. Keep these checks gated behind `GAMEBRIDGE_INTEGRATION=1` so the default unit test run is unaffected.
+
+### Findings / Decisions
+
+- Mouse and keyboard SendInput differ fundamentally on Windows:
+  - injected mouse events go to whatever window is under the cursor;
+  - injected keyboard events go to whichever window currently has keyboard focus.
+- Programmatic foreground-stealing (`SetForegroundWindow`, `AttachThreadInput`,
+  ALT trick) is unreliable against a freshly created Tk window in this session.
+- A real SendInput mouse click does transfer focus via normal click-to-focus
+  behavior, so the test harness clicks the Entry first before sending
+  keyboard input.
+- The integration harness is a standalone Tkinter process with an Entry and a
+  Canvas. It reports startup geometry plus every key and mouse event as JSON
+  lines on stdout.
+- The test launcher reads the harness stdout, computes absolute click points,
+  and exercises the public `scripts.gamebridge.input.mouse` /
+  `scripts.gamebridge.input.keyboard` functions.
+- `press_key`/`key_down`/`key_up` now no-op cleanly when given an unknown key
+  name, so invalid input does not generate spurious events.
+
+### Open / next steps
+
+- Run the new integration suite manually on Windows with
+  `set GAMEBRIDGE_INTEGRATION=1 && python -m pytest scripts/gamebridge/tests/integration -v`.
+- If these tests still fail due to focus loss, the harness should be extended
+  to optionally show a visual click indicator and pause before keyboard input.
 
 ## Session: 2026-06-08 (8) — Extracted shared `InteractionRoutine` base class
 

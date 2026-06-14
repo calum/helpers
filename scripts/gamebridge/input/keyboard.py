@@ -131,8 +131,13 @@ class Key:
 # Low-level SendInput
 # ------------------------------------------------------------------ #
 
-def _send_scan(scan: int, extended: bool, key_up: bool) -> None:
-    """Inject one hardware scan-code key event via SendInput."""
+def _send_scan(scan: int, extended: bool, key_up: bool) -> tuple[int, int]:
+    """Inject one hardware scan-code key event via SendInput.
+
+    Returns (SendInput return value, GetLastError()) — used by
+    sendinput_diagnostics() to surface injection failures; other callers
+    ignore the result.
+    """
     flags = KEYEVENTF_SCANCODE
     if extended:
         flags |= KEYEVENTF_EXTENDEDKEY
@@ -146,7 +151,9 @@ def _send_scan(scan: int, extended: bool, key_up: bool) -> None:
     inp.ki.dwFlags = flags
     inp.ki.time = 0
     inp.ki.dwExtraInfo = None
-    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    result = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+    error = ctypes.windll.kernel32.GetLastError()
+    return result, error
 
 
 def _char_scan(ch: str) -> tuple[int, bool]:
@@ -167,10 +174,14 @@ def _char_scan(ch: str) -> tuple[int, bool]:
 def _resolve(key: str) -> tuple[int, bool, bool]:
     """Resolve a Key constant, named string, or single character to
     (scan code, is_extended, needs_shift)."""
+    if not key:
+        return 0, False, False
     named = _NAMED_SCANCODES.get(key.lower())
     if named is not None:
         return named[0], named[1], False
-    scan, needs_shift = _char_scan(key[0])
+    if len(key) != 1:
+        return 0, False, False
+    scan, needs_shift = _char_scan(key)
     return scan, False, needs_shift
 
 
@@ -186,6 +197,8 @@ def press_key(key: str, hold_ms: float = 50.0) -> None:
     hold_ms: how long to hold the key down in milliseconds.
     """
     scan, extended, needs_shift = _resolve(key)
+    if scan == 0:
+        return
     if needs_shift:
         _send_scan(*_NAMED_SCANCODES["shift"], key_up=False)
     _send_scan(scan, extended, key_up=False)
@@ -206,6 +219,8 @@ def key_down(key: str) -> None:
          or a single character.
     """
     scan, extended, _ = _resolve(key)
+    if scan == 0:
+        return
     _send_scan(scan, extended, key_up=False)
 
 
@@ -216,6 +231,8 @@ def key_up(key: str) -> None:
          the value passed to `key_down`.
     """
     scan, extended, _ = _resolve(key)
+    if scan == 0:
+        return
     _send_scan(scan, extended, key_up=True)
 
 
@@ -227,3 +244,37 @@ def type_text(text: str, delays: Optional[List[float]] = None) -> None:
     for i, ch in enumerate(text):
         press_key(ch, hold_ms=30.0)
         time.sleep(delays[i] if delays else 0.10)
+
+
+def sendinput_diagnostics() -> dict:
+    """Low-level SendInput health check, for the dashboard's Testing tab.
+
+    Sends a harmless Shift down/up via the same scan-code path as
+    key_down/key_up to whatever window currently has focus, and reports that
+    window plus SendInput's return value and GetLastError(). This is the
+    signal needed to tell "RuneLite isn't the focused window" (events go
+    somewhere else entirely) apart from "SendInput itself is being blocked"
+    (UIPI / BlockInput / antivirus) — neither of which is visible from the
+    Java client side. Mirrors the interactive checks formerly in
+    tools/debug_keyboard.py (removed), as a single reusable function.
+    """
+    user32 = ctypes.windll.user32
+
+    hwnd = user32.GetForegroundWindow()
+    title_buf = ctypes.create_unicode_buffer(256)
+    user32.GetWindowTextW(hwnd, title_buf, 256)
+    class_buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, class_buf, 256)
+
+    scan, extended = _NAMED_SCANCODES["shift"]
+    result, error = _send_scan(scan, extended, key_up=False)
+    _send_scan(scan, extended, key_up=True)
+
+    return {
+        "struct_size": ctypes.sizeof(_INPUT()),
+        "foreground_hwnd": hwnd,
+        "foreground_title": title_buf.value,
+        "foreground_class": class_buf.value,
+        "sendinput_result": result,
+        "last_error": error,
+    }

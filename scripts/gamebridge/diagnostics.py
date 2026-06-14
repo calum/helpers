@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Optional, TYPE_CHECKING
 
+from . import settings as _settings
+from .input import keyboard as kb_input
 from .state import interfaces as iface_registry
 
 if TYPE_CHECKING:
@@ -103,3 +105,99 @@ def describe_is_on_minimap(entity: dict) -> str:
     name = entity.get("name", "?")
     on_minimap = entity.get("minimapX") is not None and entity.get("minimapY") is not None
     return f"'{name}' is {'visible' if on_minimap else 'not visible'} on the minimap."
+
+
+# ---------------------------------------------------------------------------
+# Keyboard checks
+# ---------------------------------------------------------------------------
+
+def describe_press_key(ctrl: "GameController", key: str) -> str:
+    """Press and release `key` via the controller and report what was sent."""
+    key = key.strip()
+    if not key:
+        return "Enter a key name or character first (e.g. 'enter', 'f5', 'a')."
+    ctrl.press_key(key)
+    return f"Sent press+release for '{key}' via hardware scan-code injection."
+
+
+def describe_hold_key(ctrl: "GameController", key: str) -> str:
+    """Hold `key` down via the controller and report the held-key set."""
+    key = key.strip()
+    if not key:
+        return "Enter a key name or character first (e.g. 'shift', 'ctrl')."
+    if key in ctrl._held_keys:
+        return f"'{key}' is already held — no-op. Held keys: {sorted(ctrl._held_keys)}."
+    ctrl.hold_key(key)
+    return f"Holding '{key}' down. Held keys: {sorted(ctrl._held_keys)}."
+
+
+def describe_release_key(ctrl: "GameController", key: str) -> str:
+    """Release `key` via the controller and report the held-key set."""
+    key = key.strip()
+    if not key:
+        return "Enter a key name or character first (e.g. 'shift', 'ctrl')."
+    if key not in ctrl._held_keys:
+        return f"'{key}' is not currently held — no-op. Held keys: {sorted(ctrl._held_keys)}."
+    ctrl.release_key(key)
+    return f"Released '{key}'. Held keys: {sorted(ctrl._held_keys)}."
+
+
+def describe_release_all_keys(ctrl: "GameController") -> str:
+    """Release every held key via the controller and report what was released."""
+    held = sorted(ctrl._held_keys)
+    if not held:
+        return "No keys are currently held."
+    ctrl.release_all_keys()
+    return f"Released all held keys: {held}."
+
+
+def describe_type_text(ctrl: "GameController", text: str) -> str:
+    """Type `text` via the controller and report what was sent."""
+    if not text:
+        return "Enter some text first."
+    ctrl.type_text(text)
+    return f"Typed {len(text)} character(s): '{text}'."
+
+
+def describe_sendinput_diagnostics() -> str:
+    """Run a low-level SendInput health check and explain the result.
+
+    Reports the foreground window — SendInput delivers to whichever window
+    has focus, so a misdirected target is the most common "nothing happens"
+    cause — plus SendInput's return value and GetLastError, distinguishing
+    "RuneLite isn't focused" from "SendInput itself is blocked" (UIPI /
+    BlockInput / antivirus), neither of which the Java client side can see.
+    """
+    info = kb_input.sendinput_diagnostics()
+    window_name = _settings.get("window_name")
+
+    lines = [
+        f"sizeof(INPUT) = {info['struct_size']} (expected 28 on 64-bit Windows)",
+        f"Foreground window: 0x{info['foreground_hwnd']:08X} "
+        f"class={info['foreground_class']!r} title={info['foreground_title']!r}",
+        f"SendInput(shift) returned {info['sendinput_result']}, "
+        f"GetLastError={info['last_error']}",
+    ]
+
+    if window_name.lower() not in info["foreground_title"].lower():
+        lines.append(
+            f"WARNING: foreground window title does not contain '{window_name}' "
+            f"— RuneLite likely isn't focused, so injected keys go to the "
+            f"wrong window."
+        )
+
+    if info["last_error"] == 5:
+        lines.append(
+            "ERROR_ACCESS_DENIED (5): UIPI is blocking injection — run from a "
+            "plain terminal at the same integrity level as RuneLite (not "
+            "elevated / a different IL)."
+        )
+    elif info["sendinput_result"] == 0:
+        lines.append(
+            "SendInput returned 0 with no error code: BlockInput() or a "
+            "security tool may be suppressing injected input."
+        )
+    else:
+        lines.append("SendInput call itself succeeded.")
+
+    return "\n".join(lines)

@@ -21,6 +21,6 @@ run = "python -m scripts.gamebridge.main --watch --debug"
 [tasks.test]
 description = "Run all tests (Python GameBridge + Java RuneLite)"
 run = """
-python -m pytest scripts/gamebridge/tests/ -v && \
+python scripts/gamebridge/tests/run_mise_tests.py
 mise exec -- ./gradlew.bat testAll
 """

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from PyQt6.QtWidgets import (
-    QGridLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from .. import diagnostics
@@ -71,6 +71,61 @@ class TestingTab(QWidget):
             grid.addWidget(btn, i // 2, i % 2)
         layout.addLayout(grid)
 
+        layout.addWidget(HDivider())
+
+        kb_lbl = QLabel("Keyboard")
+        kb_lbl.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px; font-weight: 600;")
+        layout.addWidget(kb_lbl)
+
+        self._key_input = QLineEdit()
+        self._key_input.setPlaceholderText("Key — e.g. shift, ctrl, enter, f5, a")
+        self._key_input.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 5px 10px; color: {C.TEXT};"
+        )
+        layout.addWidget(self._key_input)
+
+        kb_hint = QLabel(
+            "Press/hold/release a key via hardware scan-code injection (the same "
+            "path RuneLite's modifier tracking requires). 'Release all keys' is a "
+            "safety net for a stuck modifier."
+        )
+        kb_hint.setStyleSheet(f"color: {C.TEXT_MUTED}; font-size: 11px;")
+        kb_hint.setWordWrap(True)
+        layout.addWidget(kb_hint)
+
+        self._KB_KEY_ACTIONS = [
+            ("Press key",        self._run_press_key),
+            ("Hold key",         self._run_hold_key),
+            ("Release key",      self._run_release_key),
+            ("Release all keys", self._run_release_all_keys),
+        ]
+        kb_grid = QGridLayout()
+        kb_grid.setSpacing(8)
+        for i, (label, handler) in enumerate(self._KB_KEY_ACTIONS):
+            btn = QPushButton(label)
+            btn.clicked.connect(handler)
+            kb_grid.addWidget(btn, i // 2, i % 2)
+        layout.addLayout(kb_grid)
+
+        self._text_input = QLineEdit()
+        self._text_input.setPlaceholderText("Text to type")
+        self._text_input.setStyleSheet(
+            f"background: {C.SURFACE}; border: 1px solid {C.BORDER}; "
+            f"border-radius: 6px; padding: 5px 10px; color: {C.TEXT};"
+        )
+        layout.addWidget(self._text_input)
+
+        kb_row = QHBoxLayout()
+        kb_row.setSpacing(8)
+        type_btn = QPushButton("Type text")
+        type_btn.clicked.connect(self._run_type_text)
+        kb_row.addWidget(type_btn)
+        diag_btn = QPushButton("SendInput diagnostics")
+        diag_btn.clicked.connect(self._run_sendinput_diagnostics)
+        kb_row.addWidget(diag_btn)
+        layout.addLayout(kb_row)
+
         self._output = QTextEdit()
         self._output.setReadOnly(True)
         self._output.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
@@ -123,3 +178,25 @@ class TestingTab(QWidget):
         entity = self._resolve_entity()
         if entity is not None:
             self._log(diagnostics.describe_is_on_minimap(entity))
+
+    # ------------------------------------------------------------------
+    # Keyboard actions
+    # ------------------------------------------------------------------
+
+    def _run_press_key(self) -> None:
+        self._log(diagnostics.describe_press_key(self._ctrl, self._key_input.text()))
+
+    def _run_hold_key(self) -> None:
+        self._log(diagnostics.describe_hold_key(self._ctrl, self._key_input.text()))
+
+    def _run_release_key(self) -> None:
+        self._log(diagnostics.describe_release_key(self._ctrl, self._key_input.text()))
+
+    def _run_release_all_keys(self) -> None:
+        self._log(diagnostics.describe_release_all_keys(self._ctrl))
+
+    def _run_type_text(self) -> None:
+        self._log(diagnostics.describe_type_text(self._ctrl, self._text_input.text()))
+
+    def _run_sendinput_diagnostics(self) -> None:
+        self._log(diagnostics.describe_sendinput_diagnostics())

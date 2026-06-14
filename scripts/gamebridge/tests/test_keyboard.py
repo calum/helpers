@@ -12,16 +12,19 @@ Run with:
 """
 from __future__ import annotations
 
+import ctypes
 from unittest.mock import MagicMock, call, patch
 
 from scripts.gamebridge.input.keyboard import (
     Key,
+    _INPUT,
     _NAMED_SCANCODES,
     _char_scan,
     _resolve,
     key_down,
     key_up,
     press_key,
+    sendinput_diagnostics,
     type_text,
 )
 
@@ -241,3 +244,84 @@ class TestTypeText:
         with patch("scripts.gamebridge.input.keyboard.time") as mock_time:
             type_text("ab", delays=[0.5, 1.0])
         assert mock_time.sleep.call_args_list == [call(0.5), call(1.0)]
+
+
+# ---------------------------------------------------------------------------
+# sendinput_diagnostics
+# ---------------------------------------------------------------------------
+
+def _mock_windll(*, sendinput_result=1, last_error=0,
+                  title="RuneLite - Calum", cls="SunAwtFrame", hwnd=0x1234):
+    mock_user32 = MagicMock()
+    mock_user32.GetForegroundWindow.return_value = hwnd
+
+    def _set_title(_hwnd, buf, _n):
+        buf.value = title
+        return 1
+
+    def _set_class(_hwnd, buf, _n):
+        buf.value = cls
+        return 1
+
+    mock_user32.GetWindowTextW.side_effect = _set_title
+    mock_user32.GetClassNameW.side_effect = _set_class
+    mock_user32.SendInput.return_value = sendinput_result
+
+    mock_kernel32 = MagicMock()
+    mock_kernel32.GetLastError.return_value = last_error
+
+    mock_windll = MagicMock()
+    mock_windll.user32 = mock_user32
+    mock_windll.kernel32 = mock_kernel32
+    return mock_windll
+
+
+class TestSendInputDiagnostics:
+    def test_reports_foreground_window_and_sendinput_result(self):
+        mock_windll = _mock_windll()
+        with patch("ctypes.windll", mock_windll):
+            info = sendinput_diagnostics()
+
+        assert info["foreground_hwnd"] == 0x1234
+        assert info["foreground_title"] == "RuneLite - Calum"
+        assert info["foreground_class"] == "SunAwtFrame"
+        assert info["sendinput_result"] == 1
+        assert info["last_error"] == 0
+        assert info["struct_size"] == ctypes.sizeof(_INPUT)
+
+    def test_sends_shift_down_then_up(self):
+        mock_windll = _mock_windll()
+        with patch("ctypes.windll", mock_windll):
+            sendinput_diagnostics()
+
+        assert mock_windll.user32.SendInput.call_count == 2
+
+    def test_reports_access_denied(self):
+        mock_windll = _mock_windll(sendinput_result=0, last_error=5)
+        with patch("ctypes.windll", mock_windll):
+            info = sendinput_diagnostics()
+
+        assert info["sendinput_result"] == 0
+        assert info["last_error"] == 5
+
+    def test_reports_when_runelite_not_foreground(self):
+        mock_windll = _mock_windll(title="Discord", cls="Chrome_WidgetWin_1")
+        with patch("ctypes.windll", mock_windll):
+            info = sendinput_diagnostics()
+
+        assert info["foreground_title"] == "Discord"
+        assert info["foreground_class"] == "Chrome_WidgetWin_1"
+
+
+# ---------------------------------------------------------------------------
+# _send_scan return value
+# ---------------------------------------------------------------------------
+
+class TestSendScanReturnsResultAndError:
+    def test_returns_sendinput_result_and_last_error(self):
+        mock_windll = _mock_windll(sendinput_result=1, last_error=0)
+        with patch("ctypes.windll", mock_windll):
+            from scripts.gamebridge.input.keyboard import _send_scan
+            result, error = _send_scan(0x2A, False, key_up=False)
+
+        assert (result, error) == (1, 0)

@@ -7,7 +7,7 @@ GameState and a mocked GameController — covering the happy path and the
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from scripts.gamebridge import diagnostics
 from scripts.gamebridge.state.game_state import GameState
@@ -194,3 +194,155 @@ class TestDescribeIsOnMinimap:
 
     def test_not_visible_on_minimap(self):
         assert "is not visible" in diagnostics.describe_is_on_minimap(ORE_OFF_SCREEN)
+
+
+# ---------------------------------------------------------------------------
+# Keyboard checks
+# ---------------------------------------------------------------------------
+
+def _make_ctrl(held_keys=None) -> MagicMock:
+    """A GameController stub with a real `_held_keys` set, kept in sync by
+    hold_key/release_key/release_all_keys side effects (as the real
+    controller does), so describe_* messages reflect the resulting state."""
+    ctrl = MagicMock()
+    ctrl._held_keys = set(held_keys or [])
+    ctrl.hold_key.side_effect = ctrl._held_keys.add
+    ctrl.release_key.side_effect = ctrl._held_keys.discard
+    ctrl.release_all_keys.side_effect = ctrl._held_keys.clear
+    return ctrl
+
+
+class TestDescribePressKey:
+    def test_presses_key(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_press_key(ctrl, "enter")
+        assert "'enter'" in msg
+        ctrl.press_key.assert_called_once_with("enter")
+
+    def test_empty_key_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_press_key(ctrl, "   ")
+        assert "Enter a key" in msg
+        ctrl.press_key.assert_not_called()
+
+
+class TestDescribeHoldKey:
+    def test_holds_key_not_already_held(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_hold_key(ctrl, "shift")
+        assert "Holding 'shift'" in msg
+        assert "shift" in ctrl._held_keys
+        ctrl.hold_key.assert_called_once_with("shift")
+
+    def test_already_held_is_noop(self):
+        ctrl = _make_ctrl(held_keys=["shift"])
+        msg = diagnostics.describe_hold_key(ctrl, "shift")
+        assert "already held" in msg
+        ctrl.hold_key.assert_not_called()
+
+    def test_empty_key_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_hold_key(ctrl, "")
+        assert "Enter a key" in msg
+        ctrl.hold_key.assert_not_called()
+
+
+class TestDescribeReleaseKey:
+    def test_releases_held_key(self):
+        ctrl = _make_ctrl(held_keys=["shift"])
+        msg = diagnostics.describe_release_key(ctrl, "shift")
+        assert "Released 'shift'" in msg
+        assert "shift" not in ctrl._held_keys
+        ctrl.release_key.assert_called_once_with("shift")
+
+    def test_not_held_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_release_key(ctrl, "shift")
+        assert "not currently held" in msg
+        ctrl.release_key.assert_not_called()
+
+    def test_empty_key_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_release_key(ctrl, "")
+        assert "Enter a key" in msg
+        ctrl.release_key.assert_not_called()
+
+
+class TestDescribeReleaseAllKeys:
+    def test_releases_all_held_keys(self):
+        ctrl = _make_ctrl(held_keys=["shift", "ctrl"])
+        msg = diagnostics.describe_release_all_keys(ctrl)
+        assert "ctrl" in msg
+        assert "shift" in msg
+        assert ctrl._held_keys == set()
+        ctrl.release_all_keys.assert_called_once()
+
+    def test_nothing_held_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_release_all_keys(ctrl)
+        assert "No keys are currently held" in msg
+        ctrl.release_all_keys.assert_not_called()
+
+
+class TestDescribeTypeText:
+    def test_types_text(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_type_text(ctrl, "hello")
+        assert "5 character" in msg
+        assert "'hello'" in msg
+        ctrl.type_text.assert_called_once_with("hello")
+
+    def test_empty_text_is_noop(self):
+        ctrl = _make_ctrl()
+        msg = diagnostics.describe_type_text(ctrl, "")
+        assert "Enter some text" in msg
+        ctrl.type_text.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# describe_sendinput_diagnostics
+# ---------------------------------------------------------------------------
+
+def _sendinput_info(**overrides) -> dict:
+    info = {
+        "struct_size": 28,
+        "foreground_hwnd": 0x1234,
+        "foreground_title": "RuneLite - Calum",
+        "foreground_class": "SunAwtFrame",
+        "sendinput_result": 1,
+        "last_error": 0,
+    }
+    info.update(overrides)
+    return info
+
+
+class TestDescribeSendInputDiagnostics:
+    def test_reports_success_when_runelite_focused(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info()):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "SendInput call itself succeeded" in msg
+        assert "WARNING" not in msg
+
+    def test_warns_when_runelite_not_focused(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info(foreground_title="Discord", foreground_class="Chrome_WidgetWin_1")):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "WARNING" in msg
+        assert "isn't focused" in msg
+
+    def test_reports_access_denied(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info(sendinput_result=0, last_error=5)):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "ERROR_ACCESS_DENIED" in msg
+
+    def test_reports_blockinput_suspicion(self):
+        with patch("scripts.gamebridge.diagnostics._settings.get", return_value="RuneLite"), \
+             patch("scripts.gamebridge.diagnostics.kb_input.sendinput_diagnostics",
+                   return_value=_sendinput_info(sendinput_result=0, last_error=0)):
+            msg = diagnostics.describe_sendinput_diagnostics()
+        assert "BlockInput" in msg
