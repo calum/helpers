@@ -4,6 +4,149 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-14 — `keyboard.py` rewritten for hardware scan-code injection
+
+### Goal
+
+`drop_item`'s `DropMode.SHIFT_CLICK` (added in the session below) wasn't
+working in practice: the bot logged "Holding key 'shift'" then
+`click_widget`, but RuneLite still showed the default "Use" action instead of
+"Drop" — i.e. the client never registered Shift as held.
+
+### Findings / Decisions
+
+- **Root cause**: `input/keyboard.py` used `pynput.keyboard.Controller`, whose
+  Windows backend sends `SendInput` in **virtual-key mode** (`wVk=VK_LSHIFT`,
+  `dwFlags` without `KEYEVENTF_SCANCODE`) for `Key.shift`. Windows itself
+  updates global key-state (`GetAsyncKeyState`) for VK-mode injection, but
+  the RS client's own held-modifier tracking does not — only **scan-code
+  mode** injection (`wVk=0`, `KEYEVENTF_SCANCODE` set, `wScan` = PS/2 Set-1
+  hardware scan code), i.e. what a real keyboard driver produces, registers
+  as "held" for shift-click-to-drop. User confirmed empirically: holding
+  physical Shift and alt-tabbing into RuneLite still shows "Drop" — the
+  client checks real hardware modifier state, not just Windows' synthetic
+  key-state.
+- **Fix**: rewrote `input/keyboard.py` from scratch as a pure-ctypes module
+  (no pynput), mirroring `input/mouse.py`'s raw `SendInput`/`KEYBDINPUT`/
+  `INPUT` ctypes-struct pattern (`ctypes.windll` only touched inside
+  functions, not at module scope, for cross-platform import safety).
+  - `_NAMED_SCANCODES: dict[str, tuple[scan_code, is_extended]]` — PS/2 Set-1
+    codes for every `Key.*` constant (escape=0x01, enter=0x1C,
+    backspace=0x0E, tab=0x0F, space=0x39, shift=0x2A, ctrl=0x1D, alt=0x38,
+    capslock=0x3A, F1-F10=0x3B-0x44, F11=0x57, F12=0x58). Navigation cluster
+    (delete/home/end/pageup/pagedown/arrows) marked `is_extended=True` →
+    `KEYEVENTF_EXTENDEDKEY` (0xE0-prefixed on real hardware).
+  - `_char_scan(ch)` — layout-aware single-character resolution via
+    `VkKeyScanW`/`MapVirtualKeyW(..., MAPVK_VK_TO_VSC)`; returns `(0, False)`
+    for unmappable characters (`VkKeyScanW` returns -1).
+  - `_resolve(key)` → `(scan, is_extended, needs_shift)` — named-key lookup
+    (case-insensitive) falls back to `_char_scan` for arbitrary characters.
+  - `_send_scan(scan, extended, key_up)` — the one `SendInput` call site.
+  - `press_key`/`key_down`/`key_up`/`type_text` **signatures unchanged** —
+    `press_key` wraps shifted characters (`needs_shift=True`, e.g. `"A"`,
+    `"!"`) in an extra Shift down/up pair around the character's own
+    down/up.
+  - **Public API fully preserved** (`Key.*` constants, `press_key(key,
+    hold_ms=50.0)`, `key_down`, `key_up`, `type_text(text, delays=None)`) —
+    zero changes needed to `controller.py`, `interaction.py`, or any routine
+    (`fish_and_cook.py`, `iron_mining.py`, `melee_fighter.py`); confirmed via
+    grep that `_PYNPUT_MAP`/`_ctrl`/pynput were referenced nowhere else.
+  - Removed `pynput>=1.7` from `scripts/gamebridge/requirements.txt` — no
+    external keyboard/mouse dependency remains (both use raw ctypes
+    `SendInput`).
+- Tests: `test_keyboard.py` fully rewritten — `TestKeyConstants` (every
+  `Key.*` has a `_NAMED_SCANCODES` entry, nav keys are extended),
+  `TestResolve`, `TestCharScan` (mocks `ctypes.windll.user32` for
+  `VkKeyScanW`/`MapVirtualKeyW`, covers lowercase/uppercase/unmappable),
+  `TestPressKey`/`TestKeyDown`/`TestKeyUp`/`TestTypeText` (mock `_send_scan`
+  and `press_key`, asserting call sequences/flags — including the
+  shift-wrap-around-character sequence for uppercase chars). Full suite:
+  `python -m pytest scripts/gamebridge/tests/ -v` → 828 passed, plus the new
+  139 keyboard+controller tests pass; 6 pre-existing failures in
+  `test_fish_and_cook.py` are unrelated (uncommitted in-progress changes to
+  `fish_and_cook.py`'s state machine, untouched by this session).
+
+### Open / next steps
+
+- Verify in-game: run `drop_item(mode=DropMode.SHIFT_CLICK)` and confirm
+  RuneLite now shows "Drop" as the left-click default while Shift is held via
+  `key_down`/the new scan-code injection.
+- The 6 failing `test_fish_and_cook.py` tests (find_fire/dropping state
+  transitions returning wrong next-state) are pre-existing and unrelated —
+  need their own follow-up session.
+
+---
+
+## Session: 2026-06-14 — Generic `drop_item` helper with persistent Shift-hold
+
+### Goal
+
+`fish_and_cook.py`'s `dropping()` state had its own right-click/verified-menu
+"Drop" logic, duplicated nowhere else but the obvious next routine to need it
+(any inventory-clearing step) would've copy-pasted it. Extract a generic
+`InteractionRoutine.drop_item` helper, and switch the default gesture from
+right-click-drop to **hold Shift + left-click** (RuneLite's shift-click default
+is "Drop") — with Shift held continuously across the *whole* multi-item drop
+sequence, the way a real player would, not tapped per click.
+
+### Findings / Decisions
+
+- New low-level primitives in `input/keyboard.py`: `key_down(key)` /
+  `key_up(key)` — press-only / release-only, unlike `press_key` which does
+  both. Backed `GameController.hold_key`/`release_key`/`release_all_keys`
+  (`_held_keys: set[str]`, idempotent hold, no-op release if not held).
+  - **Naming collision note**: an *unrelated* `GameController.hold_key` was
+    mentioned in the 2026-06-04 "Camera Movement" entry below, but that was
+    later refactored into `kb_input.press_key(key, hold_ms=...)` (see
+    `rotate_camera`) — the name was free. Today's `hold_key`/`release_key` is
+    a different API: a bare press/release pair with no duration, meant to
+    stay down across several ticks.
+- New `DropMode` enum (`routines/interaction.py`): `SHIFT_CLICK` (default) vs
+  `RIGHT_CLICK` (the original verified-menu-click flow, preserved for cases
+  where shift-click isn't appropriate).
+- New `InteractionRoutine.drop_item(game, ctrl, item_ids, mode=SHIFT_CLICK,
+  group_id=Inventory.GROUP) -> bool`. Finds the first inventory widget whose
+  `itemId` is in `item_ids`:
+  - `SHIFT_CLICK`: `ctrl.hold_key(Key.SHIFT)` + `ctrl.click_widget(widget)`,
+    one item per tick, no menu verification needed (shift-click is
+    instant/unambiguous). Returns `True` (stay) while a match remains;
+    `False` once none do, after `ctrl.release_key(Key.SHIFT)`.
+  - `RIGHT_CLICK`: original `right_click_widget` → `verified_menu_click(game,
+    ctrl, "Drop", None)` flow via `self._drop_target` (moved from
+    `FishAndCookRoutine` into `InteractionRoutine.__init__` since it's now
+    shared state).
+  - Callers loop: `if self.drop_item(...): return None` / `return
+    "next_state"`.
+- **Stuck-Shift safety nets** — a held modifier surviving past its intended
+  scope is a real risk (physically stuck key in subsequent gameplay):
+  - `Routine.tick()`'s exception handler (`routines/base.py`) now calls
+    `ctrl.release_all_keys()` if a state raises mid drop-sequence. Guarded
+    with `if ctrl is not None` — `test_routine.py`'s `_tick()` helper passes
+    `ctrl=None` for several existing tests.
+  - `DecisionEngine.set_routine()` (`decision/engine.py`) calls
+    `ctrl.release_all_keys()` before swapping/clearing the routine, so an
+    operator-triggered routine swap mid-drop can't leave Shift down.
+- `fish_and_cook.py`'s `dropping()` is now just
+  `self.drop_item(game, ctrl, self.DROP_ITEM_IDS, mode=DropMode.SHIFT_CLICK)`.
+- Tests: `test_keyboard.py` (`TestKeyDown`/`TestKeyUp`), `test_controller.py`
+  (`TestHoldKey`/`TestReleaseKey`/`TestReleaseAllKeys`, patching `kb_input`),
+  `test_interaction.py` (`TestDropItemShiftClick`/`TestDropItemRightClick`),
+  `test_fish_and_cook.py` (`TestDropping` rewritten for shift-click),
+  `test_routine.py` (exception → `release_all_keys`), `test_decision_engine.py`
+  (`_Ctrl` stub gained `release_all_keys`/counter + `set_routine` test). 826
+  tests pass overall (up from 801).
+
+### Open / next steps
+
+- Only `fish_and_cook.py` calls `drop_item` so far; the generic helper is
+  ready for any future "clear inventory of X" step (e.g. a banking routine
+  dropping junk before depositing).
+- `DropMode.RIGHT_CLICK` is exercised only via `test_interaction.py` now (no
+  routine currently uses it) — fine, it's preserved for routines where
+  shift-click's "Drop" isn't the desired left-click default action.
+
+---
+
 ## Session: 2026-06-08 (8) — Extracted shared `InteractionRoutine` base class
 
 ### Goal

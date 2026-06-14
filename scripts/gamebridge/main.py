@@ -105,7 +105,7 @@ def main() -> None:
         return
 
     # ── Headless routine mode ────────────────────────────────────────
-    from .client import stream
+    from .client import connect
     from .human.emulator import HumanEmulator
     from .human.mood import WeatherMoodSeeder
     from .human.interruptions import InterruptionScheduler, build_configs_from_settings
@@ -148,8 +148,13 @@ def main() -> None:
     log.info("Running '%s' headlessly — Ctrl-C to stop.", args.routine)
 
     try:
-        for msg in stream(host=args.host, port=args.port):
-            engine.process_tick(msg)
+        for conn in connect(host=args.host, port=args.port):
+            ctrl.set_connection(conn)
+            try:
+                for msg in conn.messages():
+                    engine.process_tick(msg)
+            except (OSError, ConnectionError):
+                continue
     except KeyboardInterrupt:
         log.info("Stopped.")
 

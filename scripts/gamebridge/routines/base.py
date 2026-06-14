@@ -120,6 +120,8 @@ class Routine:
             result: Optional[str] = method(game, ctrl)
         except Exception:
             log.exception("[%s] Exception in state '%s'", self.name, self._current)
+            if ctrl is not None:
+                ctrl.release_all_keys()
             return
 
         if result is not None and result != self._current:

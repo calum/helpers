@@ -10,7 +10,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from scripts.gamebridge.client import stream, DEFAULT_HOST, DEFAULT_PORT
+from scripts.gamebridge.client import stream, connect, BridgeConnection, DEFAULT_HOST, DEFAULT_PORT
 
 
 # ---------------------------------------------------------------------------
@@ -20,6 +20,12 @@ from scripts.gamebridge.client import stream, DEFAULT_HOST, DEFAULT_PORT
 def _line(tick: int) -> bytes:
     """A single complete newline-terminated JSON message."""
     return (json.dumps({"tick": tick}) + "\n").encode()
+
+
+def _hull_update_line(sub_id: str, found: bool, **extra) -> bytes:
+    """A single hullUpdate message with one entity."""
+    entity = {"subId": sub_id, "found": found, **extra}
+    return (json.dumps({"type": "hullUpdate", "clientTick": 1, "entities": [entity]}) + "\n").encode()
 
 
 def _make_sock(*chunks: bytes) -> MagicMock:
@@ -195,3 +201,125 @@ class TestDefaults:
                 for m in stream(host="192.168.1.1", port=9999):
                     break
         mock_conn.assert_called_once_with(("192.168.1.1", 9999))
+
+
+# ---------------------------------------------------------------------------
+# BridgeConnection.send / subscribe / unsubscribe
+# ---------------------------------------------------------------------------
+
+class TestBridgeConnectionSend:
+    def test_send_writes_json_with_newline(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.send({"type": "ping"})
+        sock.sendall.assert_called_once_with((json.dumps({"type": "ping"}) + "\n").encode("utf-8"))
+
+    def test_subscribe_sends_expected_shape(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.subscribe("fish_spot", "object", name="Fishing spot", ttl_ticks=10)
+        expected = {
+            "type": "subscribe",
+            "subId": "fish_spot",
+            "kind": "object",
+            "name": "Fishing spot",
+            "id": None,
+            "ttlTicks": 10,
+        }
+        sock.sendall.assert_called_once_with((json.dumps(expected) + "\n").encode("utf-8"))
+
+    def test_subscribe_defaults(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.subscribe("npc_target", "npc", id=3106)
+        expected = {
+            "type": "subscribe",
+            "subId": "npc_target",
+            "kind": "npc",
+            "name": None,
+            "id": 3106,
+            "ttlTicks": 10,
+        }
+        sock.sendall.assert_called_once_with((json.dumps(expected) + "\n").encode("utf-8"))
+
+    def test_unsubscribe_sends_expected_shape(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.unsubscribe("fish_spot")
+        expected = {"type": "unsubscribe", "subId": "fish_spot"}
+        sock.sendall.assert_called_once_with((json.dumps(expected) + "\n").encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# BridgeConnection.messages
+# ---------------------------------------------------------------------------
+
+class TestBridgeConnectionMessages:
+    def test_tick_message_passthrough(self):
+        conn = BridgeConnection(_make_sock(_line(1)))
+        assert next(conn.messages()) == {"tick": 1}
+
+    def test_hull_update_intercepted_not_yielded(self):
+        hull_line = _hull_update_line("fish_spot", True, canvasX=100, canvasY=200)
+        conn = BridgeConnection(_make_sock(hull_line + _line(5)))
+        msg = next(conn.messages())
+        assert msg == {"tick": 5}
+        assert conn.hull_updates["fish_spot"] == {
+            "subId": "fish_spot", "found": True, "canvasX": 100, "canvasY": 200,
+        }
+
+    def test_hull_update_overwrites_on_repeat(self):
+        line1 = _hull_update_line("fish_spot", True, canvasX=100, canvasY=200)
+        line2 = _hull_update_line("fish_spot", True, canvasX=150, canvasY=250)
+        conn = BridgeConnection(_make_sock(line1 + line2 + _line(1)))
+        next(conn.messages())
+        assert conn.hull_updates["fish_spot"]["canvasX"] == 150
+        assert conn.hull_updates["fish_spot"]["canvasY"] == 250
+
+    def test_messages_raises_on_disconnect(self):
+        conn = BridgeConnection(_make_sock())
+        with pytest.raises(ConnectionError):
+            next(conn.messages())
+
+
+# ---------------------------------------------------------------------------
+# connect()
+# ---------------------------------------------------------------------------
+
+class TestConnect:
+    def test_yields_bridge_connection(self):
+        sock = _make_sock(_line(1))
+        with patch("scripts.gamebridge.client.socket.create_connection", return_value=sock):
+            with patch("scripts.gamebridge.client.time.sleep"):
+                conn = next(connect())
+        assert isinstance(conn, BridgeConnection)
+
+    def test_reconnects_after_oserror_with_sleep(self):
+        good_sock = _make_sock(_line(1))
+        call_count = [0]
+
+        def _side_effect(addr, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("connection refused")
+            return good_sock
+
+        with patch("scripts.gamebridge.client.socket.create_connection", side_effect=_side_effect):
+            with patch("scripts.gamebridge.client.time.sleep") as mock_sleep:
+                conn = next(connect())
+
+        assert isinstance(conn, BridgeConnection)
+        assert call_count[0] == 2
+        mock_sleep.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# stream() backward compatibility
+# ---------------------------------------------------------------------------
+
+class TestStreamBackwardCompat:
+    def test_stream_does_not_yield_hull_updates(self):
+        hull_line = _hull_update_line("fish_spot", True, canvasX=1, canvasY=2)
+        chunk = hull_line + _line(1)
+        msgs = _collect(1, _make_sock(chunk))
+        assert msgs == [{"tick": 1}]

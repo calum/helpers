@@ -14,7 +14,7 @@ Covers:
   - cooking: one "use fish on fire" gesture per raw-fish type, Space on the
     Skillmulti dialog, waiting for a batch to finish before the next gesture,
     and re-finding a fire if it despawns mid-batch with raw fish remaining
-  - dropping: "verify before you click" Drop gesture, one item at a time
+  - dropping: shift-held, one click per item (DropMode.SHIFT_CLICK)
   - stopped: terminal state
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ import pytest
 
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.fish_and_cook import FishAndCookRoutine
-from scripts.gamebridge.routines.interaction import MenuClick
+from scripts.gamebridge.routines.interaction import InteractionRoutine
 from scripts.gamebridge.state.game_state import GameState
 
 
@@ -643,7 +643,7 @@ class TestCookingFireDespawn:
 
 
 # ---------------------------------------------------------------------------
-# dropping — "verify before you click" Drop gesture, one item at a time
+# dropping — shift-held, one click per item (DropMode.SHIFT_CLICK)
 # ---------------------------------------------------------------------------
 
 class TestDropping:
@@ -651,7 +651,13 @@ class TestDropping:
         game = _make_game(widgets=[_inv_widget(590), _inv_widget(317)])
         assert _routine().dropping(game, _ctrl()) == "find_spot"
 
-    def test_right_clicks_first_matching_item(self):
+    def test_no_matching_item_releases_shift(self):
+        game = _make_game(widgets=[_inv_widget(590), _inv_widget(317)])
+        ctrl = _ctrl()
+        _routine().dropping(game, ctrl)
+        ctrl.release_key.assert_called_once_with(Key.SHIFT)
+
+    def test_holds_shift_and_clicks_first_matching_item(self):
         cooked = _inv_widget(315, child_id=2)
         game = _make_game(widgets=[_inv_widget(590), cooked])
         ctrl = _ctrl()
@@ -659,11 +665,11 @@ class TestDropping:
 
         result = r.dropping(game, ctrl)
 
-        ctrl.right_click_widget.assert_called_once_with(cooked)
-        assert r._drop_target == cooked
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_called_once_with(cooked)
         assert result is None
 
-    def test_right_clicks_burnt_fish(self):
+    def test_holds_shift_and_clicks_burnt_fish(self):
         """
         Burnt shrimp and burnt anchovies both turn into the same generic
         "Burnt fish" item (id 7954) — not the shrimp/anchovy-specific ids
@@ -677,55 +683,16 @@ class TestDropping:
 
         result = r.dropping(game, ctrl)
 
-        ctrl.right_click_widget.assert_called_once_with(burnt)
-        assert r._drop_target == burnt
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_called_once_with(burnt)
         assert result is None
 
-    def _mid_drop_routine(self) -> FishAndCookRoutine:
-        r = _routine()
-        r._drop_target = _inv_widget(315, child_id=2)
-        return r
-
-    def test_confirmed_drop_clears_target_and_stays(self):
-        game = _make_game(tick=5)
-        game.menu = {"open": True, "entries": [
-            {"option": "Drop", "target": "Shrimps",
-             "bounds": {"x": 100, "y": 50, "width": 80, "height": 15}},
-        ]}
+    def test_stays_in_dropping_while_items_remain(self):
+        game = _make_game(widgets=[_inv_widget(315, child_id=2)])
         ctrl = _ctrl()
-        ctrl.click_menu_entry.return_value = True
-        r = self._mid_drop_routine()
 
-        result = r.dropping(game, ctrl)
-
-        ctrl.click_menu_entry.assert_called_once_with(game, "Drop", None)
-        assert r._drop_target is None
-        assert result is None
-
-    def test_abandoned_drop_clears_target_and_retries(self):
-        game = _make_game(tick=5)
-        game.menu = {"open": False, "entries": []}
-        ctrl = _ctrl()
-        ctrl.click_menu_entry.return_value = False
-        r = self._mid_drop_routine()
-
-        result = r.dropping(game, ctrl)
-
-        assert r._drop_target is None
-        assert result is None
-
-    def test_pending_menu_keeps_target(self):
-        game = _make_game(tick=5)
-        game.menu = {"open": True, "entries": []}
-        ctrl = _ctrl()
-        ctrl.click_menu_entry.return_value = False
-        r = self._mid_drop_routine()
-        target = r._drop_target
-
-        result = r.dropping(game, ctrl)
-
-        assert r._drop_target == target
-        assert result is None
+        assert _routine().dropping(game, ctrl) is None
+        ctrl.release_key.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -780,3 +747,53 @@ class TestClickInventoryItem:
 
         assert result is False
         ctrl.click_widget.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Live clickbox subscriptions — find_spot/find_fire/cooking subscribe for
+# fresh hull updates on the entity they're about to click
+# ---------------------------------------------------------------------------
+
+class TestLiveHullSubscriptions:
+    def test_find_spot_subscribes_to_spot_before_netting(self):
+        game = _make_game(npcs=[SPOT])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        r = _routine()
+
+        r.find_spot(game, ctrl)            # tick 100: idle-settle buffer starts
+        game.tick = 101
+        r.find_spot(game, ctrl)            # tick 101: settled — right-click issued
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "npc",
+            name=SPOT["name"], id=SPOT["id"],
+        )
+
+    def test_find_fire_subscribes_to_fire_before_walking_to_it(self):
+        game = _make_game(tick=1, objects=[FIRE_NEARBY])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        r = _routine()
+
+        r.find_fire(game, ctrl)        # tick 1: idle-settle buffer starts
+        game.tick = 2
+        r.find_fire(game, ctrl)        # tick 2: settled — clicks to walk over
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object",
+            name=FIRE_NEARBY["name"], id=FIRE_NEARBY["id"],
+        )
+
+    def test_cooking_subscribes_to_fire_before_using_fish_on_it(self):
+        game = _make_game(inventory=_inventory_with(317), objects=[FIRE])
+        ctrl = _ctrl()
+        r = _routine()
+        r._cook_selected = True
+
+        r.cooking(game, ctrl)
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object",
+            name=FIRE["name"], id=FIRE["id"],
+        )

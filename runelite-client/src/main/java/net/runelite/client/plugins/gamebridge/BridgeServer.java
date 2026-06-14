@@ -24,12 +24,19 @@
  */
 package net.runelite.client.plugins.gamebridge;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -40,15 +47,37 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 class BridgeServer
 {
-	private static final class ClientEntry
+	static final class ClientEntry
 	{
 		final Socket socket;
 		final PrintWriter writer;
+		final BlockingQueue<String> incoming = new LinkedBlockingQueue<>();
+		private final Thread readerThread;
 
 		ClientEntry(Socket socket) throws IOException
 		{
 			this.socket = socket;
 			this.writer = new PrintWriter(socket.getOutputStream(), true);
+			this.readerThread = new Thread(this::readLoop, "game-bridge-reader");
+			this.readerThread.setDaemon(true);
+			this.readerThread.start();
+		}
+
+		private void readLoop()
+		{
+			try (BufferedReader reader = new BufferedReader(
+				new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8)))
+			{
+				String line;
+				while ((line = reader.readLine()) != null)
+				{
+					incoming.add(line);
+				}
+			}
+			catch (IOException ignored)
+			{
+				// socket closed/disconnected; broadcast()/sendTo() will prune this entry
+			}
 		}
 	}
 
@@ -107,20 +136,60 @@ class BridgeServer
 	{
 		for (ClientEntry entry : clients)
 		{
-			entry.writer.println(line);
-			if (entry.writer.checkError())
-			{
-				log.debug("Game Bridge: client disconnected, removing");
-				clients.remove(entry);
-				try
-				{
-					entry.socket.close();
-				}
-				catch (IOException ignored)
-				{
-				}
-			}
+			sendTo(entry, line);
 		}
+	}
+
+	/**
+	 * Writes {@code line} followed by a newline to a single client.
+	 * If the client has disconnected, it is removed from the active client
+	 * list and its socket is closed.
+	 * Must be called from the client/game thread.
+	 *
+	 * @return true if the write succeeded, false if the client was pruned
+	 */
+	boolean sendTo(ClientEntry entry, String line)
+	{
+		entry.writer.println(line);
+		if (entry.writer.checkError())
+		{
+			log.debug("Game Bridge: client disconnected, removing");
+			clients.remove(entry);
+			try
+			{
+				entry.socket.close();
+			}
+			catch (IOException ignored)
+			{
+			}
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Returns up to {@code max} newline-delimited messages received from
+	 * {@code entry} since the last call, without blocking.
+	 * Must be called from the client/game thread.
+	 */
+	List<String> drainIncoming(ClientEntry entry, int max)
+	{
+		List<String> messages = new ArrayList<>();
+		String line;
+		while (messages.size() < max && (line = entry.incoming.poll()) != null)
+		{
+			messages.add(line);
+		}
+		return messages;
+	}
+
+	/**
+	 * Returns the list of currently active clients.
+	 * Must be called from the client/game thread.
+	 */
+	List<ClientEntry> activeClients()
+	{
+		return clients;
 	}
 
 	/**

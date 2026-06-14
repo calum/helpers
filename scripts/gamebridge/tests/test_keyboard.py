@@ -1,7 +1,11 @@
 """
-Tests for keyboard.py — Key constants and press_key / type_text behaviour.
+Tests for keyboard.py — hardware scan-code key injection via SendInput.
 
-pynput's Controller is patched out; no real input is produced.
+The lowest-level call (_send_scan, which wraps raw ctypes SendInput) is
+patched out for press_key/key_down/key_up/type_text tests — no real input is
+produced — mirroring test_mouse.py's pattern of not exercising the raw
+SendInput call directly. _char_scan's VkKeyScanW/MapVirtualKeyW lookups are
+covered separately by mocking ctypes.windll.
 
 Run with:
     python -m pytest scripts/gamebridge/tests/test_keyboard.py -v
@@ -10,12 +14,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
-import pytest
-from pynput.keyboard import Key as PKey
-
 from scripts.gamebridge.input.keyboard import (
     Key,
-    _PYNPUT_MAP,
+    _NAMED_SCANCODES,
+    _char_scan,
+    _resolve,
+    key_down,
+    key_up,
     press_key,
     type_text,
 )
@@ -26,101 +31,213 @@ from scripts.gamebridge.input.keyboard import (
 # ---------------------------------------------------------------------------
 
 class TestKeyConstants:
-    def test_all_constants_are_in_pynput_map(self):
-        """Every Key.* value must resolve to a pynput key — no silent typos."""
+    def test_all_constants_have_scancodes(self):
+        """Every Key.* value must resolve to a named scan code — no silent typos."""
         constants = {
             k: v for k, v in vars(Key).items()
             if not k.startswith("_") and isinstance(v, str)
         }
         assert constants, "Key class has no string constants"
         for name, value in constants.items():
-            assert value in _PYNPUT_MAP, (
-                f"Key.{name} = {value!r} has no entry in _PYNPUT_MAP"
+            assert value in _NAMED_SCANCODES, (
+                f"Key.{name} = {value!r} has no entry in _NAMED_SCANCODES"
             )
 
     def test_escape(self):
         assert Key.ESCAPE == "escape"
-        assert _PYNPUT_MAP["escape"] is PKey.esc
+        assert _NAMED_SCANCODES["escape"] == (0x01, False)
 
     def test_enter(self):
         assert Key.ENTER == "enter"
-        assert _PYNPUT_MAP["enter"] is PKey.enter
+        assert _NAMED_SCANCODES["enter"] == (0x1C, False)
+
+    def test_shift_scancode(self):
+        assert Key.SHIFT == "shift"
+        assert _NAMED_SCANCODES["shift"] == (0x2A, False)
 
     def test_f_keys_defined(self):
         for n in range(1, 13):
             assert hasattr(Key, f"F{n}"), f"Key.F{n} missing"
             assert getattr(Key, f"F{n}") == f"f{n}"
-            assert f"f{n}" in _PYNPUT_MAP
+            assert f"f{n}" in _NAMED_SCANCODES
 
-    def test_navigation_keys_defined(self):
+    def test_navigation_keys_are_extended(self):
         for name in ("LEFT", "RIGHT", "UP", "DOWN", "HOME", "END", "PAGE_UP", "PAGE_DOWN", "DELETE"):
             assert hasattr(Key, name), f"Key.{name} missing"
+            value = getattr(Key, name)
+            _, extended = _NAMED_SCANCODES[value]
+            assert extended is True, f"Key.{name} should be an extended-key scan code"
+
+
+# ---------------------------------------------------------------------------
+# _resolve
+# ---------------------------------------------------------------------------
+
+class TestResolve:
+    def test_named_key_resolves_without_shift(self):
+        scan, extended, needs_shift = _resolve(Key.ESCAPE)
+        assert (scan, extended) == _NAMED_SCANCODES["escape"]
+        assert needs_shift is False
+
+    def test_extended_key_resolves_extended_flag(self):
+        scan, extended, needs_shift = _resolve(Key.LEFT)
+        assert (scan, extended) == _NAMED_SCANCODES["left"]
+        assert extended is True
+        assert needs_shift is False
+
+    def test_key_lookup_is_case_insensitive(self):
+        scan, extended, _ = _resolve("ESCAPE")
+        assert (scan, extended) == _NAMED_SCANCODES["escape"]
+
+    def test_unnamed_char_falls_back_to_char_scan(self):
+        with patch("scripts.gamebridge.input.keyboard._char_scan", return_value=(0x1E, True)) as mock_char_scan:
+            scan, extended, needs_shift = _resolve("A")
+        mock_char_scan.assert_called_once_with("A")
+        assert scan == 0x1E
+        assert extended is False
+        assert needs_shift is True
+
+
+# ---------------------------------------------------------------------------
+# _char_scan
+# ---------------------------------------------------------------------------
+
+class TestCharScan:
+    def test_lowercase_letter_no_shift(self):
+        mock_user32 = MagicMock()
+        mock_user32.VkKeyScanW.return_value = 0x0041  # vk='A' (0x41), no shift bits
+        mock_user32.MapVirtualKeyW.return_value = 0x1E
+        with patch("ctypes.windll") as mock_windll:
+            mock_windll.user32 = mock_user32
+            scan, needs_shift = _char_scan("a")
+        assert scan == 0x1E
+        assert needs_shift is False
+        mock_user32.MapVirtualKeyW.assert_called_once_with(0x41, 0)
+
+    def test_uppercase_letter_needs_shift(self):
+        mock_user32 = MagicMock()
+        mock_user32.VkKeyScanW.return_value = 0x0141  # shift bit set + vk 0x41
+        mock_user32.MapVirtualKeyW.return_value = 0x1E
+        with patch("ctypes.windll") as mock_windll:
+            mock_windll.user32 = mock_user32
+            scan, needs_shift = _char_scan("A")
+        assert scan == 0x1E
+        assert needs_shift is True
+
+    def test_unmappable_char_returns_zero(self):
+        mock_user32 = MagicMock()
+        mock_user32.VkKeyScanW.return_value = -1
+        with patch("ctypes.windll") as mock_windll:
+            mock_windll.user32 = mock_user32
+            scan, needs_shift = _char_scan("é")
+        assert scan == 0
+        assert needs_shift is False
+        mock_user32.MapVirtualKeyW.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
 # press_key
 # ---------------------------------------------------------------------------
 
-@patch("scripts.gamebridge.input.keyboard._ctrl")
+@patch("scripts.gamebridge.input.keyboard._send_scan")
 class TestPressKey:
-    def test_escape_calls_press_and_release(self, mock_ctrl):
+    def test_named_key_sends_down_then_up(self, mock_send):
         with patch("scripts.gamebridge.input.keyboard.time"):
             press_key(Key.ESCAPE)
-        mock_ctrl.press.assert_called_once_with(PKey.esc)
-        mock_ctrl.release.assert_called_once_with(PKey.esc)
+        scan, extended = _NAMED_SCANCODES["escape"]
+        assert mock_send.call_args_list == [
+            call(scan, extended, key_up=False),
+            call(scan, extended, key_up=True),
+        ]
 
-    def test_enter_calls_press_and_release(self, mock_ctrl):
+    def test_extended_key_sets_extended_flag(self, mock_send):
         with patch("scripts.gamebridge.input.keyboard.time"):
-            press_key(Key.ENTER)
-        mock_ctrl.press.assert_called_once_with(PKey.enter)
-        mock_ctrl.release.assert_called_once_with(PKey.enter)
+            press_key(Key.LEFT)
+        for c in mock_send.call_args_list:
+            assert c.args[1] is True
 
-    def test_f1_mapped_correctly(self, mock_ctrl):
-        with patch("scripts.gamebridge.input.keyboard.time"):
-            press_key(Key.F1)
-        mock_ctrl.press.assert_called_once_with(PKey.f1)
+    def test_lowercase_char_no_shift_wrap(self, mock_send):
+        with patch("scripts.gamebridge.input.keyboard._char_scan", return_value=(0x1E, False)):
+            with patch("scripts.gamebridge.input.keyboard.time"):
+                press_key("a")
+        assert mock_send.call_args_list == [
+            call(0x1E, False, key_up=False),
+            call(0x1E, False, key_up=True),
+        ]
 
-    def test_single_char_uses_character_directly(self, mock_ctrl):
-        with patch("scripts.gamebridge.input.keyboard.time"):
-            press_key("a")
-        mock_ctrl.press.assert_called_once_with("a")
-        mock_ctrl.release.assert_called_once_with("a")
+    def test_uppercase_char_wrapped_in_shift(self, mock_send):
+        with patch("scripts.gamebridge.input.keyboard._char_scan", return_value=(0x1E, True)):
+            with patch("scripts.gamebridge.input.keyboard.time"):
+                press_key("A")
+        shift_scan, shift_extended = _NAMED_SCANCODES["shift"]
+        assert mock_send.call_args_list == [
+            call(shift_scan, shift_extended, key_up=False),
+            call(0x1E, False, key_up=False),
+            call(0x1E, False, key_up=True),
+            call(shift_scan, shift_extended, key_up=True),
+        ]
 
-    def test_key_constant_string_accepted(self, mock_ctrl):
-        """Key.ESCAPE is just a string — passing it must behave identically."""
-        with patch("scripts.gamebridge.input.keyboard.time"):
-            press_key(Key.ESCAPE)
-        assert mock_ctrl.press.call_count == 1
-        assert mock_ctrl.release.call_count == 1
+    def test_holds_for_requested_duration(self, mock_send):
+        with patch("scripts.gamebridge.input.keyboard.time") as mock_time:
+            press_key(Key.ESCAPE, hold_ms=120.0)
+        mock_time.sleep.assert_called_once_with(0.12)
 
-    def test_press_and_release_called_same_key(self, mock_ctrl):
-        """The same key object must be passed to both press and release."""
-        with patch("scripts.gamebridge.input.keyboard.time"):
-            press_key(Key.ESCAPE)
-        pressed  = mock_ctrl.press.call_args.args[0]
-        released = mock_ctrl.release.call_args.args[0]
-        assert pressed is released
+
+# ---------------------------------------------------------------------------
+# key_down / key_up
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.input.keyboard._send_scan")
+class TestKeyDown:
+    def test_named_key_sends_down_only(self, mock_send):
+        key_down(Key.SHIFT)
+        scan, extended = _NAMED_SCANCODES["shift"]
+        mock_send.assert_called_once_with(scan, extended, key_up=False)
+
+    def test_single_char_uses_char_scan(self, mock_send):
+        with patch("scripts.gamebridge.input.keyboard._char_scan", return_value=(0x1E, False)):
+            key_down("a")
+        mock_send.assert_called_once_with(0x1E, False, key_up=False)
+
+
+@patch("scripts.gamebridge.input.keyboard._send_scan")
+class TestKeyUp:
+    def test_named_key_sends_up_only(self, mock_send):
+        key_up(Key.SHIFT)
+        scan, extended = _NAMED_SCANCODES["shift"]
+        mock_send.assert_called_once_with(scan, extended, key_up=True)
+
+    def test_single_char_uses_char_scan(self, mock_send):
+        with patch("scripts.gamebridge.input.keyboard._char_scan", return_value=(0x1E, False)):
+            key_up("a")
+        mock_send.assert_called_once_with(0x1E, False, key_up=True)
 
 
 # ---------------------------------------------------------------------------
 # type_text
 # ---------------------------------------------------------------------------
 
-@patch("scripts.gamebridge.input.keyboard._ctrl")
+@patch("scripts.gamebridge.input.keyboard.press_key")
 class TestTypeText:
-    def test_each_char_pressed_and_released(self, mock_ctrl):
+    def test_each_char_pressed_in_order(self, mock_press):
         with patch("scripts.gamebridge.input.keyboard.time"):
             type_text("hi")
-        assert mock_ctrl.press.call_count == 2
-        assert mock_ctrl.release.call_count == 2
+        assert mock_press.call_args_list == [
+            call("h", hold_ms=30.0),
+            call("i", hold_ms=30.0),
+        ]
 
-    def test_chars_sent_in_order(self, mock_ctrl):
-        with patch("scripts.gamebridge.input.keyboard.time"):
-            type_text("ab")
-        press_calls = [c.args[0] for c in mock_ctrl.press.call_args_list]
-        assert press_calls == ["a", "b"]
-
-    def test_empty_string_sends_nothing(self, mock_ctrl):
+    def test_empty_string_sends_nothing(self, mock_press):
         with patch("scripts.gamebridge.input.keyboard.time"):
             type_text("")
-        mock_ctrl.press.assert_not_called()
+        mock_press.assert_not_called()
+
+    def test_default_delay_between_chars(self, mock_press):
+        with patch("scripts.gamebridge.input.keyboard.time") as mock_time:
+            type_text("ab")
+        assert mock_time.sleep.call_args_list == [call(0.10), call(0.10)]
+
+    def test_custom_delays_used(self, mock_press):
+        with patch("scripts.gamebridge.input.keyboard.time") as mock_time:
+            type_text("ab", delays=[0.5, 1.0])
+        assert mock_time.sleep.call_args_list == [call(0.5), call(1.0)]

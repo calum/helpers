@@ -82,6 +82,7 @@ class TickMessageBuilder
 	Map<String, Object> build(List<Map<String, Object>> pendingEvents, Map<String, int[]> pendingVarbits)
 	{
 		Map<String, Object> msg = new LinkedHashMap<>();
+		msg.put("type", "tick");
 		msg.put("tick", client.getTickCount());
 
 		Player local = client.getLocalPlayer();
@@ -161,6 +162,273 @@ class TickMessageBuilder
 		msg.put("events", events);
 
 		return msg;
+	}
+
+	// -------------------------------------------------------------------------
+	// Live clickbox subscriptions (findNearest)
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Finds the entity of the given {@code kind} nearest to the local player
+	 * that matches {@code id}/{@code name}, and serializes it the same way as
+	 * the per-tick lists (so hull/canvas fields are identical).
+	 *
+	 * @return {@code {"subId": subId, "found": true, ...entity fields}} or
+	 *         {@code {"subId": subId, "found": false}} if nothing matches.
+	 */
+	Map<String, Object> findNearest(String subId, String kind, Integer id, String name)
+	{
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put("subId", subId);
+
+		Map<String, Object> match;
+		switch (kind)
+		{
+			case "npc":
+				match = findNearestNpc(id, name);
+				break;
+			case "player":
+				match = findNearestPlayer(id, name);
+				break;
+			case "object":
+				match = findNearestObject(id, name);
+				break;
+			case "groundItem":
+				match = findNearestGroundItem(id, name);
+				break;
+			default:
+				match = null;
+				break;
+		}
+
+		if (match != null)
+		{
+			result.put("found", true);
+			result.putAll(match);
+		}
+		else
+		{
+			result.put("found", false);
+		}
+		return result;
+	}
+
+	private Map<String, Object> findNearestNpc(Integer filterId, String filterName)
+	{
+		WorldPoint origin = playerLocation();
+		NPC best = null;
+		int bestDist = Integer.MAX_VALUE;
+		for (NPC npc : client.getNpcs())
+		{
+			if (npc == null)
+			{
+				continue;
+			}
+			if (!matchesIdOrName(npc.getId(), npc.getName(), filterId, filterName))
+			{
+				continue;
+			}
+			int dist = manhattanDistance(origin, npc.getWorldLocation());
+			if (dist < bestDist)
+			{
+				bestDist = dist;
+				best = npc;
+			}
+		}
+		if (best == null)
+		{
+			return null;
+		}
+		Map<String, Object> m = serializeActor(best, best.getId(), best.getName());
+		m.put("index", best.getIndex());
+		return m;
+	}
+
+	private Map<String, Object> findNearestPlayer(Integer filterId, String filterName)
+	{
+		WorldPoint origin = playerLocation();
+		Player best = null;
+		int bestDist = Integer.MAX_VALUE;
+		for (Player player : client.getPlayers())
+		{
+			if (player == null || player.getName() == null)
+			{
+				continue;
+			}
+			if (!matchesIdOrName(player.getId(), player.getName(), filterId, filterName))
+			{
+				continue;
+			}
+			int dist = manhattanDistance(origin, player.getWorldLocation());
+			if (dist < bestDist)
+			{
+				bestDist = dist;
+				best = player;
+			}
+		}
+		if (best == null)
+		{
+			return null;
+		}
+		return serializeActor(best, best.getId(), best.getName());
+	}
+
+	private Map<String, Object> findNearestObject(Integer filterId, String filterName)
+	{
+		WorldPoint origin = playerLocation();
+		NearestObject nearest = new NearestObject();
+
+		Tile[][][] tiles = client.getScene().getTiles();
+		int plane = client.getPlane();
+		for (Tile[] row : tiles[plane])
+		{
+			for (Tile tile : row)
+			{
+				if (tile == null)
+				{
+					continue;
+				}
+				for (GameObject go : tile.getGameObjects())
+				{
+					if (go != null)
+					{
+						considerObject(go, "game", filterId, filterName, origin, nearest);
+					}
+				}
+				WallObject wall = tile.getWallObject();
+				if (wall != null)
+				{
+					considerObject(wall, "wall", filterId, filterName, origin, nearest);
+				}
+				GroundObject ground = tile.getGroundObject();
+				if (ground != null)
+				{
+					considerObject(ground, "ground", filterId, filterName, origin, nearest);
+				}
+				DecorativeObject deco = tile.getDecorativeObject();
+				if (deco != null)
+				{
+					considerObject(deco, "decorative", filterId, filterName, origin, nearest);
+				}
+			}
+		}
+
+		if (nearest.obj == null)
+		{
+			return null;
+		}
+		return serializeTileObject(nearest.obj, nearest.name, nearest.category);
+	}
+
+	private void considerObject(TileObject obj, String category, Integer filterId, String filterName,
+		WorldPoint origin, NearestObject nearest)
+	{
+		int id = obj.getId();
+		String name = resolveName(id);
+		if (!matchesIdOrName(id, name, filterId, filterName))
+		{
+			return;
+		}
+		int dist = manhattanDistance(origin, obj.getWorldLocation());
+		if (dist < nearest.dist)
+		{
+			nearest.dist = dist;
+			nearest.obj = obj;
+			nearest.name = name;
+			nearest.category = category;
+		}
+	}
+
+	private static final class NearestObject
+	{
+		TileObject obj;
+		String name;
+		String category;
+		int dist = Integer.MAX_VALUE;
+	}
+
+	private Map<String, Object> findNearestGroundItem(Integer filterId, String filterName)
+	{
+		WorldPoint origin = playerLocation();
+		Tile bestTile = null;
+		TileItem bestItem = null;
+		int bestDist = Integer.MAX_VALUE;
+
+		Tile[][][] tiles = client.getScene().getTiles();
+		int plane = client.getPlane();
+		for (Tile[] row : tiles[plane])
+		{
+			for (Tile tile : row)
+			{
+				if (tile == null)
+				{
+					continue;
+				}
+				List<TileItem> groundItems = tile.getGroundItems();
+				if (groundItems == null)
+				{
+					continue;
+				}
+				for (TileItem item : groundItems)
+				{
+					if (item == null)
+					{
+						continue;
+					}
+					String name = resolveItemName(item.getId());
+					if (!matchesIdOrName(item.getId(), name, filterId, filterName))
+					{
+						continue;
+					}
+					int dist = manhattanDistance(origin, tile.getWorldLocation());
+					if (dist < bestDist)
+					{
+						bestDist = dist;
+						bestTile = tile;
+						bestItem = item;
+					}
+				}
+			}
+		}
+
+		if (bestItem == null)
+		{
+			return null;
+		}
+		return serializeGroundItem(bestTile, bestItem);
+	}
+
+	private WorldPoint playerLocation()
+	{
+		Player local = client.getLocalPlayer();
+		return local != null ? local.getWorldLocation() : new WorldPoint(0, 0, 0);
+	}
+
+	private static int manhattanDistance(WorldPoint a, WorldPoint b)
+	{
+		return Math.abs(a.getX() - b.getX()) + Math.abs(a.getY() - b.getY());
+	}
+
+	/**
+	 * AND semantics when both {@code filterId} and {@code filterName} are given;
+	 * name comparison is case-insensitive. At least one of the two must be
+	 * non-null for a match.
+	 */
+	static boolean matchesIdOrName(int entityId, String entityName, Integer filterId, String filterName)
+	{
+		if (filterId == null && filterName == null)
+		{
+			return false;
+		}
+		if (filterId != null && entityId != filterId)
+		{
+			return false;
+		}
+		if (filterName != null && (entityName == null || !entityName.equalsIgnoreCase(filterName)))
+		{
+			return false;
+		}
+		return true;
 	}
 
 	// -------------------------------------------------------------------------

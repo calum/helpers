@@ -31,6 +31,7 @@ from typing import Optional, TYPE_CHECKING
 
 from .base import Routine
 from ..input.keyboard import Key
+from ..widget_ids import Inventory
 
 if TYPE_CHECKING:
     from ..state.game_state import GameState
@@ -49,12 +50,31 @@ class MenuClick(Enum):
     PENDING = auto()    # menu still open without the row — dismissed, keep waiting
 
 
+class DropMode(Enum):
+    """How `InteractionRoutine.drop_item` performs its drop gesture."""
+
+    SHIFT_CLICK = auto()  # hold Shift, left-click — RuneLite's shift-click default is "Drop"; one tick, nothing to verify
+    RIGHT_CLICK = auto()  # right-click, verify a "Drop" entry in the menu, then click it — spans ticks
+
+
 class InteractionRoutine(Routine):
-    """Routine base class adding `approach` and `verified_menu_click`."""
+    """Routine base class adding `approach`, `verified_menu_click`, and
+    `click_live`/`right_click_live`."""
+
+    # subId for live clickbox subscriptions (see click_live/right_click_live
+    # below). A routine's state machine only ever has one click in flight per
+    # tick, so every click site in a routine instance can safely share this
+    # one subId — re-subscribing just renews/retargets it.
+    LIVE_HULL_SUB_ID = "click_target"
+
+    # Fields copied from a hullUpdate entity onto the per-tick entity dict —
+    # everything click_entity/right_click_entity actually look at.
+    _LIVE_HULL_FIELDS = ("onScreen", "canvasX", "canvasY", "hull", "worldX", "worldY", "plane")
 
     def __init__(self) -> None:
         super().__init__()
         self._approach_idle_since_tick: int = -1
+        self._drop_target: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Approach
@@ -137,3 +157,121 @@ class InteractionRoutine(Routine):
         log.debug("Menu open without a %s %s entry — dismissing it", verb, target_name)
         ctrl.dismiss_menu(game)
         return MenuClick.PENDING
+
+    # ------------------------------------------------------------------
+    # Live clickbox subscriptions
+    # ------------------------------------------------------------------
+    #
+    # The per-tick `entity` dict's canvasX/canvasY/hull can be up to ~600ms
+    # stale by the time a click lands — long enough for a moving NPC/object
+    # or a panning camera to drift off the clicked point. `click_live`/
+    # `right_click_live` (re)subscribe for `entity` and, if a fresher
+    # hullUpdate (~20ms cadence) has already arrived for it, click that
+    # position instead. See GAMEBRIDGE.md "Live clickbox subscriptions".
+
+    def _with_live_hull(self, ctrl: "GameController", entity: dict) -> dict:
+        """Return `entity` with onScreen/canvas/hull fields refreshed from the
+        latest LIVE_HULL_SUB_ID hullUpdate, if one has arrived for this same
+        entity. Falls back to `entity` unchanged if no update has arrived yet,
+        or the update is for a different (just-subscribed-to) entity — both
+        normal on the first click after retargeting.
+        """
+        update = ctrl.hull_update(self.LIVE_HULL_SUB_ID)
+        if not update or not update.get("found"):
+            return entity
+
+        if (update.get("name") or "").lower() != (entity.get("name") or "").lower():
+            return entity
+
+        live = dict(entity)
+        for field in self._LIVE_HULL_FIELDS:
+            if field in update:
+                live[field] = update[field]
+        return live
+
+    def click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
+        """Subscribe to `entity` for live hull updates, then left-click it
+        using the freshest available canvas position.
+
+        `kind` is one of "npc"/"object"/"player"/"groundItem" — see
+        `GameController.subscribe_to`.
+        """
+        ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
+        ctrl.click_entity(self._with_live_hull(ctrl, entity))
+
+    def right_click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
+        """Subscribe to `entity` for live hull updates, then right-click it
+        using the freshest available canvas position.
+
+        `kind` is one of "npc"/"object"/"player"/"groundItem" — see
+        `GameController.subscribe_to`.
+        """
+        ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
+        ctrl.right_click_entity(self._with_live_hull(ctrl, entity))
+
+    # ------------------------------------------------------------------
+    # Dropping inventory items
+    # ------------------------------------------------------------------
+
+    def drop_item(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        item_ids,
+        mode: DropMode = DropMode.SHIFT_CLICK,
+        group_id: int = Inventory.GROUP,
+    ) -> bool:
+        """
+        Drop one inventory item whose `itemId` is in `item_ids`. Call once
+        per tick from a "dropping" state:
+
+            def dropping(self, game, ctrl):
+                if self.drop_item(game, ctrl, self.DROP_ITEM_IDS):
+                    return None
+                return "find_spot"
+
+        Returns True while there's still a matching item (stay in the
+        current state and call again next tick), False once nothing matching
+        `item_ids` remains in the inventory (the caller should transition
+        away).
+
+        - `DropMode.SHIFT_CLICK` (default): RuneLite's default left-click
+          action while Shift is held is "Drop". A real player holds Shift
+          down for an entire drop sequence rather than tapping it before
+          every click, so this holds Shift (`ctrl.hold_key`) on the first
+          matching item and only releases it (`ctrl.release_key`) once
+          nothing is left to drop — every item in between is a plain
+          `ctrl.click_widget`, no menu to verify.
+        - `DropMode.RIGHT_CLICK`: right-click the item, verify a "Drop" entry
+          is actually in the context menu (`verified_menu_click`), then click
+          it — the same "verify before you click" gesture as picking up loot,
+          spanning multiple ticks per item.
+        """
+        widget = next(
+            (w for w in game.widgets if w.get("groupId") == group_id and w.get("itemId") in item_ids),
+            None,
+        )
+
+        if mode is DropMode.SHIFT_CLICK:
+            if widget is None:
+                ctrl.release_key(Key.SHIFT)
+                return False
+
+            ctrl.hold_key(Key.SHIFT)
+            ctrl.click_widget(widget)
+            return True
+
+        if self._drop_target is not None:
+            outcome = self.verified_menu_click(game, ctrl, "Drop", None)
+
+            if outcome is not MenuClick.PENDING:
+                self._drop_target = None
+
+            return True
+
+        if widget is None:
+            return False
+
+        ctrl.right_click_widget(widget)
+        self._drop_target = widget
+        return True

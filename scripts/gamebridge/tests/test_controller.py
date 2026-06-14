@@ -28,6 +28,7 @@ from scripts.gamebridge.controller.controller import (
     MINIMAP_WALK_MAX_TICKS,
     ON_SCREEN_SETTLE_TICKS,
 )
+from scripts.gamebridge.client import BridgeConnection
 from scripts.gamebridge.human.emulator import KeyHoldIntent
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.state.moving_target import TICK_DURATION_S
@@ -1100,3 +1101,131 @@ class TestMinimapWalkInProgress:
         assert result is True
         mock_mouse.click_left.assert_called_once()
         assert ctrl._minimap_walk == {"clicked_tick": game.tick, "idle_since_tick": None}
+
+
+# ---------------------------------------------------------------------------
+# Live clickbox subscriptions — set_connection / subscribe_to / unsubscribe / hull_update
+# ---------------------------------------------------------------------------
+
+class TestSubscriptions:
+    def test_subscribe_to_without_connection_logs_warning_and_noops(self, caplog):
+        ctrl = _ctrl()
+        with caplog.at_level(logging.WARNING):
+            ctrl.subscribe_to("fish_spot", "object", name="Fishing spot")
+        assert "fish_spot" in caplog.text
+
+    def test_unsubscribe_without_connection_logs_warning_and_noops(self, caplog):
+        ctrl = _ctrl()
+        with caplog.at_level(logging.WARNING):
+            ctrl.unsubscribe("fish_spot")
+        assert "fish_spot" in caplog.text
+
+    def test_hull_update_without_connection_returns_none(self):
+        ctrl = _ctrl()
+        assert ctrl.hull_update("fish_spot") is None
+
+    def test_subscribe_to_delegates_to_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+
+        ctrl.subscribe_to("fish_spot", "object", name="Fishing spot", id=1497, ttl_ticks=5)
+
+        conn.subscribe.assert_called_once_with(
+            "fish_spot", "object", name="Fishing spot", id=1497, ttl_ticks=5
+        )
+
+    def test_unsubscribe_delegates_to_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+
+        ctrl.unsubscribe("fish_spot")
+
+        conn.unsubscribe.assert_called_once_with("fish_spot")
+
+    def test_hull_update_returns_value_from_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        conn.hull_updates = {"fish_spot": {"found": True, "canvasX": 1}}
+        ctrl.set_connection(conn)
+
+        assert ctrl.hull_update("fish_spot") == {"found": True, "canvasX": 1}
+
+    def test_hull_update_missing_sub_id_returns_none(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        conn.hull_updates = {}
+        ctrl.set_connection(conn)
+
+        assert ctrl.hull_update("fish_spot") is None
+
+    def test_set_connection_none_clears_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+        ctrl.set_connection(None)
+
+
+# ---------------------------------------------------------------------------
+# hold_key / release_key / release_all_keys
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller.kb_input")
+class TestHoldKey:
+    def test_presses_key_down(self, mock_kb):
+        _ctrl().hold_key(Key.SHIFT)
+        mock_kb.key_down.assert_called_once_with(Key.SHIFT)
+
+    def test_tracks_key_as_held(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.hold_key(Key.SHIFT)
+        assert Key.SHIFT in ctrl._held_keys
+
+    def test_second_hold_is_a_noop(self, mock_kb):
+        """Holding an already-held key must not press it again."""
+        ctrl = _ctrl()
+        ctrl.hold_key(Key.SHIFT)
+        ctrl.hold_key(Key.SHIFT)
+        mock_kb.key_down.assert_called_once_with(Key.SHIFT)
+
+
+@patch("scripts.gamebridge.controller.controller.kb_input")
+class TestReleaseKey:
+    def test_releases_held_key(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.hold_key(Key.SHIFT)
+        ctrl.release_key(Key.SHIFT)
+        mock_kb.key_up.assert_called_once_with(Key.SHIFT)
+
+    def test_removes_key_from_held_set(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.hold_key(Key.SHIFT)
+        ctrl.release_key(Key.SHIFT)
+        assert Key.SHIFT not in ctrl._held_keys
+
+    def test_releasing_unheld_key_is_a_noop(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.release_key(Key.SHIFT)
+        mock_kb.key_up.assert_not_called()
+
+
+@patch("scripts.gamebridge.controller.controller.kb_input")
+class TestReleaseAllKeys:
+    def test_releases_every_held_key(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.hold_key(Key.SHIFT)
+        ctrl.hold_key(Key.CTRL)
+
+        ctrl.release_all_keys()
+
+        mock_kb.key_up.assert_any_call(Key.SHIFT)
+        mock_kb.key_up.assert_any_call(Key.CTRL)
+        assert ctrl._held_keys == set()
+
+    def test_noop_when_nothing_held(self, mock_kb):
+        ctrl = _ctrl()
+        ctrl.release_all_keys()
+        mock_kb.key_up.assert_not_called()
+
+        assert ctrl.hull_update("fish_spot") is None

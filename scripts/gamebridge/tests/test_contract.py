@@ -50,7 +50,7 @@ def state(contract: dict[str, Any]) -> GameState:
 # ---------------------------------------------------------------------------
 
 class TestContractSchema:
-    _TOP_LEVEL = {"tick", "player", "camera", "npcs", "players", "objects", "groundItems",
+    _TOP_LEVEL = {"type", "tick", "player", "camera", "npcs", "players", "objects", "groundItems",
                   "widgets", "interfaces", "menu", "inventory", "equipment", "events"}
     _PLAYER    = {"name", "worldX", "worldY", "plane", "animation", "hp", "prayer"}
     _CAMERA    = {"yaw", "pitch", "x", "y", "z"}
@@ -226,6 +226,42 @@ class TestContractSchema:
 
     def test_tick_is_integer(self, contract):
         assert isinstance(contract["tick"], int)
+
+    def test_type_is_tick(self, contract):
+        assert contract["type"] == "tick"
+
+    # ------------------------------------------------------------------ #
+    # Live clickbox subscriptions — subscribe/unsubscribe/hullUpdate
+    # ------------------------------------------------------------------ #
+
+    def test_hull_update_example_shape(self, contract):
+        hull_update = contract["hullUpdateExample"]
+        assert hull_update["type"] == "hullUpdate"
+        assert isinstance(hull_update["clientTick"], int)
+        entities = hull_update["entities"]
+        assert isinstance(entities, list)
+
+        found = entities[0]
+        assert found["found"] is True
+        for field in ("subId", "found", "id", "name", "worldX", "worldY", "plane",
+                       "onScreen", "canvasX", "canvasY", "hull"):
+            assert field in found, f"hullUpdate found entity missing field: {field}"
+
+    def test_hull_update_not_found_entity_has_only_sub_id_and_found(self, contract):
+        not_found = contract["hullUpdateExample"]["entities"][1]
+        assert not_found["found"] is False
+        assert set(not_found.keys()) == {"subId", "found"}
+
+    def test_subscribe_example_shape(self, contract):
+        subscribe = contract["subscribeExample"]
+        assert subscribe["type"] == "subscribe"
+        for field in ("subId", "kind", "name", "id", "ttlTicks"):
+            assert field in subscribe, f"subscribeExample missing field: {field}"
+
+    def test_unsubscribe_example_shape(self, contract):
+        unsubscribe = contract["unsubscribeExample"]
+        assert unsubscribe["type"] == "unsubscribe"
+        assert "subId" in unsubscribe
 
     def test_world_coordinates_are_integers(self, contract):
         for field in ("worldX", "worldY", "plane"):

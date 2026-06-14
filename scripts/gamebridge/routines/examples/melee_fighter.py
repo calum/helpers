@@ -109,7 +109,7 @@ class MeleeFighterRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, target):
             return None
 
-        ctrl.right_click_entity(target)
+        self.right_click_live(ctrl, target, "npc")
         self._attack_target = target
         return None
 
@@ -209,7 +209,7 @@ class MeleeFighterRoutine(InteractionRoutine):
                 if not item.get("onScreen"):
                     continue  # wait for it to come into view before attempting
 
-                ctrl.right_click_entity(item)
+                self.right_click_live(ctrl, item, "groundItem")
                 self._loot_target = item
                 return None  # one pickup gesture at a time — let the walk settle before the next
 

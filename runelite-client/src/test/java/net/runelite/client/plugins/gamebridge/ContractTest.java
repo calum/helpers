@@ -106,6 +106,12 @@ public class ContractTest
 	}
 
 	@Test
+	public void topLevelTypeIsTick()
+	{
+		assertEquals("tick", CONTRACT.get("type"));
+	}
+
+	@Test
 	public void topLevelPlayerPresent()
 	{
 		assertIsMap("player", CONTRACT.get("player"));
@@ -699,6 +705,51 @@ public class ContractTest
 			int id = ((Number) npc.get("id")).intValue();
 			assertTrue(filter.matches(id, (String) npc.get("name")));
 		}
+	}
+
+	// ------------------------------------------------------------------ //
+	// Live clickbox subscriptions — subscribe/unsubscribe/hullUpdate
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void hullUpdateExampleHasAllFields()
+	{
+		Map<?, ?> hullUpdate = map("hullUpdateExample");
+		assertEquals("hullUpdate", hullUpdate.get("type"));
+		assertIsNumber("hullUpdateExample.clientTick", hullUpdate.get("clientTick"));
+		assertIsList("hullUpdateExample.entities", hullUpdate.get("entities"));
+
+		Map<?, ?> found = castMap("hullUpdate entity", list(hullUpdate.get("entities")).get(0));
+		assertEquals(true, found.get("found"));
+		assertHasFields(found, "hullUpdate found entity",
+			"subId", "found", "id", "name", "worldX", "worldY", "plane",
+			"onScreen", "canvasX", "canvasY", "hull");
+	}
+
+	@Test
+	public void hullUpdateNotFoundEntityHasOnlySubIdAndFound()
+	{
+		Map<?, ?> hullUpdate = map("hullUpdateExample");
+		Map<?, ?> notFound = castMap("hullUpdate entity", list(hullUpdate.get("entities")).get(1));
+		assertEquals(false, notFound.get("found"));
+		assertEquals("not-found entity must only have subId and found",
+			new HashSet<>(Arrays.asList("subId", "found")), notFound.keySet());
+	}
+
+	@Test
+	public void subscribeExampleHasAllFields()
+	{
+		Map<?, ?> subscribe = map("subscribeExample");
+		assertEquals("subscribe", subscribe.get("type"));
+		assertHasFields(subscribe, "subscribeExample", "subId", "kind", "name", "id", "ttlTicks");
+	}
+
+	@Test
+	public void unsubscribeExampleHasAllFields()
+	{
+		Map<?, ?> unsubscribe = map("unsubscribeExample");
+		assertEquals("unsubscribe", unsubscribe.get("type"));
+		assertHasFields(unsubscribe, "unsubscribeExample", "subId");
 	}
 
 	// ------------------------------------------------------------------ //

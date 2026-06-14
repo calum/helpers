@@ -23,9 +23,13 @@ class _Ctrl:
     def __init__(self):
         self.min_click_interval: float = 0.0
         self.tracked_states: list = []
+        self.release_all_keys_calls: int = 0
 
     def track_entities(self, game_state) -> None:
         self.tracked_states.append(game_state)
+
+    def release_all_keys(self) -> None:
+        self.release_all_keys_calls += 1
 
 
 def _engine(human=None) -> DecisionEngine:
@@ -141,6 +145,16 @@ class TestRoutineManagement:
         e.process_tick(_msg(2))
         assert r1.tick_count == 1
         assert r2.tick_count == 1
+
+    def test_set_routine_releases_any_held_keys(self):
+        """A routine swap (or stop) releases any modifier key (e.g. Shift)
+        the outgoing routine left held mid drop-sequence."""
+        ctrl = _Ctrl()
+        e = DecisionEngine(ctrl=ctrl)
+        e.set_routine(_NopRoutine())
+        assert ctrl.release_all_keys_calls == 1
+        e.set_routine(None)
+        assert ctrl.release_all_keys_calls == 2
 
 
 # ---------------------------------------------------------------------------

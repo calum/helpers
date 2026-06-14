@@ -5,6 +5,8 @@ Run with:
     python -m pytest scripts/gamebridge/tests/
 """
 import logging
+from unittest.mock import MagicMock
+
 import pytest
 
 from scripts.gamebridge.routines.base import Routine, initial_state
@@ -204,6 +206,14 @@ class TestRoutineErrors:
         with caplog.at_level(logging.ERROR, logger="scripts.gamebridge.routines.base"):
             _tick(r)
         assert any("nonexistent_state" in r.message for r in caplog.records)
+
+    def test_exception_releases_held_keys(self):
+        """A held modifier key (e.g. Shift mid drop-sequence) must not be
+        left stuck down if the current state raises."""
+        r = _Raises()
+        ctrl = MagicMock()
+        r.tick(_game(1), ctrl=ctrl)
+        ctrl.release_all_keys.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

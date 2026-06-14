@@ -6,8 +6,8 @@
 # Qt dashboard
 PyQt6>=6.6.0
 
-# Keyboard / mouse input
-pynput>=1.7
+# Keyboard / mouse input use raw ctypes SendInput (input/keyboard.py,
+# input/mouse.py) — no external dependency needed.
 
 # Testing
 pytest>=7.0

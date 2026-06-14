@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.melee_fighter import MeleeFighterRoutine
-from scripts.gamebridge.routines.interaction import OCCLUSION_NUDGE_YAW
+from scripts.gamebridge.routines.interaction import InteractionRoutine, OCCLUSION_NUDGE_YAW
 from scripts.gamebridge.state.game_state import GameState
 
 
@@ -702,3 +702,44 @@ class TestLooting:
         ctrl.right_click_entity.assert_called_once_with(BONES)
         assert r._loot_target == BONES
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Live clickbox subscriptions — find_target/looting subscribe for fresh hull
+# updates on the entity they're about to right-click
+# ---------------------------------------------------------------------------
+
+class TestLiveHullSubscriptions:
+    def test_find_target_subscribes_to_goblin_before_attacking(self):
+        game = _make_game(tick=1, npcs=[GOBLIN_OFF_SCREEN])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        r = _routine()
+
+        r.find_target(game, ctrl)  # tick 1: settle buffer starts
+        game.tick = 2
+        r.find_target(game, ctrl)  # tick 2: settle complete — right-clicks
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "npc",
+            name=GOBLIN_OFF_SCREEN["name"], id=GOBLIN_OFF_SCREEN["id"],
+        )
+
+    def test_looting_subscribes_to_item_before_picking_up(self):
+        game = _make_game(tick=11, ground_items=[BONES])
+        ctrl = _ctrl()
+        r = self._looting_routine_for_subscription_test()
+
+        r.looting(game, ctrl)
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "groundItem",
+            name=BONES["name"], id=BONES["id"],
+        )
+
+    @staticmethod
+    def _looting_routine_for_subscription_test(target_pos=(3225, 3215), death_tick: int = 10) -> MeleeFighterRoutine:
+        r = _routine()
+        r._target_pos = target_pos
+        r._death_tick = death_tick
+        return r

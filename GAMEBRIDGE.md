@@ -44,6 +44,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 
 ```json
 {
+  "type":        "tick",
   "tick":        12345,
   "player":      { ... },
   "camera":      { ... },
@@ -62,6 +63,7 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 
 | Field | Always present | Controlled by config key |
 |---|---|---|
+| `type` | yes | — always `"tick"` for this message |
 | `tick` | yes | — |
 | `player` | yes (absent before login) | — |
 | `camera` | yes | `exposeCamera` (default on) |
@@ -75,6 +77,10 @@ Enable the **Game Bridge** plugin in the RuneLite Plugins panel before connectin
 | `inventory` | no | `exposeInventory` (default on) |
 | `equipment` | no | `exposeInventory` (default on) |
 | `events` | yes (may be `[]`) | — |
+
+A connected client may also receive `"type": "hullUpdate"` messages — see
+[Live clickbox subscriptions](#live-clickbox-subscriptions) below. Discriminate
+on the top-level `type` field to tell the two apart.
 
 ---
 
@@ -628,6 +634,116 @@ def hull_contains(entity, screen_x, screen_y):
         return False
     return Polygon(entity['hull']).contains(Point(screen_x, screen_y))
 ```
+
+---
+
+## Live clickbox subscriptions
+
+The once-per-`GameTick` snapshot above (`canvasX`/`canvasY`/`hull`) is accurate
+*at computation time* but goes stale by the time a routine reacts to it —
+especially for moving NPCs/objects or while the camera is panning, making
+clicks on moving targets inaccurate.
+
+Live clickbox subscriptions let you register interest in a specific entity
+(e.g. "the nearest Fishing spot") and receive **fresh clickbox updates** at
+client-tick rate (~20 ms), much faster than the ~600 ms tick broadcast. A
+routine can re-check the clickbox repeatedly while moving the mouse toward a
+target.
+
+This is a **complementary layer**, not a replacement for the per-tick
+snapshot — use the tick message for general game state, and subscriptions
+only for the specific entity/entities you're about to interact with.
+
+### Subscribing
+
+Send a `subscribe` message on the same TCP socket:
+
+```json
+{"type": "subscribe", "subId": "fish_spot", "kind": "object", "name": "Fishing spot", "id": null, "ttlTicks": 10}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | always `"subscribe"` |
+| `subId` | string | client-chosen identifier; echoed back in `hullUpdate` |
+| `kind` | string | one of `npc`, `object`, `player`, `groundItem` |
+| `name` | string or `null` | case-insensitive name match |
+| `id` | int or `null` | exact ID match |
+| `ttlTicks` | int | subscription auto-expires after this many **game ticks** without renewal (default 10, ~6 s) |
+
+At least one of `name`/`id` must be given. If both are given, both must match
+(AND). If multiple entities match, the **nearest to the local player**
+(Manhattan distance on `worldX`/`worldY`) is selected.
+
+Re-sending `subscribe` with the same `subId` renews/overwrites the
+subscription (including its `kind`/`name`/`id`/`ttlTicks`). There is no
+notification when a subscription expires — it simply stops appearing in
+`hullUpdate` messages.
+
+**Cap**: at most 20 concurrent subscriptions per connection. Subscribes past
+the cap are ignored (existing `subId`s can still be renewed).
+
+### Unsubscribing
+
+```json
+{"type": "unsubscribe", "subId": "fish_spot"}
+```
+
+### `hullUpdate` messages
+
+Once per `ClientTick` (~20 ms), while the connection has ≥1 active
+subscription, the plugin pushes:
+
+```json
+{
+  "type": "hullUpdate",
+  "clientTick": 88123,
+  "entities": [
+    {
+      "subId": "fish_spot",
+      "found": true,
+      "id": 1497,
+      "name": "Fishing spot",
+      "worldX": 3085,
+      "worldY": 3231,
+      "plane": 0,
+      "onScreen": true,
+      "canvasX": 512,
+      "canvasY": 340,
+      "hull": [[500, 330], [524, 330], [524, 350], [500, 350]]
+    },
+    {"subId": "missing_npc", "found": false}
+  ]
+}
+```
+
+If no matching entity is currently found, the entity is `{"subId": ..., "found": false}`
+with no other fields. When `found` is `true`, the entity reuses the same
+serialisation as the `npcs`/`players`/`objects`/`groundItems` arrays in the
+tick message — it may contain extra fields (e.g. `combatLevel`, `category`,
+`minimapX`/`minimapY`) beyond the ones shown above. Ignore unknown fields.
+
+### Python usage
+
+```python
+ctrl.subscribe_to("fish_spot", "object", name="Fishing spot")
+
+# Each loop iteration, poll the latest pushed clickbox:
+update = ctrl.hull_update("fish_spot")
+if update and update["found"] and update["onScreen"]:
+    ctrl.click_at(update["canvasX"], update["canvasY"])
+
+ctrl.unsubscribe("fish_spot")
+```
+
+`hull_update()` returns `None` until the first `hullUpdate` for that `subId`
+has arrived, and after `unsubscribe`/TTL expiry it simply stops updating
+(the last-seen value remains until overwritten).
+
+> **Future work**: this ground-truth data is intended to eventually be
+> blended with the client-side `MovingTarget.predict()` extrapolation
+> (see `scripts/gamebridge/state/moving_target.py`) for smoother tracking
+> between pushes — out of scope for now.
 
 ---
 

@@ -14,7 +14,7 @@ import pytest
 
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.examples.iron_mining import IronMiningRoutine
-from scripts.gamebridge.routines.interaction import OCCLUSION_NUDGE_YAW
+from scripts.gamebridge.routines.interaction import InteractionRoutine, OCCLUSION_NUDGE_YAW
 from scripts.gamebridge.state.game_state import GameState
 from scripts.gamebridge.widget_ids import BankDepositBox
 
@@ -487,3 +487,63 @@ class TestOcclusionGuard:
         _routine().deposit(game, ctrl)
 
         ctrl.click_entity.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Live clickbox subscriptions — find_ore/walk_to_bank/deposit subscribe for
+# fresh hull updates on the entity they're about to click
+# ---------------------------------------------------------------------------
+
+class TestLiveHullSubscriptions:
+    def test_find_ore_subscribes_to_ore_before_clicking(self):
+        game = GameState()
+        game.tick = 1
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.find_ore(game, ctrl)  # tick 1: settle buffer starts
+        game.tick = 2
+        r.find_ore(game, ctrl)  # tick 2: clicks
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object",
+            name=ORE_OFF_SCREEN["name"], id=ORE_OFF_SCREEN["id"],
+        )
+
+    def test_walk_to_bank_subscribes_to_mine_cart_before_clicking(self):
+        game = _make_game(
+            tick=1,
+            inventory_full=True,
+            player_x=3200,
+            player_y=3200,
+            objects=[MINE_CART_OFF_SCREEN],
+        )
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r.walk_to_bank(game, ctrl)  # tick 1: settle buffer starts
+        game.tick = 2
+        r.walk_to_bank(game, ctrl)  # tick 2: clicks
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object",
+            name=MINE_CART_OFF_SCREEN["name"], id=MINE_CART_OFF_SCREEN["id"],
+        )
+
+    def test_deposit_subscribes_to_mine_cart_before_opening_ui(self):
+        ctrl = _ctrl()
+        _routine().deposit(_make_game(tick=100, widgets=[]), ctrl)
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object",
+            name=MINE_CART["name"], id=MINE_CART["id"],
+        )

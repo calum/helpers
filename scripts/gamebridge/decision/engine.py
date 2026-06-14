@@ -78,6 +78,10 @@ class DecisionEngine:
 
     def set_routine(self, routine: Optional[Routine]) -> None:
         """Replace the active routine immediately (or pass None to stop)."""
+        # Release any modifier keys (e.g. Shift, held mid drop-sequence) the
+        # outgoing routine left down — see GameController.release_all_keys.
+        self._ctrl.release_all_keys()
+
         if routine is None:
             log.info("Routine cleared — engine is idle.")
             self._ctrl.min_click_interval = 0.0

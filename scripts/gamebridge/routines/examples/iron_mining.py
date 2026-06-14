@@ -90,7 +90,7 @@ class IronMiningRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, ore):
             return None
 
-        ctrl.click_entity(ore)
+        self.click_live(ctrl, ore, "object")
         self.mining_start_tick = game.tick
         return "mining"
 
@@ -151,7 +151,7 @@ class IronMiningRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, box):
             return None
 
-        ctrl.click_entity(box)
+        self.click_live(ctrl, box, "object")
         return None  # walking
 
     def deposit(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -187,6 +187,6 @@ class IronMiningRoutine(InteractionRoutine):
                 self._deposit_clicked_tick = game.tick
         elif box.get("onScreen") and not game.is_occluded(box["canvasX"], box["canvasY"]):
             # UI not open yet — click the Mine cart to open it
-            ctrl.click_entity(box)
+            self.click_live(ctrl, box, "object")
 
         return None

@@ -47,7 +47,7 @@ import random
 from typing import Optional, TYPE_CHECKING
 
 from ..base import initial_state
-from ..interaction import InteractionRoutine, MenuClick
+from ..interaction import DropMode, InteractionRoutine, MenuClick
 from ...input.keyboard import Key
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ class FishAndCookRoutine(InteractionRoutine):
     ANCHOVIES_ID     = 319
     BURNT_FISH_ID    = 7954  # generic "Burnt fish" — shared by burnt shrimp AND burnt anchovies
 
-    DROP_ITEM_IDS = (COOKED_SHRIMP_ID, ANCHOVIES_ID, BURNT_FISH_ID)
+    DROP_ITEM_IDS = (RAW_SHRIMP_ID, RAW_ANCHOVIES_ID, COOKED_SHRIMP_ID, ANCHOVIES_ID, BURNT_FISH_ID)
 
     COOK_WIDGET = (270, 38)  # Skillmulti — "How many would you like to cook?" dialog
 
@@ -104,8 +104,6 @@ class FishAndCookRoutine(InteractionRoutine):
         self._cook_selected: bool = False
         self._cook_started_tick: Optional[int] = None
 
-        self._drop_target: Optional[dict] = None
-
     # ------------------------------------------------------------------
     # States
     # ------------------------------------------------------------------
@@ -122,9 +120,6 @@ class FishAndCookRoutine(InteractionRoutine):
         click that exact row.
         """
         if game.inventory_full():
-            if not game.inventory_has_item(self.LOGS_ID):
-                log.info("Inventory full and no logs to cook with — stopping.")
-                return "stopped"
             return "find_fire"
 
         if self._spot_target is not None:
@@ -150,7 +145,7 @@ class FishAndCookRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, spot):
             return None
 
-        ctrl.right_click_entity(spot)
+        self.right_click_live(ctrl, spot, "npc")
         self._spot_target = spot
         return None
 
@@ -166,9 +161,7 @@ class FishAndCookRoutine(InteractionRoutine):
         once the inventory fills.
         """
         if game.inventory_full():
-            if not game.inventory_has_item(self.LOGS_ID):
-                log.info("Inventory full and no logs to cook with — stopping.")
-                return "stopped"
+            log.info("Inventory full and no logs to cook with — cooking/dropping raw fish.")
             return "find_fire"
 
         live_spot = next((n for n in game.npcs if n.get("index") == self._spot_index), None)
@@ -197,7 +190,10 @@ class FishAndCookRoutine(InteractionRoutine):
         """
         fire = self._nearest_fire_in_range(game)
 
-        if fire is None:
+        if fire is None and not game.inventory_has_item(self.LOGS_ID):
+            log.info("No fire nearby and no logs to light one with — dropping raw fish.")
+            return "dropping"
+        elif fire is None:
             return "step_aside"
 
         if game.player_near(fire, tiles=1):
@@ -206,7 +202,7 @@ class FishAndCookRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, fire):
             return None
 
-        ctrl.click_entity(fire)
+        self.click_live(ctrl, fire, "object")
         return None
 
     def step_aside(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -317,7 +313,7 @@ class FishAndCookRoutine(InteractionRoutine):
             fire = game.nearest_object_on_screen(self.FIRE_NAME)
 
             if fire is not None:
-                ctrl.click_entity(fire)
+                self.click_live(ctrl, fire, "object")
                 self._cook_selected = False
                 self._cook_started_tick = game.tick
                 return None
@@ -346,32 +342,14 @@ class FishAndCookRoutine(InteractionRoutine):
 
     def dropping(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Right-click and drop every cooked and burnt fish, one at a time.
-        Same "verify before you click" shape as `MeleeFighterRoutine.looting`
-        — a blind left-click on food eats it rather than dropping it, so the
-        "Drop" entry is read back from the menu before it's clicked. Heads
-        back to fishing once nothing matching `DROP_ITEM_IDS` remains.
+        Shift-drop every cooked and burnt fish, one at a time, via
+        `InteractionRoutine.drop_item` (`DropMode.SHIFT_CLICK`) — Shift is
+        held for the whole sequence and released once nothing matching
+        `DROP_ITEM_IDS` remains, heading back to fishing.
         """
-        if self._drop_target is not None:
-            outcome = self.verified_menu_click(game, ctrl, "Drop", None)
-
-            if outcome is not MenuClick.PENDING:
-                self._drop_target = None
-
+        if self.drop_item(game, ctrl, self.DROP_ITEM_IDS, mode=DropMode.SHIFT_CLICK):
             return None
-
-        widget = next(
-            (w for w in game.widgets
-             if w.get("groupId") == self.INVENTORY_GROUP and w.get("itemId") in self.DROP_ITEM_IDS),
-            None,
-        )
-
-        if widget is None:
-            return "find_spot"
-
-        ctrl.right_click_widget(widget)
-        self._drop_target = widget
-        return None
+        return "find_spot"
 
     def stopped(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """Terminal state — out of logs, so no more fires can be lit. The routine halts here."""

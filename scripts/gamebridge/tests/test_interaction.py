@@ -15,7 +15,8 @@ from unittest.mock import MagicMock
 
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.base import initial_state
-from scripts.gamebridge.routines.interaction import InteractionRoutine, MenuClick, OCCLUSION_NUDGE_YAW
+from scripts.gamebridge.routines.interaction import DropMode, InteractionRoutine, MenuClick, OCCLUSION_NUDGE_YAW
+from scripts.gamebridge.widget_ids import Inventory
 
 
 class _DummyRoutine(InteractionRoutine):
@@ -181,3 +182,256 @@ class TestVerifiedMenuClick:
 
         assert result is MenuClick.PENDING
         ctrl.dismiss_menu.assert_called_once_with(game)
+
+
+# ---------------------------------------------------------------------------
+# click_live / right_click_live — subscribe for fresh clickboxes, then click
+# using the freshest available position
+# ---------------------------------------------------------------------------
+
+class TestClickLive:
+    def test_subscribes_with_entity_name_and_id(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "object", name=ENTITY["name"], id=ENTITY["id"]
+        )
+
+    def test_clicks_original_entity_when_no_hull_update_yet(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_called_once_with(ENTITY)
+
+    def test_clicks_original_entity_when_hull_update_not_found(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = {"found": False}
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_called_once_with(ENTITY)
+
+    def test_clicks_original_entity_when_hull_update_for_different_entity(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = {
+            "found": True, "name": "Gold rocks", "canvasX": 999, "canvasY": 999,
+        }
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_called_once_with(ENTITY)
+
+    def test_clicks_with_refreshed_position_when_hull_update_matches(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = {
+            "found": True, "name": ENTITY["name"],
+            "onScreen": True, "canvasX": 555, "canvasY": 444,
+            "hull": [[550, 440], [560, 440], [560, 450], [550, 450]],
+            "worldX": ENTITY["worldX"], "worldY": ENTITY["worldY"], "plane": 0,
+        }
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        clicked = ctrl.click_entity.call_args[0][0]
+        assert clicked["canvasX"] == 555
+        assert clicked["canvasY"] == 444
+        assert clicked["hull"] == [[550, 440], [560, 440], [560, 450], [550, 450]]
+        # Fields outside _LIVE_HULL_FIELDS (e.g. id) are preserved from entity.
+        assert clicked["id"] == ENTITY["id"]
+
+    def test_name_match_is_case_insensitive(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = {
+            "found": True, "name": ENTITY["name"].upper(),
+            "canvasX": 111, "canvasY": 222,
+        }
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        clicked = ctrl.click_entity.call_args[0][0]
+        assert clicked["canvasX"] == 111
+        assert clicked["canvasY"] == 222
+
+
+class TestRightClickLive:
+    def test_subscribes_with_entity_name_and_id(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+
+        _routine().right_click_live(ctrl, ENTITY, "npc")
+
+        ctrl.subscribe_to.assert_called_once_with(
+            InteractionRoutine.LIVE_HULL_SUB_ID, "npc", name=ENTITY["name"], id=ENTITY["id"]
+        )
+
+    def test_right_clicks_original_entity_when_no_hull_update_yet(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+
+        _routine().right_click_live(ctrl, ENTITY, "npc")
+
+        ctrl.right_click_entity.assert_called_once_with(ENTITY)
+
+    def test_right_clicks_with_refreshed_position_when_hull_update_matches(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = {
+            "found": True, "name": ENTITY["name"],
+            "onScreen": True, "canvasX": 321, "canvasY": 123,
+        }
+
+        _routine().right_click_live(ctrl, ENTITY, "npc")
+
+        clicked = ctrl.right_click_entity.call_args[0][0]
+        assert clicked["canvasX"] == 321
+        assert clicked["canvasY"] == 123
+
+
+# ---------------------------------------------------------------------------
+# drop_item — SHIFT_CLICK (hold-once-per-sequence) and RIGHT_CLICK
+# (verified-menu-click, multi-tick per item) drop gestures
+# ---------------------------------------------------------------------------
+
+def _inv_widget(item_id: int, group_id: int = Inventory.GROUP) -> dict:
+    return {"groupId": group_id, "itemId": item_id, "quantity": 1}
+
+
+DROP_ITEM_IDS = (315, 319, 7954)
+
+
+class TestDropItemShiftClick:
+    def test_holds_shift_and_clicks_first_matching_item(self):
+        cooked = _inv_widget(315)
+        game = _game()
+        game.widgets = [_inv_widget(590), cooked]
+        ctrl = MagicMock()
+
+        result = _routine().drop_item(game, ctrl, DROP_ITEM_IDS)
+
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_called_once_with(cooked)
+        assert result is True
+
+    def test_does_not_release_shift_while_items_remain(self):
+        game = _game()
+        game.widgets = [_inv_widget(315)]
+        ctrl = MagicMock()
+
+        _routine().drop_item(game, ctrl, DROP_ITEM_IDS)
+
+        ctrl.release_key.assert_not_called()
+
+    def test_releases_shift_and_returns_false_when_nothing_left(self):
+        game = _game()
+        game.widgets = [_inv_widget(590), _inv_widget(317)]
+        ctrl = MagicMock()
+
+        result = _routine().drop_item(game, ctrl, DROP_ITEM_IDS)
+
+        ctrl.release_key.assert_called_once_with(Key.SHIFT)
+        ctrl.click_widget.assert_not_called()
+        ctrl.hold_key.assert_not_called()
+        assert result is False
+
+    def test_default_mode_is_shift_click(self):
+        """drop_item with no `mode` argument behaves like DropMode.SHIFT_CLICK."""
+        game = _game()
+        game.widgets = [_inv_widget(315)]
+        ctrl = MagicMock()
+
+        _routine().drop_item(game, ctrl, DROP_ITEM_IDS)
+
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.right_click_widget.assert_not_called()
+
+    def test_only_considers_widgets_in_given_group(self):
+        game = _game()
+        game.widgets = [_inv_widget(315, group_id=999)]
+        ctrl = MagicMock()
+
+        result = _routine().drop_item(game, ctrl, DROP_ITEM_IDS)
+
+        ctrl.click_widget.assert_not_called()
+        assert result is False
+
+
+class TestDropItemRightClick:
+    def test_right_clicks_first_matching_item_and_sets_target(self):
+        cooked = _inv_widget(315)
+        game = _game()
+        game.widgets = [_inv_widget(590), cooked]
+        ctrl = MagicMock()
+        r = _routine()
+
+        result = r.drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        ctrl.right_click_widget.assert_called_once_with(cooked)
+        assert r._drop_target == cooked
+        assert result is True
+
+    def test_no_matching_item_returns_false(self):
+        game = _game()
+        game.widgets = [_inv_widget(590), _inv_widget(317)]
+        ctrl = MagicMock()
+
+        result = _routine().drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        ctrl.right_click_widget.assert_not_called()
+        assert result is False
+
+    def test_confirmed_drop_clears_target_and_stays(self):
+        game = _game(tick=5)
+        game.menu_open.return_value = True
+        ctrl = MagicMock()
+        ctrl.click_menu_entry.return_value = True
+        r = _routine()
+        r._drop_target = _inv_widget(315)
+
+        result = r.drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        ctrl.click_menu_entry.assert_called_once_with(game, "Drop", None)
+        assert r._drop_target is None
+        assert result is True
+
+    def test_abandoned_drop_clears_target_and_retries(self):
+        game = _game(tick=5)
+        game.menu_open.return_value = False
+        ctrl = MagicMock()
+        ctrl.click_menu_entry.return_value = False
+        r = _routine()
+        r._drop_target = _inv_widget(315)
+
+        result = r.drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        assert r._drop_target is None
+        assert result is True
+
+    def test_pending_menu_keeps_target(self):
+        game = _game(tick=5)
+        game.menu_open.return_value = True
+        ctrl = MagicMock()
+        ctrl.click_menu_entry.return_value = False
+        r = _routine()
+        target = _inv_widget(315)
+        r._drop_target = target
+
+        result = r.drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        assert r._drop_target == target
+        ctrl.dismiss_menu.assert_called_once_with(game)
+        assert result is True
+
+    def test_does_not_touch_shift(self):
+        """RIGHT_CLICK mode never holds/releases Shift — that's SHIFT_CLICK-only."""
+        game = _game()
+        game.widgets = [_inv_widget(315)]
+        ctrl = MagicMock()
+
+        _routine().drop_item(game, ctrl, DROP_ITEM_IDS, mode=DropMode.RIGHT_CLICK)
+
+        ctrl.hold_key.assert_not_called()
+        ctrl.release_key.assert_not_called()

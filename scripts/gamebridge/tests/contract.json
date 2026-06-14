@@ -1,6 +1,8 @@
 {
   "_comment": "Canonical wire-format contract for the GameBridge plugin. This is the single source of truth for the JSON schema exchanged between the Java plugin and the Python consumer. Update this file whenever the schema changes, then both test suites (test_contract.py and ContractTest.java) will catch mismatches.",
 
+  "type": "tick",
+
   "tick": 12345,
 
   "player": {
@@ -295,5 +297,46 @@
       "type": "interacting",
       "target": "Cow"
     }
-  ]
+  ],
+
+  "hullUpdateExample": {
+    "type": "hullUpdate",
+    "clientTick": 88123,
+    "entities": [
+      {
+        "subId": "fish_spot",
+        "found": true,
+        "id": 1497,
+        "name": "Fishing spot",
+        "category": "game",
+        "worldX": 3085,
+        "worldY": 3231,
+        "plane": 0,
+        "onScreen": true,
+        "canvasX": 512,
+        "canvasY": 340,
+        "hull": [[500, 330], [524, 330], [524, 350], [500, 350]],
+        "minimapX": 610,
+        "minimapY": 95
+      },
+      {
+        "subId": "missing_npc",
+        "found": false
+      }
+    ]
+  },
+
+  "subscribeExample": {
+    "type": "subscribe",
+    "subId": "fish_spot",
+    "kind": "object",
+    "name": "Fishing spot",
+    "id": null,
+    "ttlTicks": 10
+  },
+
+  "unsubscribeExample": {
+    "type": "unsubscribe",
+    "subId": "fish_spot"
+  }
 }

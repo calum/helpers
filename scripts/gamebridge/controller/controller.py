@@ -13,6 +13,7 @@ import logging
 import time
 from typing import Callable, Optional
 
+from ..client import BridgeConnection
 from ..human.emulator import ClickIntent, HumanEmulator
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
@@ -131,6 +132,13 @@ class GameController:
         # — see ON_SCREEN_SETTLE_TICKS. Reset to None whenever a rotation or
         # minimap walk is issued (the entity is no longer considered settled).
         self._on_screen_since_tick: Optional[int] = None
+        # Live BridgeConnection for hull-update subscriptions — see
+        # set_connection/subscribe_to/hull_update. None until main.py's
+        # connect() loop hands one over.
+        self._connection: Optional[BridgeConnection] = None
+        # Modifier keys currently held down via hold_key() — see hold_key/
+        # release_key/release_all_keys.
+        self._held_keys: set[str] = set()
 
     # ------------------------------------------------------------------
     # Window management
@@ -646,6 +654,40 @@ class GameController:
         kb_input.press_key(key)
         log.debug("Pressed key '%s'", key)
 
+    def hold_key(self, key: str) -> None:
+        """Press `key` down and hold it — pairs with `release_key`.
+
+        No-op if `key` is already held. Use for modifier keys that need to
+        stay down across several clicks spanning multiple ticks — e.g.
+        holding Shift for an entire "drop everything" sequence the way a
+        real player would, rather than tapping it before every click (see
+        `InteractionRoutine.drop_item`, `DropMode.SHIFT_CLICK`).
+        """
+        if key in self._held_keys:
+            return
+        kb_input.key_down(key)
+        self._held_keys.add(key)
+        log.debug("Holding key '%s'", key)
+
+    def release_key(self, key: str) -> None:
+        """Release a key previously held via `hold_key`. No-op if not held."""
+        if key not in self._held_keys:
+            return
+        kb_input.key_up(key)
+        self._held_keys.discard(key)
+        log.debug("Released key '%s'", key)
+
+    def release_all_keys(self) -> None:
+        """Release every key currently held via `hold_key`.
+
+        Safety net for a held modifier getting stuck down if a multi-tick
+        gesture is interrupted (an exception mid-sequence, or the routine
+        being swapped out while Shift is still held for a drop sequence).
+        """
+        for key in list(self._held_keys):
+            kb_input.key_up(key)
+        self._held_keys.clear()
+
     def rotate_camera(self, key: str, yaw_amount: float) -> None:
         """
         Hold a yaw-rotation key (`Key.LEFT`/`Key.RIGHT`) for roughly the hold
@@ -777,3 +819,56 @@ class GameController:
         """Wait for a number of game ticks to pass (based on GameState.tick)."""
         target = game_state.tick + ticks
         self.wait_for(lambda: game_state.tick >= target, timeout=ticks * 1.5)
+
+    # ------------------------------------------------------------------
+    # Live clickbox subscriptions — high-frequency hull updates pushed by
+    # the Game Bridge plugin once per ClientTick (~20ms), independent of
+    # the once-per-GameTick (~600ms) snapshot in `game_state`. See
+    # GAMEBRIDGE.md "Live clickbox subscriptions".
+    # ------------------------------------------------------------------
+
+    def set_connection(self, connection: Optional[BridgeConnection]) -> None:
+        """Set (or clear) the live BridgeConnection used for subscriptions.
+
+        Called by main.py's connect() loop once per connection attempt.
+        """
+        self._connection = connection
+
+    def subscribe_to(
+        self,
+        sub_id: str,
+        kind: str,
+        name: Optional[str] = None,
+        id: Optional[int] = None,
+        ttl_ticks: int = 10,
+    ) -> None:
+        """Register interest in the nearest entity matching kind/name/id.
+
+        Re-sending with the same sub_id renews/overwrites the subscription.
+        No-ops with a warning if no connection is set.
+        """
+        if self._connection is None:
+            log.warning("subscribe_to(%s) called with no active connection", sub_id)
+            return
+        self._connection.subscribe(sub_id, kind, name=name, id=id, ttl_ticks=ttl_ticks)
+
+    def unsubscribe(self, sub_id: str) -> None:
+        """Cancel a previously registered subscription.
+
+        No-ops with a warning if no connection is set.
+        """
+        if self._connection is None:
+            log.warning("unsubscribe(%s) called with no active connection", sub_id)
+            return
+        self._connection.unsubscribe(sub_id)
+
+    def hull_update(self, sub_id: str) -> Optional[dict]:
+        """Return the latest hullUpdate entity for sub_id, or None.
+
+        None means either no connection is set or no hullUpdate for this
+        sub_id has arrived yet — both are normal while a subscription is
+        still being established, so no warning is logged.
+        """
+        if self._connection is None:
+            return None
+        return self._connection.hull_updates.get(sub_id)
