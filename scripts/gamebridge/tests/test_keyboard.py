@@ -110,7 +110,7 @@ class TestCharScan:
         mock_user32 = MagicMock()
         mock_user32.VkKeyScanW.return_value = 0x0041  # vk='A' (0x41), no shift bits
         mock_user32.MapVirtualKeyW.return_value = 0x1E
-        with patch("ctypes.windll") as mock_windll:
+        with patch("ctypes.windll", create=True) as mock_windll:
             mock_windll.user32 = mock_user32
             scan, needs_shift = _char_scan("a")
         assert scan == 0x1E
@@ -121,7 +121,7 @@ class TestCharScan:
         mock_user32 = MagicMock()
         mock_user32.VkKeyScanW.return_value = 0x0141  # shift bit set + vk 0x41
         mock_user32.MapVirtualKeyW.return_value = 0x1E
-        with patch("ctypes.windll") as mock_windll:
+        with patch("ctypes.windll", create=True) as mock_windll:
             mock_windll.user32 = mock_user32
             scan, needs_shift = _char_scan("A")
         assert scan == 0x1E
@@ -130,7 +130,7 @@ class TestCharScan:
     def test_unmappable_char_returns_zero(self):
         mock_user32 = MagicMock()
         mock_user32.VkKeyScanW.return_value = -1
-        with patch("ctypes.windll") as mock_windll:
+        with patch("ctypes.windll", create=True) as mock_windll:
             mock_windll.user32 = mock_user32
             scan, needs_shift = _char_scan("é")
         assert scan == 0
@@ -279,7 +279,7 @@ def _mock_windll(*, sendinput_result=1, last_error=0,
 class TestSendInputDiagnostics:
     def test_reports_foreground_window_and_sendinput_result(self):
         mock_windll = _mock_windll()
-        with patch("ctypes.windll", mock_windll):
+        with patch("ctypes.windll", mock_windll, create=True):
             info = sendinput_diagnostics()
 
         assert info["foreground_hwnd"] == 0x1234
@@ -297,14 +297,14 @@ class TestSendInputDiagnostics:
 
     def test_sends_shift_down_then_up(self):
         mock_windll = _mock_windll()
-        with patch("ctypes.windll", mock_windll):
+        with patch("ctypes.windll", mock_windll, create=True):
             sendinput_diagnostics()
 
         assert mock_windll.user32.SendInput.call_count == 2
 
     def test_reports_access_denied(self):
         mock_windll = _mock_windll(sendinput_result=0, last_error=5)
-        with patch("ctypes.windll", mock_windll):
+        with patch("ctypes.windll", mock_windll, create=True):
             info = sendinput_diagnostics()
 
         assert info["sendinput_result"] == 0
@@ -312,7 +312,7 @@ class TestSendInputDiagnostics:
 
     def test_reports_when_runelite_not_foreground(self):
         mock_windll = _mock_windll(title="Discord", cls="Chrome_WidgetWin_1")
-        with patch("ctypes.windll", mock_windll):
+        with patch("ctypes.windll", mock_windll, create=True):
             info = sendinput_diagnostics()
 
         assert info["foreground_title"] == "Discord"
@@ -326,7 +326,7 @@ class TestSendInputDiagnostics:
 class TestSendScanReturnsResultAndError:
     def test_returns_sendinput_result_and_last_error(self):
         mock_windll = _mock_windll(sendinput_result=1, last_error=0)
-        with patch("ctypes.windll", mock_windll):
+        with patch("ctypes.windll", mock_windll, create=True):
             from scripts.gamebridge.input.keyboard import _send_scan
             result, error = _send_scan(0x2A, False, key_up=False)
 

@@ -11,6 +11,7 @@ jobs:
 
     env:
       GRADLE_OPTS: "-Dfile:encoding=UTF-8"
+      GAMEBRIDGE_INTEGRATION: 0
 
     steps:
       - name: Cache glslang
