@@ -4,6 +4,171 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-14 (4) — Game world movement research & innovation task
+
+### Goal
+
+Research and document a roadmap for implementing game world pathfinding and navigation. The routines currently only support minimap-walking to visible entities, but banking items and moving between objectives require multi-region navigation. Need to understand:
+1. How existing camera/minimap/FOV navigation pieces fit together
+2. External pathfinding resources (Explv's Map, Dax Web Walker Engine)
+3. Integration options ranging from beginner (predefined routes) to advanced (dynamic pathfinding)
+
+### Findings / Decisions
+
+#### Current Navigation Infrastructure (VERIFIED WORKING)
+
+**Camera Movement** (`GameController.rotate_camera_to`, `rotate_camera`):
+- Uses arrow keys (LEFT/RIGHT) to rotate yaw
+- Calibrated speed: ~0.56 yaw units/ms (measured from 10 full rotations in 36.6s)
+- Computed from `camera_yaw_to()` which uses atan2(-dx, dy) for OSRS counter-clockwise yaw convention
+- Only rotates yaw (LEFT/RIGHT); pitch (UP/DOWN) not yet automated
+
+**Minimap Walking** (`GameController.click_minimap_entity`):
+- Clicks precomputed minimapX/minimapY (from Java `Perspective.localToMinimap()`)
+- Range: ~20 tiles from player; beyond that, no minimap coordinates (returns False)
+- Multi-tick settlement tracking to prevent spam-clicking:
+  - Registration: 2 ticks after click (animation/movement takes time to register)
+  - Idle detection: waits for `player_idle()` (not animating + not moving)
+  - Settling: 1 additional idle tick for polled game state to catch up
+  - Safety cap: 100 ticks (~60s) timeout if walk never settles
+- Returns True if click issued, False if minimap coords not available or walk already in progress
+
+**Field of View (FOV)** (`fov.py`):
+- Trapezoid model in camera-relative tile space
+- Pitch-based interpolation between two empirically-calibrated anchors:
+  - Pitch 229 (near-horizon): 3 tiles back, 6 tiles front, half-width 4-6
+  - Pitch 320 (overhead): 3 tiles back, 3 tiles front, half-width 5-7
+- Rotated into world tile space by camera yaw (counter-clockwise: 0=N, 512=W, 1024=S, 1536=E)
+
+**Available Game Data** (GAMEBRIDGE plugin tick messages):
+- `player`: position (worldX/worldY/plane), animation, HP, prayer
+- `camera`: yaw, pitch, local coordinates (x/y/z), world tile base (baseX/baseY)
+- `objects`/`npcs`: per-entity onScreen flag, canvasX/canvasY, worldX/worldY, minimapX/minimapY
+- `interfaces`: list of all visible UI widgets with bounding boxes (supports occlusion detection)
+- `menu`: right-click context menu with entry bounding boxes
+
+**Entity Query Helpers** (`GameState`):
+- `objects_named(name)`, `nearest_object(name)` — Manhattan distance to player
+- `player_near(entity, tiles)` — exact tile distance check
+- `is_occluded(canvas_x, canvas_y)` — check if canvas point is behind UI panels
+
+#### Current Routines (LIMITED WORLD MOVEMENT)
+
+Files: `scripts/gamebridge/routines/examples/{iron_mining,gold_mining,fish_and_cook}.py`
+
+Pattern used in `IronMiningRoutine`:
+1. `find_ore`: find nearest ore → click if visible via `approach()`
+2. `mining`: wait for animation + XP drop
+3. `walk_to_bank`: find mine cart → click to walk toward it (via minimap if far)
+4. `deposit`: interact with deposit box → empty inventory
+
+**Current Limitations:**
+- Hardcoded target names ("Iron rocks", "Mine cart", "Mine cart deposit box")
+- Assumes bank is always reachable via minimap click from anywhere on current screen
+- No pathfinding for multi-screen/multi-region distances (e.g., mine site → separate bank region)
+- No obstacle navigation (doors, ladders, walls)
+- No support for entering/exiting buildings or changing planes
+- No quest requirement checking
+
+#### External Resources
+
+**Runescape-Web-Walker-Engine** (github.com/itsdax/Runescape-Web-Walker-Engine):
+- Java library for pathfinding (used by TriBot botting client)
+- Algorithms: A* + Dijkstra (Dijkstra for region culling, A* for path)
+- Performance: <200ms to generate any path in OSRS world
+- Coverage: ~90% of game world (all cities, wilderness, major dungeons; missing only Lletya)
+- Features:
+  - Shortcut handling (skill gates, ship chartering, portals, teleports)
+  - Obstacle navigation (doors, ladders, one-way exits)
+  - Quest/skill requirement checking
+  - Directed nodes (one-way passages)
+  - Real-time collision/reachability visualization
+- Access: Requires API key from https://admin.dax.cloud/
+- Frontend: Explv's Map (https://explv.github.io/) — interactive pathfinding UI with Dax backend
+
+**Explv's Map**:
+- Interactive browser-based RuneScape map with Dax pathfinding integration
+- Shows collision data, walkable tiles, paths on minimap
+- Can query routes and visualize them in real-time
+
+#### Recording System (EXISTING ASSET)
+
+`scripts/gamebridge/recording/recorder.py` captures manual play sessions to JSONL:
+- **Session events**: start/end timestamps, player name
+- **Tick events**: raw game state (objects, inventory, xp, etc.)
+- **Click events**: canvas X/Y, player world position, animation state, resolved target (object name/ID, menu entry, widget)
+
+This is **reusable for manual waypoint recording**:
+1. Player manually walks from mine to bank
+2. Recorder captures every tick's player (worldX, worldY) plus interactions
+3. Extract tick records where player was idle + moving
+4. Decimated waypoint list (e.g., every 5th tick) or cluster-based reduction
+5. Store as routine-specific route file
+
+#### Integration Gaps (Root of TODO's "Game world movement" item)
+
+1. **No Java ↔ Python bridge** — Dax pathfinding is Java-only; calling it from Python scripts would require JNI or HTTP API
+2. **No pre-calculated route library** — each routine needs its destination paths curated manually or extracted from Dax
+3. **No multi-region awareness** — routines don't know when they've left the current region or how far the destination is
+4. **No dynamic path-following** — no code to consume a waypoint list and feed it to click_minimap_entity tick-by-tick
+5. **No obstacle handling** — routines assume clear line-of-sight or minimap walkability
+6. **No plane/building support** — can't navigate into dungeons, up ladders, or between floors
+
+### Architecture Options (Increasing Complexity)
+
+**Option 1: Hardcoded waypoint lists (Beginner)**
+- Manually record walk from mine to bank using SessionRecorder
+- Extract decimated (worldX, worldY) waypoint list from recording
+- Store in Python dict/JSON alongside routine class
+- Follow waypoints by: for each waypoint, `click_minimap_entity()` until player near, then next
+- Effort: ~1-2 hours per routine
+- Coverage: Works for linear A→B routes; no branching or conditional shortcuts
+
+**Option 2: Recorded route playback (Beginner+)**
+- Similar to Option 1, but replay click positions from recording instead of waypoints
+- Leverages existing SessionRecorder infrastructure
+- Effort: ~2-3 hours per routine
+- Coverage: Exact reproduction of manual path; no adaptation
+
+**Option 3: HTTP API to Dax pathfinding (Intermediate)**
+- Query Dax API from Python (with API key) to get path A→B as list of (x, y) coordinates
+- Cache paths locally to avoid repeated API calls
+- Follow path via click_minimap_entity or mouse movement between waypoints
+- Effort: ~4-6 hours (HTTP client, path caching, error handling)
+- Coverage: Dynamic pathfinding for any source/dest; ~200ms latency per query
+
+**Option 4: Embedded pathfinding engine (Advanced)**
+- Port or reimplement A*/Dijkstra pathfinding to Python or call Java via subprocess
+- Build local collision/walkability map from game state
+- Generate paths on-the-fly with no external API
+- Effort: 2+ weeks (significant algorithm implementation)
+- Coverage: Offline, no API key needed; but requires collision data (not currently exposed by plugin)
+
+### Recommended First Steps (Session Plan)
+
+1. **Pick Option 1** (hardcoded waypoint lists) to unlock iron/gold mining banking:
+   - Set up route file format: `routines/paths.py` with dict mapping (routine_name, dest_name) → [(worldX, worldY), ...]
+   - Add `follow_path(path, game_state, ctrl)` helper in controller
+   - Modify IronMiningRoutine `walk_to_bank` to use path instead of hardcoded mine cart click
+   - Record 1-2 representative paths (mine site → bank, bank → mine site)
+   - Test with mining routine
+
+2. **Expand Option 1 to gold mining** — same paths as iron mining (same locations)
+
+3. **Document Option 3** (Dax HTTP API) for future work — keep API key config, stub endpoints
+
+4. **Leave Option 4** for later — only if Option 3 proves too costly or API becomes unavailable
+
+### Open / next steps
+
+- Decide on route file format (nested dict, JSON, protocol buffer?)
+- Implement `follow_path()` in GameController
+- Set up SessionRecorder-based path extraction (decimation algorithm?)
+- Record first paths for testing
+- Update TODO.md to reflect decisions and planned Implementation dates
+
+---
+
 ## Session: 2026-06-14 (3) — Root cause found: keyboard `_INPUT` struct was the wrong size, SendInput rejected every key event
 
 ### Goal
