@@ -259,6 +259,8 @@ public class GameBridgePlugin extends Plugin
 	@Subscribe
 	public void onClientTick(ClientTick event)
 	{
+		String tooltip = tickBuilder.currentTooltip();
+
 		for (BridgeServer.ClientEntry entry : server.activeClients())
 		{
 			processIncoming(entry);
@@ -278,6 +280,7 @@ public class GameBridgePlugin extends Plugin
 			Map<String, Object> msg = new LinkedHashMap<>();
 			msg.put("type", "hullUpdate");
 			msg.put("clientTick", client.getGameCycle());
+			msg.put("tooltip", tooltip);
 			msg.put("entities", entities);
 			server.sendTo(entry, gson.toJson(msg));
 		}

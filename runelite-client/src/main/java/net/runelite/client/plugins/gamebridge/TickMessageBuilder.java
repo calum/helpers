@@ -165,6 +165,44 @@ class TickMessageBuilder
 	}
 
 	// -------------------------------------------------------------------------
+	// Left-click action text
+	// -------------------------------------------------------------------------
+
+	/**
+	 * The text describing the default (left-click) action under the cursor right
+	 * now, e.g. {@code "Walk here"} or {@code "Attack Goblin (level-2)"}.
+	 * <p>
+	 * Mirrors {@code MouseHighlightOverlay}: {@code Client.getMenuEntries()}
+	 * returns entries in reverse display order, so the last element is the
+	 * top/default entry — the one that would fire on a plain left-click.
+	 *
+	 * @return {@code "option target"} (or just {@code "option"} if there's no
+	 *         target), or {@code ""} if no menu entry is available.
+	 */
+	String currentTooltip()
+	{
+		MenuEntry[] menuEntries = client.getMenuEntries();
+		if (menuEntries.length == 0)
+		{
+			return "";
+		}
+
+		MenuEntry entry = menuEntries[menuEntries.length - 1];
+		String option = entry.getOption();
+		String target = entry.getTarget();
+
+		if (option == null)
+		{
+			option = "";
+		}
+		if (target == null || target.isEmpty())
+		{
+			return option;
+		}
+		return option + " " + target;
+	}
+
+	// -------------------------------------------------------------------------
 	// Live clickbox subscriptions (findNearest)
 	// -------------------------------------------------------------------------
 

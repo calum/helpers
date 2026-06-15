@@ -302,6 +302,7 @@
   "hullUpdateExample": {
     "type": "hullUpdate",
     "clientTick": 88123,
+    "tooltip": "Walk here",
     "entities": [
       {
         "subId": "fish_spot",

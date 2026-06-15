@@ -27,15 +27,18 @@ class BridgeConnection:
 
     ``messages()`` yields parsed JSON messages from the socket. ``hullUpdate``
     messages are intercepted: each entity in ``entities[]`` is stored into
-    ``hull_updates`` keyed by ``subId`` and is not yielded. Use ``subscribe``/
-    ``unsubscribe`` to register interest in entities, and poll ``hull_updates``
-    for the latest clickbox data.
+    ``hull_updates`` keyed by ``subId`` and is not yielded, and the message's
+    ``tooltip`` field (the left-click action text, e.g. "Walk here" or "Attack
+    Goblin (level-2)") is stored in ``tooltip``. Use ``subscribe``/
+    ``unsubscribe`` to register interest in entities, and poll ``hull_updates``/
+    ``tooltip`` for the latest clickbox/action data.
     """
 
     def __init__(self, sock: socket.socket):
         self._sock = sock
         self._buf = ""
         self.hull_updates: Dict[str, dict] = {}
+        self.tooltip: str = ""
 
     def send(self, msg: dict) -> None:
         self._sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
@@ -80,6 +83,7 @@ class BridgeConnection:
                         sub_id = entity.get("subId")
                         if sub_id is not None:
                             self.hull_updates[sub_id] = entity
+                    self.tooltip = msg.get("tooltip", "")
                     continue
 
                 yield msg

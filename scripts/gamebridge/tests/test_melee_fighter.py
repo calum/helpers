@@ -43,8 +43,25 @@ def _make_game(
     return game
 
 
+class _AnyTooltip(str):
+    """Tooltip stub that satisfies `name in tooltip` for any name, so the
+    default tooltip-verification check in `click_live`/`right_click_live`
+    doesn't interfere with tests that aren't about that check."""
+
+    def __contains__(self, item):
+        return True
+
+    def lower(self):
+        return self
+
+
+_ANY_TOOLTIP = _AnyTooltip()
+
+
 def _ctrl() -> MagicMock:
-    return MagicMock()
+    ctrl = MagicMock()
+    ctrl.tooltip.return_value = _ANY_TOOLTIP
+    return ctrl
 
 
 def _routine() -> MeleeFighterRoutine:

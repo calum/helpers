@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum, auto
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 from .base import Routine
 from ..input.keyboard import Key
@@ -76,6 +76,8 @@ class InteractionRoutine(Routine):
         self._approach_idle_since_tick: int = -1
         self._drop_target: Optional[dict] = None
         self._drop_queue: list[dict] = []
+        self._drop_pending: Optional[dict] = None
+        self._drop_skipped: set = set()
 
     # ------------------------------------------------------------------
     # Approach
@@ -190,7 +192,38 @@ class InteractionRoutine(Routine):
                 live[field] = update[field]
         return live
 
-    def click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
+    def _verify_tooltip_and_act(
+        self,
+        ctrl: "GameController",
+        live: dict,
+        verify_tooltip: bool,
+        act: Callable[[dict], None],
+    ) -> None:
+        """Shared body of `click_live`/`right_click_live`: log the current
+        tooltip, optionally verify `live["name"]` appears in it, and either
+        perform `act(live)` (the click) or move the mouse towards `live`
+        instead so the next call gets a fresher tooltip to check.
+
+        If `verify_tooltip` is False, or `live` has no `name`, the tooltip is
+        still logged but the check is skipped — some entities (e.g. tiles
+        with no left-click action) never produce a tooltip that contains
+        their name.
+        """
+        tooltip = ctrl.tooltip()
+        log.debug("Tooltip before click: %r", tooltip)
+
+        name = live.get("name")
+        if verify_tooltip and name and name.lower() not in tooltip.lower():
+            log.debug(
+                "%r not found in tooltip %r — moving mouse instead of clicking",
+                name, tooltip,
+            )
+            ctrl.move_to_entity(live)
+            return
+
+        act(live)
+
+    def click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> None:
         """Subscribe to `entity` for live hull updates, then left-click it
         using the freshest available canvas position — and keep tracking
         those live updates while the cursor is moving towards it (see
@@ -198,11 +231,24 @@ class InteractionRoutine(Routine):
 
         `kind` is one of "npc"/"object"/"player"/"groundItem" — see
         `GameController.subscribe_to`.
+
+        Before clicking, the current `ctrl.tooltip()` is logged at debug
+        level and, if `verify_tooltip` is True (the default) and `entity` has
+        a `name`, checked to contain that name — confirming the cursor is
+        actually hovering this entity rather than scenery/another entity in
+        front of it. If the name isn't found, the click is skipped and the
+        mouse is moved towards `entity` instead, so a later call (once the
+        tooltip catches up) can verify and click. Pass `verify_tooltip=False`
+        for entities with no meaningful left-click tooltip (e.g. some tiles).
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
-        ctrl.click_entity(self._with_live_hull(ctrl, entity), sub_id=self.LIVE_HULL_SUB_ID)
+        live = self._with_live_hull(ctrl, entity)
+        self._verify_tooltip_and_act(
+            ctrl, live, verify_tooltip,
+            lambda e: ctrl.click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
+        )
 
-    def right_click_live(self, ctrl: "GameController", entity: dict, kind: str) -> None:
+    def right_click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> None:
         """Subscribe to `entity` for live hull updates, then right-click it
         using the freshest available canvas position — and keep tracking
         those live updates while the cursor is moving towards it (see
@@ -210,9 +256,16 @@ class InteractionRoutine(Routine):
 
         `kind` is one of "npc"/"object"/"player"/"groundItem" — see
         `GameController.subscribe_to`.
+
+        Same tooltip logging/verification as `click_live` — see its
+        docstring for details and the `verify_tooltip` flag.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
-        ctrl.right_click_entity(self._with_live_hull(ctrl, entity), sub_id=self.LIVE_HULL_SUB_ID)
+        live = self._with_live_hull(ctrl, entity)
+        self._verify_tooltip_and_act(
+            ctrl, live, verify_tooltip,
+            lambda e: ctrl.right_click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
+        )
 
     # ------------------------------------------------------------------
     # Dropping inventory items
@@ -287,30 +340,67 @@ class InteractionRoutine(Routine):
         ctrl: "GameController",
         item_ids,
         group_id: int = Inventory.GROUP,
+        verify_tooltip: bool = False,
     ) -> bool:
         """
         Shift-drop every inventory item whose `itemId` is in `item_ids`.
 
-        The first tick it sees any matching widgets it queues them all, holds
-        Shift once, and clicks each queued widget one time. If any items remain
-        on a later tick, the method rebuilds the queue and retries them again.
+        By default (`verify_tooltip=False`) this is fire-and-forget: the
+        first tick it sees any matching widgets it queues them all, holds
+        Shift once, and clicks each queued widget one time. If any items
+        remain on a later tick, the method rebuilds the queue and retries
+        them again.
+
+        If `verify_tooltip` is True, each queued item is handled across two
+        calls instead: the mouse is moved to the slot (without clicking),
+        then on the following call `ctrl.tooltip()` is logged at debug level
+        and checked for "drop" — only then is the item actually clicked. A
+        slot whose tooltip never says "Drop" (e.g. its left-click action is
+        "Wear"/"Wield"/"Read" for that item) is skipped rather than
+        mis-clicked, and excluded from the queue for the rest of this drop
+        sequence.
 
         Returns True while there are still matching items to clear and the
         caller should remain in the drop state, False once no matching item
-        remains and Shift can be released.
+        remains (or all have been skipped) and Shift can be released.
         """
-        if not self._drop_queue:
+        if not self._drop_queue and self._drop_pending is None:
             self._drop_queue = [
                 w for w in game.widgets
-                if w.get("groupId") == group_id and w.get("itemId") in item_ids
+                if w.get("groupId") == group_id
+                and w.get("itemId") in item_ids
+                and w.get("childId") not in self._drop_skipped
             ]
 
-        if self._drop_queue:
-            ctrl.hold_key(Key.SHIFT)
+        if not self._drop_queue and self._drop_pending is None:
+            ctrl.release_key(Key.SHIFT)
+            self._drop_skipped.clear()
+            return False
+
+        ctrl.hold_key(Key.SHIFT)
+
+        if not verify_tooltip:
             for widget in self._drop_queue:
                 ctrl.click_widget(widget)
             self._drop_queue = []
             return True
 
-        ctrl.release_key(Key.SHIFT)
-        return False
+        if self._drop_pending is not None:
+            widget = self._drop_pending
+            self._drop_pending = None
+            tooltip = ctrl.tooltip()
+            log.debug("Tooltip before drop click: %r", tooltip)
+            if "drop" in tooltip.lower():
+                ctrl.click_widget(widget)
+            else:
+                log.debug(
+                    "'drop' not found in tooltip %r — skipping slot %d",
+                    tooltip, widget.get("childId", -1),
+                )
+                self._drop_skipped.add(widget.get("childId"))
+            return True
+
+        widget = self._drop_queue.pop(0)
+        ctrl.move_to_widget(widget)
+        self._drop_pending = widget
+        return True

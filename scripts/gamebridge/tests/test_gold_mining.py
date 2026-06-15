@@ -16,6 +16,21 @@ from scripts.gamebridge.routines.interaction import InteractionRoutine
 from scripts.gamebridge.state.game_state import GameState
 
 
+class _AnyTooltip(str):
+    """Tooltip stub that satisfies `name in tooltip` for any name, so the
+    default tooltip-verification check in `click_live`/`right_click_live`
+    doesn't interfere with tests that aren't about that check."""
+
+    def __contains__(self, item):
+        return True
+
+    def lower(self):
+        return self
+
+
+_ANY_TOOLTIP = _AnyTooltip()
+
+
 GOLD_ROCK_ON_SCREEN = {
     "id": 440,
     "name": "Gold rocks",
@@ -46,6 +61,7 @@ class TestGoldMiningRoutine:
         """find_ore waits one settle tick then clicks the gold rock and transitions to mining."""
         ctrl = MagicMock()
         ctrl.bring_entity_on_screen.return_value = True
+        ctrl.tooltip.return_value = _ANY_TOOLTIP
 
         r = GoldMiningRoutine()
         # Tick 1: records settle tick, no click yet

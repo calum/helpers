@@ -711,6 +711,49 @@ class TestRightClickAtGuard:
 
 
 # ---------------------------------------------------------------------------
+# move_to_widget — positions the cursor over a UI widget without clicking
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestMoveToWidget:
+    def test_moves_to_bounds_centre_without_clicking(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = MagicMock(
+            pre_move_pause=0.0, post_move_pause=0.0, double_click=False,
+            actual_x=650.0, actual_y=450.0,
+        )
+        widget = {"groupId": 149, "childId": 3, "bounds": {"x": 100, "y": 200, "width": 32, "height": 32}}
+
+        ctrl.move_to_widget(widget)
+
+        mock_mouse.wind_mouse.assert_called_once()
+        mock_mouse.click_left.assert_not_called()
+        mock_mouse.click_right.assert_not_called()
+
+    def test_without_bounds_does_nothing(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+
+        ctrl.move_to_widget({"groupId": 149, "childId": 3})
+
+        mock_mouse.wind_mouse.assert_not_called()
+
+    def test_out_of_bounds_no_mouse_move(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+        ctrl = _ctrl()
+        widget = {"groupId": 149, "childId": 3, "bounds": {"x": 5000, "y": 200, "width": 32, "height": 32}}
+
+        ctrl.move_to_widget(widget)
+
+        mock_mouse.wind_mouse.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # click_menu_entry — finds a matching context-menu entry and clicks its bounds
 # ---------------------------------------------------------------------------
 
@@ -1301,6 +1344,18 @@ class TestSubscriptions:
         ctrl.set_connection(conn)
 
         assert ctrl.hull_update("fish_spot") is None
+
+    def test_tooltip_without_connection_returns_empty_string(self):
+        ctrl = _ctrl()
+        assert ctrl.tooltip() == ""
+
+    def test_tooltip_returns_value_from_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        conn.tooltip = "Attack Goblin (level-2)"
+        ctrl.set_connection(conn)
+
+        assert ctrl.tooltip() == "Attack Goblin (level-2)"
 
     def test_set_connection_none_clears_connection(self):
         ctrl = _ctrl()

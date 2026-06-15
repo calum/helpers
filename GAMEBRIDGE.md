@@ -698,6 +698,7 @@ subscription, the plugin pushes:
 {
   "type": "hullUpdate",
   "clientTick": 88123,
+  "tooltip": "Walk here",
   "entities": [
     {
       "subId": "fish_spot",
@@ -717,6 +718,11 @@ subscription, the plugin pushes:
 }
 ```
 
+| Field | Notes |
+|---|---|
+| `tooltip` | The text describing the default (left-click) action under the cursor right now, e.g. `"Walk here"` or `"Attack Goblin (level-2)"`. Derived from the last entry of `Client.getMenuEntries()` — the same source the client's own left-click hover tooltip uses — as `"option target"` (or just `"option"` if there's no target). `""` if no menu entry is available. |
+| `entities` | See below. |
+
 If no matching entity is currently found, the entity is `{"subId": ..., "found": false}`
 with no other fields. When `found` is `true`, the entity reuses the same
 serialisation as the `npcs`/`players`/`objects`/`groundItems` arrays in the
@@ -735,6 +741,24 @@ if update and update["found"] and update["onScreen"]:
 
 ctrl.unsubscribe("fish_spot")
 ```
+
+### Checking the left-click action before clicking
+
+`ctrl.tooltip()` returns the current left-click action text — the same
+`tooltip` field pushed in `hullUpdate` — so you can confirm what a plain
+left-click will do *before* issuing it, without opening a right-click menu:
+
+```python
+ctrl.subscribe_to("fish_spot", "object", name="Fishing spot")
+
+update = ctrl.hull_update("fish_spot")
+if update and update["found"] and update["onScreen"]:
+    if "Fish" in ctrl.tooltip():
+        ctrl.click_at(update["canvasX"], update["canvasY"])
+```
+
+Note: `ctrl.tooltip()` requires at least one active subscription — like
+`hull_update()`, it returns `""` until the first `hullUpdate` arrives.
 
 `hull_update()` returns `None` until the first `hullUpdate` for that `subId`
 has arrived, and after `unsubscribe`/TTL expiry it simply stops updating

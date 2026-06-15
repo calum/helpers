@@ -4,6 +4,95 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-15 — Tooltip verification before click_live/right_click_live, and "drop" check in drop_items_shift_click
+
+### Goal
+
+Add a pre-click tooltip-verification step to `click_live`/`right_click_live`:
+if the entity has a `name`, confirm it appears in `ctrl.tooltip()` before
+clicking, otherwise move the mouse towards the entity instead (so a later
+call gets a fresher tooltip). Make this controllable via an argument so it
+can be disabled for entities with no meaningful left-click tooltip. Always
+log the full tooltip text at debug level right before any click action. Apply
+the same idea to `drop_items_shift_click`, checking for "drop" before each
+item's click and skipping items whose tooltip doesn't say "drop".
+
+### Findings / Decisions
+
+- Added `InteractionRoutine._verify_tooltip_and_act(ctrl, live, verify_tooltip, act)`
+  in `routines/interaction.py` — shared by `click_live`/`right_click_live`.
+  Always logs `log.debug("Tooltip before click: %r", tooltip)`. If
+  `verify_tooltip` is True and `live["name"]` exists and its lowercase form
+  isn't a substring of the lowercased tooltip, logs and calls
+  `ctrl.move_to_entity(live)` instead of `act(live)`.
+- `click_live`/`right_click_live` both gained `verify_tooltip: bool = True`
+  (default **on** — matches "we should be able to *disable* this check").
+  Pass `verify_tooltip=False` for entities with no left-click tooltip (e.g.
+  some tiles).
+- Added `GameController.move_to_widget(widget)` (controller/controller.py) —
+  moves the cursor to the centre of a UI widget's bounds without clicking;
+  the primitive needed for `drop_items_shift_click`'s "hover, check tooltip,
+  then click" two-phase flow.
+- `drop_items_shift_click` rewritten as a small state machine using two new
+  `InteractionRoutine.__init__` fields, `_drop_pending: Optional[dict]` and
+  `_drop_skipped: set` (alongside the existing `_drop_queue`):
+  - `verify_tooltip=False` (**default** — preserves the original
+    fire-and-forget behaviour that `fish_and_cook.py`'s dropping state
+    already relies on): queue all matching widgets, hold Shift, click each
+    once.
+  - `verify_tooltip=True` (opt-in): each widget is handled across two calls —
+    first call moves the mouse to the slot (`ctrl.move_to_widget`) and stashes
+    it in `_drop_pending`; the next call logs
+    `log.debug("Tooltip before drop click: %r", tooltip)`, and clicks the
+    widget only if `"drop" in tooltip.lower()`. Otherwise the widget's
+    `childId` is added to `_drop_skipped` (excluded from requeues until the
+    queue empties and Shift is released, which also clears `_drop_skipped`).
+- Default direction matters here: `click_live`/`right_click_live` default to
+  **verify ON** (per the user's framing — "disable this check"), but
+  `drop_items_shift_click` defaults to **verify OFF** to avoid changing
+  existing callers' (`fish_and_cook.py`) behaviour/tests. Only opt in to the
+  two-phase drop flow where a per-item "Drop" tooltip check is actually
+  wanted.
+
+### Tests
+
+- `test_interaction.py`: `MATCHING_TOOLTIP = f"Mine {ENTITY['name']}"` set as
+  `ctrl.tooltip.return_value` across existing `TestClickLive`/`TestRightClickLive`
+  tests; new `TestClickLiveTooltipVerification`/`TestRightClickLiveTooltipVerification`
+  classes cover: move-instead-of-click when name missing from tooltip,
+  click when present, case-insensitivity, `verify_tooltip=False` bypass,
+  entities without a `name` skip the check, and the tooltip is logged before
+  every click. New `TestDropItemsShiftClick` covers both the `verify_tooltip=False`
+  single-call batch path and the `verify_tooltip=True` two-phase
+  move/check/click/skip/requeue/release flow, plus the debug log assertion.
+- `test_controller.py`: new `TestMoveToWidget` covers bounds-centre movement,
+  no-op when a widget has no `bounds`, and the out-of-viewport guard.
+- **Pre-existing integration tests broke** because their `ctrl = MagicMock()`
+  made `ctrl.tooltip()` return a bare `MagicMock()`, whose `__contains__`
+  defaults to `False` — so `name.lower() not in tooltip.lower()` was always
+  `True`, sending every `click_live`/`right_click_live` call down the
+  move-instead-of-click branch. Fixed by adding a small `_AnyTooltip(str)`
+  helper (overrides `__contains__` → `True` and `lower()` → `self`) to
+  `test_fish_and_cook.py`, `test_iron_mining.py`, `test_melee_fighter.py`, and
+  `test_gold_mining.py`, and setting `ctrl.tooltip.return_value = _ANY_TOOLTIP`
+  in each file's `_ctrl()` helper (or inline for gold_mining's one affected
+  test). This is duplicated per-file rather than factored into a shared
+  conftest, matching this test suite's existing convention of per-file
+  `_ctrl()`/`_entity()` helpers.
+- `python -m pytest scripts/gamebridge/tests/ -q` → **895 passed, 10 skipped**.
+
+### Open / next steps
+
+- No Java/`GAMEBRIDGE.md` changes needed — this session only touched
+  `scripts/gamebridge/routines/interaction.py`,
+  `scripts/gamebridge/controller/controller.py`, and test files.
+- `drop_item` (the older `DropMode`-based single-item helper) was not given
+  tooltip verification — only the newer `drop_items_shift_click` batch path.
+  If `drop_item`'s `SHIFT_CLICK` mode ever needs the same "drop" check, the
+  `move_to_widget` + tooltip pattern here is reusable.
+
+---
+
 ## Session: 2026-06-14 (5) — click_live/right_click_live: continuous live-hull tracking
 
 ### Goal

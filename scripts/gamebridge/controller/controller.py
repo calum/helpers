@@ -462,6 +462,31 @@ class GameController:
         log.debug("Right-clicked widget G%d:%d at canvas (%.0f, %.0f)",
                   widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
 
+    def move_to_widget(self, widget: dict) -> None:
+        """Move the mouse to the centre of a UI widget slot without clicking.
+
+        Used by `InteractionRoutine.drop_items_shift_click` to position the
+        cursor over an inventory slot so `ctrl.tooltip()` can be checked for
+        "Drop" before the click is committed.
+        """
+        b = widget.get("bounds")
+        if not b:
+            log.debug("move_to_widget: widget has no bounds")
+            return
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        if not self._is_canvas_coord_valid(cx, cy):
+            log.warning("move_to_widget: canvas (%.0f, %.0f) outside viewport — skipping", cx, cy)
+            return
+        sx, sy = self._canvas_to_screen(cx, cy)
+        cur_x, cur_y = mouse_input.get_position()
+        intent = self._human.plan_click(sx, sy, cur_x, cur_y)
+        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        time.sleep(intent.pre_move_pause)
+        mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        log.debug("Moved to widget G%d:%d at canvas (%.0f, %.0f)",
+                  widget.get("groupId", -1), widget.get("childId", -1), cx, cy)
+
     def click_menu_entry(self, game_state, option_substr: str, target_substr: Optional[str] = None) -> bool:
         """Click a right-click context-menu entry matching the given option/target text.
 
@@ -939,3 +964,15 @@ class GameController:
         if self._connection is None:
             return None
         return self._connection.hull_updates.get(sub_id)
+
+    def tooltip(self) -> str:
+        """Return the current left-click action text (e.g. "Walk here" or
+        "Attack Goblin (level-2)"), or "" if no connection is set or no
+        hullUpdate has arrived yet.
+
+        Requires at least one active subscription — hullUpdate (and
+        therefore this value) is only pushed while the connection has one.
+        """
+        if self._connection is None:
+            return ""
+        return self._connection.tooltip

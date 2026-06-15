@@ -11,6 +11,7 @@ coverage of those routines using these helpers).
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 from scripts.gamebridge.input.keyboard import Key
@@ -189,10 +190,18 @@ class TestVerifiedMenuClick:
 # using the freshest available position
 # ---------------------------------------------------------------------------
 
+# Tooltip text containing ENTITY's name — used by tests below to satisfy the
+# default `verify_tooltip=True` check so click_entity/right_click_entity is
+# actually reached (otherwise click_live/right_click_live would move the
+# mouse instead — see TestClickLiveTooltipVerification).
+MATCHING_TOOLTIP = f"Mine {ENTITY['name']}"
+
+
 class TestClickLive:
     def test_subscribes_with_entity_name_and_id(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -203,6 +212,7 @@ class TestClickLive:
     def test_clicks_original_entity_when_no_hull_update_yet(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -211,6 +221,7 @@ class TestClickLive:
     def test_clicks_original_entity_when_hull_update_not_found(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = {"found": False}
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -221,6 +232,7 @@ class TestClickLive:
         ctrl.hull_update.return_value = {
             "found": True, "name": "Gold rocks", "canvasX": 999, "canvasY": 999,
         }
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -234,6 +246,7 @@ class TestClickLive:
             "hull": [[550, 440], [560, 440], [560, 450], [550, 450]],
             "worldX": ENTITY["worldX"], "worldY": ENTITY["worldY"], "plane": 0,
         }
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -253,6 +266,7 @@ class TestClickLive:
             "found": True, "name": ENTITY["name"].upper(),
             "canvasX": 111, "canvasY": 222,
         }
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -265,6 +279,7 @@ class TestRightClickLive:
     def test_subscribes_with_entity_name_and_id(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
@@ -275,6 +290,7 @@ class TestRightClickLive:
     def test_right_clicks_original_entity_when_no_hull_update_yet(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
@@ -286,6 +302,7 @@ class TestRightClickLive:
             "found": True, "name": ENTITY["name"],
             "onScreen": True, "canvasX": 321, "canvasY": 123,
         }
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
@@ -294,6 +311,105 @@ class TestRightClickLive:
         assert clicked["canvasX"] == 321
         assert clicked["canvasY"] == 123
         assert call.kwargs["sub_id"] == InteractionRoutine.LIVE_HULL_SUB_ID
+
+
+# ---------------------------------------------------------------------------
+# click_live / right_click_live — tooltip verification before clicking
+# ---------------------------------------------------------------------------
+
+class TestClickLiveTooltipVerification:
+    def test_moves_mouse_instead_of_clicking_when_name_not_in_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Walk here"
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_not_called()
+        ctrl.move_to_entity.assert_called_once_with(ENTITY)
+
+    def test_clicks_when_name_in_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.move_to_entity.assert_not_called()
+
+    def test_tooltip_check_is_case_insensitive(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP.upper()
+
+        _routine().click_live(ctrl, ENTITY, "object")
+
+        ctrl.click_entity.assert_called_once()
+        ctrl.move_to_entity.assert_not_called()
+
+    def test_verify_tooltip_false_clicks_regardless_of_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Walk here"
+
+        _routine().click_live(ctrl, ENTITY, "object", verify_tooltip=False)
+
+        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.move_to_entity.assert_not_called()
+
+    def test_entity_without_name_skips_check(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Walk here"
+        entity = {k: v for k, v in ENTITY.items() if k != "name"}
+
+        _routine().click_live(ctrl, entity, "object")
+
+        ctrl.click_entity.assert_called_once()
+        ctrl.move_to_entity.assert_not_called()
+
+    def test_logs_tooltip_before_click(self, caplog):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
+
+        with caplog.at_level(logging.DEBUG, logger="scripts.gamebridge.routines.interaction"):
+            _routine().click_live(ctrl, ENTITY, "object")
+
+        assert MATCHING_TOOLTIP in caplog.text
+
+
+class TestRightClickLiveTooltipVerification:
+    def test_moves_mouse_instead_of_right_clicking_when_name_not_in_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Walk here"
+
+        _routine().right_click_live(ctrl, ENTITY, "npc")
+
+        ctrl.right_click_entity.assert_not_called()
+        ctrl.move_to_entity.assert_called_once_with(ENTITY)
+
+    def test_right_clicks_when_name_in_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = MATCHING_TOOLTIP
+
+        _routine().right_click_live(ctrl, ENTITY, "npc")
+
+        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.move_to_entity.assert_not_called()
+
+    def test_verify_tooltip_false_right_clicks_regardless_of_tooltip(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Walk here"
+
+        _routine().right_click_live(ctrl, ENTITY, "npc", verify_tooltip=False)
+
+        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.move_to_entity.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -440,3 +556,121 @@ class TestDropItemRightClick:
 
         ctrl.hold_key.assert_not_called()
         ctrl.release_key.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# drop_items_shift_click — batch shift-drop, with per-item "Drop" tooltip
+# verification spanning two calls (move, then check + click/skip)
+# ---------------------------------------------------------------------------
+
+def _drop_widget(item_id: int, child_id: int, group_id: int = Inventory.GROUP) -> dict:
+    return {
+        "groupId": group_id, "childId": child_id, "itemId": item_id, "quantity": 1,
+        "bounds": {"x": child_id * 40, "y": 0, "width": 32, "height": 32},
+    }
+
+
+class TestDropItemsShiftClick:
+    def test_no_matching_items_releases_shift_and_returns_false(self):
+        game = _game()
+        game.widgets = [_drop_widget(590, 0)]
+        ctrl = MagicMock()
+
+        result = _routine().drop_items_shift_click(game, ctrl, DROP_ITEM_IDS)
+
+        assert result is False
+        ctrl.release_key.assert_called_once_with(Key.SHIFT)
+        ctrl.hold_key.assert_not_called()
+
+    def test_verify_tooltip_false_clicks_all_queued_widgets_in_one_call(self):
+        a, b = _drop_widget(315, 0), _drop_widget(319, 1)
+        game = _game()
+        game.widgets = [a, b]
+        ctrl = MagicMock()
+
+        result = _routine().drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=False)
+
+        assert result is True
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        assert ctrl.click_widget.call_count == 2
+        ctrl.click_widget.assert_any_call(a)
+        ctrl.click_widget.assert_any_call(b)
+        ctrl.move_to_widget.assert_not_called()
+        ctrl.tooltip.assert_not_called()
+
+    def test_first_call_moves_to_widget_without_clicking(self):
+        widget = _drop_widget(315, 0)
+        game = _game()
+        game.widgets = [widget]
+        ctrl = MagicMock()
+        r = _routine()
+
+        result = r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+
+        assert result is True
+        ctrl.hold_key.assert_called_once_with(Key.SHIFT)
+        ctrl.move_to_widget.assert_called_once_with(widget)
+        ctrl.click_widget.assert_not_called()
+        assert r._drop_pending == widget
+
+    def test_second_call_clicks_when_tooltip_says_drop(self):
+        widget = _drop_widget(315, 0)
+        game = _game()
+        game.widgets = [widget]
+        ctrl = MagicMock()
+        ctrl.tooltip.return_value = "Drop Logs"
+        r = _routine()
+
+        r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+        result = r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+
+        assert result is True
+        ctrl.click_widget.assert_called_once_with(widget)
+        assert r._drop_pending is None
+
+    def test_second_call_skips_when_tooltip_does_not_say_drop(self):
+        widget = _drop_widget(315, 0)
+        game = _game()
+        game.widgets = [widget]
+        ctrl = MagicMock()
+        ctrl.tooltip.return_value = "Wield Logs"
+        r = _routine()
+
+        r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+        result = r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+
+        assert result is True
+        ctrl.click_widget.assert_not_called()
+        assert r._drop_pending is None
+        assert 0 in r._drop_skipped
+
+    def test_skipped_items_excluded_from_requeue_then_cleared_on_release(self):
+        widget = _drop_widget(315, 0)
+        game = _game()
+        game.widgets = [widget]
+        ctrl = MagicMock()
+        ctrl.tooltip.return_value = "Wield Logs"
+        r = _routine()
+
+        r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)  # move to widget
+        r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)  # skip — tooltip mismatch
+
+        result = r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)  # queue empty -> release
+
+        assert result is False
+        ctrl.release_key.assert_called_once_with(Key.SHIFT)
+        assert r._drop_skipped == set()
+
+    def test_logs_tooltip_before_drop_click(self, caplog):
+        widget = _drop_widget(315, 0)
+        game = _game()
+        game.widgets = [widget]
+        ctrl = MagicMock()
+        ctrl.tooltip.return_value = "Drop Logs"
+        r = _routine()
+
+        r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+        with caplog.at_level(logging.DEBUG, logger="scripts.gamebridge.routines.interaction"):
+            r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
+
+        assert "Drop Logs" in caplog.text

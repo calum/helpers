@@ -22,10 +22,10 @@ def _line(tick: int) -> bytes:
     return (json.dumps({"tick": tick}) + "\n").encode()
 
 
-def _hull_update_line(sub_id: str, found: bool, **extra) -> bytes:
+def _hull_update_line(sub_id: str, found: bool, tooltip: str = "", **extra) -> bytes:
     """A single hullUpdate message with one entity."""
     entity = {"subId": sub_id, "found": found, **extra}
-    return (json.dumps({"type": "hullUpdate", "clientTick": 1, "entities": [entity]}) + "\n").encode()
+    return (json.dumps({"type": "hullUpdate", "clientTick": 1, "tooltip": tooltip, "entities": [entity]}) + "\n").encode()
 
 
 def _make_sock(*chunks: bytes) -> MagicMock:
@@ -275,6 +275,23 @@ class TestBridgeConnectionMessages:
         next(conn.messages())
         assert conn.hull_updates["fish_spot"]["canvasX"] == 150
         assert conn.hull_updates["fish_spot"]["canvasY"] == 250
+
+    def test_hull_update_stores_tooltip(self):
+        hull_line = _hull_update_line("fish_spot", True, tooltip="Attack Goblin (level-2)", canvasX=1, canvasY=2)
+        conn = BridgeConnection(_make_sock(hull_line + _line(1)))
+        next(conn.messages())
+        assert conn.tooltip == "Attack Goblin (level-2)"
+
+    def test_hull_update_tooltip_overwrites_on_repeat(self):
+        line1 = _hull_update_line("fish_spot", True, tooltip="Walk here", canvasX=1, canvasY=2)
+        line2 = _hull_update_line("fish_spot", True, tooltip="Attack Goblin (level-2)", canvasX=1, canvasY=2)
+        conn = BridgeConnection(_make_sock(line1 + line2 + _line(1)))
+        next(conn.messages())
+        assert conn.tooltip == "Attack Goblin (level-2)"
+
+    def test_tooltip_defaults_to_empty_string(self):
+        conn = BridgeConnection(_make_sock(_line(1)))
+        assert conn.tooltip == ""
 
     def test_messages_raises_on_disconnect(self):
         conn = BridgeConnection(_make_sock())

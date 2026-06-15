@@ -727,6 +727,13 @@ public class ContractTest
 	}
 
 	@Test
+	public void hullUpdateExampleHasTooltip()
+	{
+		Map<?, ?> hullUpdate = map("hullUpdateExample");
+		assertTrue("hullUpdateExample.tooltip must be a String", hullUpdate.get("tooltip") instanceof String);
+	}
+
+	@Test
 	public void hullUpdateNotFoundEntityHasOnlySubIdAndFound()
 	{
 		Map<?, ?> hullUpdate = map("hullUpdateExample");

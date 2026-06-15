@@ -238,6 +238,7 @@ class TestContractSchema:
         hull_update = contract["hullUpdateExample"]
         assert hull_update["type"] == "hullUpdate"
         assert isinstance(hull_update["clientTick"], int)
+        assert isinstance(hull_update["tooltip"], str)
         entities = hull_update["entities"]
         assert isinstance(entities, list)
 

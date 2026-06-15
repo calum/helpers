@@ -30,6 +30,7 @@ import java.util.Map;
 import net.runelite.api.Client;
 import net.runelite.api.GameObject;
 import net.runelite.api.ItemComposition;
+import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Player;
@@ -229,6 +230,65 @@ public class TickMessageBuilderTest
 		when(scene.getTiles()).thenReturn(tiles);
 		when(client.getScene()).thenReturn(scene);
 		when(client.getPlane()).thenReturn(0);
+	}
+
+	// ------------------------------------------------------------------ //
+	// currentTooltip
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void currentTooltipCombinesOptionAndTarget()
+	{
+		MenuEntry attack = mockMenuEntry("Attack", "Goblin (level-2)");
+		when(client.getMenuEntries()).thenReturn(new MenuEntry[]{attack});
+
+		assertEquals("Attack Goblin (level-2)", builder.currentTooltip());
+	}
+
+	@Test
+	public void currentTooltipUsesLastEntryAsDefaultAction()
+	{
+		// Client.getMenuEntries() is in reverse display order — the last
+		// element is the top/default (left-click) entry.
+		MenuEntry examine = mockMenuEntry("Examine", "Goblin (level-2)");
+		MenuEntry attack = mockMenuEntry("Attack", "Goblin (level-2)");
+		when(client.getMenuEntries()).thenReturn(new MenuEntry[]{examine, attack});
+
+		assertEquals("Attack Goblin (level-2)", builder.currentTooltip());
+	}
+
+	@Test
+	public void currentTooltipOmitsTargetWhenEmpty()
+	{
+		MenuEntry walkHere = mockMenuEntry("Walk here", "");
+		when(client.getMenuEntries()).thenReturn(new MenuEntry[]{walkHere});
+
+		assertEquals("Walk here", builder.currentTooltip());
+	}
+
+	@Test
+	public void currentTooltipOmitsTargetWhenNull()
+	{
+		MenuEntry walkHere = mockMenuEntry("Walk here", null);
+		when(client.getMenuEntries()).thenReturn(new MenuEntry[]{walkHere});
+
+		assertEquals("Walk here", builder.currentTooltip());
+	}
+
+	@Test
+	public void currentTooltipReturnsEmptyStringWhenNoMenuEntries()
+	{
+		when(client.getMenuEntries()).thenReturn(new MenuEntry[0]);
+
+		assertEquals("", builder.currentTooltip());
+	}
+
+	private MenuEntry mockMenuEntry(String option, String target)
+	{
+		MenuEntry entry = org.mockito.Mockito.mock(MenuEntry.class);
+		when(entry.getOption()).thenReturn(option);
+		when(entry.getTarget()).thenReturn(target);
+		return entry;
 	}
 
 	// ------------------------------------------------------------------ //
