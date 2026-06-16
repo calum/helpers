@@ -1313,6 +1313,7 @@ class TestSubscriptions:
         ctrl = _ctrl()
         conn = MagicMock(spec=BridgeConnection)
         ctrl.set_connection(conn)
+        conn.subscribe.reset_mock()  # discard set_connection's own keepalive subscribe
 
         ctrl.subscribe_to("fish_spot", "object", name="Fishing spot", id=1497, ttl_ticks=5)
 
@@ -1357,11 +1358,52 @@ class TestSubscriptions:
 
         assert ctrl.tooltip() == "Attack Goblin (level-2)"
 
+    def test_tooltip_age_without_connection_returns_none(self):
+        ctrl = _ctrl()
+        assert ctrl.tooltip_age() is None
+
+    def test_tooltip_age_returns_none_before_any_hull_update(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        conn.tooltip_updated_at = 0.0
+        ctrl.set_connection(conn)
+
+        assert ctrl.tooltip_age() is None
+
+    def test_tooltip_age_returns_seconds_since_last_update(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        conn.tooltip_updated_at = 100.0
+        ctrl.set_connection(conn)
+
+        with patch("scripts.gamebridge.controller.controller.time.monotonic", return_value=100.25):
+            assert ctrl.tooltip_age() == pytest.approx(0.25)
+
     def test_set_connection_none_clears_connection(self):
         ctrl = _ctrl()
         conn = MagicMock(spec=BridgeConnection)
         ctrl.set_connection(conn)
         ctrl.set_connection(None)
+
+    def test_set_connection_subscribes_to_tooltip_keepalive(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+
+        ctrl.set_connection(conn)
+
+        conn.subscribe.assert_called_once_with(
+            GameController.TOOLTIP_SUB_ID, "player", name=None, id=-1,
+            ttl_ticks=GameController.TOOLTIP_SUB_TTL_TICKS,
+        )
+
+    def test_set_connection_none_does_not_subscribe(self, caplog):
+        ctrl = _ctrl()
+        with caplog.at_level(logging.WARNING):
+            ctrl.set_connection(None)
+        # No connection to delegate to, and no keepalive subscribe attempted
+        # — subscribe_to is only called when connection is not None.
+        assert ctrl._connection is None
+        assert "TOOLTIP" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -919,12 +919,30 @@ class GameController:
     # GAMEBRIDGE.md "Live clickbox subscriptions".
     # ------------------------------------------------------------------
 
+    # subId for the always-on placeholder subscription set up by
+    # set_connection() — see its docstring. id=-1 never matches a real
+    # player, so this subscription's own `entities[]` result is always
+    # "found": false; it exists purely to keep the plugin pushing
+    # hullUpdate (and therefore tooltip()) from the moment a connection is
+    # established, independent of any routine-specific subscription.
+    TOOLTIP_SUB_ID = "_tooltip"
+
+    # ~1,000,000 game ticks (~7 days) — long enough that this subscription
+    # never needs renewing for the lifetime of a session.
+    TOOLTIP_SUB_TTL_TICKS = 1_000_000
+
     def set_connection(self, connection: Optional[BridgeConnection]) -> None:
         """Set (or clear) the live BridgeConnection used for subscriptions.
 
         Called by main.py's connect() loop once per connection attempt.
+        Also establishes the always-on TOOLTIP_SUB_ID placeholder
+        subscription so hull_update()/tooltip() are populated immediately,
+        without every routine needing its own subscription just to read the
+        tooltip.
         """
         self._connection = connection
+        if connection is not None:
+            self.subscribe_to(self.TOOLTIP_SUB_ID, "player", id=-1, ttl_ticks=self.TOOLTIP_SUB_TTL_TICKS)
 
     def subscribe_to(
         self,
@@ -976,3 +994,15 @@ class GameController:
         if self._connection is None:
             return ""
         return self._connection.tooltip
+
+    def tooltip_age(self) -> Optional[float]:
+        """Return how many seconds old the current `tooltip()` value is, or
+        None if no connection is set or no hullUpdate has arrived yet.
+
+        Diagnostic for staleness — `tooltip_updated_at` is stamped with
+        `time.monotonic()` the moment a hullUpdate's tooltip is received
+        (see `BridgeConnection.messages`), independent of when it is read.
+        """
+        if self._connection is None or self._connection.tooltip_updated_at == 0.0:
+            return None
+        return time.monotonic() - self._connection.tooltip_updated_at

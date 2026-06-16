@@ -76,6 +76,14 @@ class IronMiningRoutine(InteractionRoutine):
         Scan for the nearest iron ore rock and click it once it's safe to
         do so (see `InteractionRoutine.approach`).
         If inventory is already full, skip straight to banking.
+
+        `click_live` can fall back to moving the mouse instead of clicking
+        if the tooltip doesn't yet confirm the cursor is over the ore (e.g.
+        a right-click menu happened to be open this tick — see
+        `InteractionRoutine._verify_tooltip_and_act`). Only transition to
+        `mining` when the click actually fired; otherwise stay here and
+        retry next tick rather than waiting out a mining timeout for a click
+        that never landed.
         """
         if game.inventory_full():
             return "walk_to_bank"
@@ -90,7 +98,9 @@ class IronMiningRoutine(InteractionRoutine):
         if not self.approach(game, ctrl, ore):
             return None
 
-        self.click_live(ctrl, ore, "object")
+        if not self.click_live(ctrl, ore, "object"):
+            return None
+
         self.mining_start_tick = game.tick
         return "mining"
 

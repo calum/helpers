@@ -759,6 +759,11 @@ if update and update["found"] and update["onScreen"]:
 
 Note: `ctrl.tooltip()` requires at least one active subscription — like
 `hull_update()`, it returns `""` until the first `hullUpdate` arrives.
+`GameController.set_connection()` (called automatically once a connection is
+established) registers an always-on placeholder subscription
+(`GameController.TOOLTIP_SUB_ID`) purely to keep `hullUpdate`/`tooltip`
+flowing, so `ctrl.tooltip()` becomes populated shortly after connecting —
+routines don't need to set up their own subscription just to read it.
 
 `hull_update()` returns `None` until the first `hullUpdate` for that `subId`
 has arrived, and after `unsubscribe`/TTL expiry it simply stops updating

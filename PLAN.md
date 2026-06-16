@@ -4,6 +4,436 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-15 (6) — Diagnostic: instrument `ctrl.tooltip()` staleness with `tooltip_age()`
+
+### Goal
+
+Follow-up to session (5): the user reports that fix only *masked* the
+problem — new logs show `find_ore` no longer falsely transitions to
+`"mining"` (no more `xp=False, timeout=True`), but each `find_ore` cycle
+still burns 1-3 retries (~1-2s each), cycling through stale-looking tooltips
+("Walk here" → "Cancel" → "Examine Rocks") before finally matching "Examine
+Tin rocks" and clicking. The user watched the live dashboard tooltip readout
+during a run and states it was accurate/live at the moment the routine's log
+showed a stale value, and is adamant the bug is a stale read of
+`ctrl.tooltip()` inside `_verify_tooltip_and_act`, not a retry-convergence or
+mouse-aim issue.
+
+### Findings / Decisions
+
+- Traced the full tooltip pipeline end-to-end:
+  - `BridgeConnection.messages()` (`client.py`) intercepts every `hullUpdate`
+    line, sets `self.tooltip = msg.get("tooltip", "")`, and does **not**
+    yield it — only non-hullUpdate ("tick") messages are yielded.
+  - `BridgeTicker.run()` (`bridge_ticker.py`, its own QThread) drives
+    `conn.messages()` in a tight `for` loop independent of the
+    `RoutineRunner` QThread that drives `routine.tick(game, ctrl)` — so
+    `self.tooltip` is updated continuously (~20ms hullUpdate cadence)
+    regardless of how long a routine's `tick()` call takes.
+  - `GameController.tooltip()` (`controller.py`) is a direct, uncached
+    passthrough: `return self._connection.tooltip`.
+  - The dashboard and the routine share **one** `GameController` /
+    `BridgeConnection` instance (`dashboard.py`), so the dashboard's tooltip
+    label and `ctrl.tooltip()` inside `_verify_tooltip_and_act` read the
+    literal same attribute.
+  - `decision/engine.py` and `state/*.py` have **no** tooltip references — no
+    snapshot/cache layer exists between `BridgeConnection.tooltip` and
+    `_verify_tooltip_and_act`'s read.
+  - No structural staleness bug found by code review. The only plausible
+    mechanism for `self.tooltip` to lag the socket is GIL contention: if
+    `RoutineRunner`'s thread holds the GIL for an extended CPU-bound stretch
+    (e.g. inside `wind_mouse_to_prediction`'s movement loop in
+    `move_to_entity`), `BridgeTicker` can't call `recv()`/advance its
+    generator, so `self.tooltip` freezes at its last value until
+    `BridgeTicker` is rescheduled — at which point it should immediately
+    catch up to the latest buffered hullUpdate.
+- Given the user's explicit, first-hand observation is treated as
+  authoritative (per CLAUDE.md: don't paper over with a quick hack, and don't
+  re-litigate a rejected theory without new evidence), and a "near miss" GIL
+  explanation can't be confirmed or ruled out from static reading alone:
+  **added direct instrumentation** rather than guessing at a fix.
+
+- **Implemented** (`client.py` / `controller.py` / `interaction.py` /
+  `dashboard.py`):
+  - `BridgeConnection.__init__` now also sets `self.tooltip_updated_at: float
+    = 0.0`; `messages()` stamps `self.tooltip_updated_at = time.monotonic()`
+    in the same branch that sets `self.tooltip`.
+  - New `GameController.tooltip_age() -> Optional[float]`: seconds since the
+    last hullUpdate's tooltip was received, or `None` if no connection / no
+    hullUpdate yet.
+  - `_verify_tooltip_and_act` (`routines/interaction.py`) now logs
+    `"Tooltip before click: %r (age=%s)"`, formatting `age` as `"NNNms"` when
+    it's a real `float` and falling back to `%s` of whatever `tooltip_age()`
+    returns otherwise (mock-safe — `MagicMock() % "%.3f"` raises `TypeError`,
+    but `isinstance(MagicMock(), (int, float))` is `False` so the `%s` branch
+    is taken).
+  - Dashboard's tooltip label (`_tick_tooltip_label`) now appends `" (NNNms)"`
+    when `tooltip_age()` is not `None`, so the live readout itself shows
+    freshness.
+
+### Tests
+
+- `scripts/gamebridge/tests/test_client.py`: added
+  `test_tooltip_updated_at_defaults_to_zero`,
+  `test_hull_update_sets_tooltip_updated_at`,
+  `test_hull_update_tooltip_updated_at_overwrites_on_repeat` (patches
+  `scripts.gamebridge.client.time.monotonic`).
+- `scripts/gamebridge/tests/test_controller.py`: added
+  `test_tooltip_age_without_connection_returns_none`,
+  `test_tooltip_age_returns_none_before_any_hull_update`,
+  `test_tooltip_age_returns_seconds_since_last_update` (patches
+  `scripts.gamebridge.controller.controller.time.monotonic`).
+- `python -m pytest scripts/gamebridge/tests/ -q` → 915 passed, 10 skipped
+  (was 909 passed before this session's 6 new tests).
+
+### Open / next steps
+
+- **Needs a live run** with debug logging enabled to capture the new
+  `"Tooltip before click: %r (age=%s)"` lines alongside the dashboard's
+  tooltip+age readout during a `find_ore` cycle that shows the
+  "Walk here"/"Cancel"/"Examine Rocks" → "Examine Tin rocks" progression:
+  - If `age` is large (tens-to-hundreds of ms) at the moment a stale tooltip
+    is logged while the dashboard already shows the correct one: confirms a
+    genuine pipeline staleness bug (likely the GIL-starvation mechanism
+    above) — next step would be moving `move_to_entity`'s blocking
+    `wind_mouse_to_prediction` work off the `RoutineRunner` thread, or making
+    `BridgeTicker` higher-priority / non-blocking.
+  - If `age` is consistently near-zero (single-digit ms) even when the
+    *value* doesn't yet match what the dashboard shows: `ctrl.tooltip()` is
+    returning the truly-latest value from the socket, so the mismatch is in
+    what the **game client itself** reported as `currentTooltip()` at that
+    ClientTick — points investigation at
+    `GameBridgePlugin`/`TickMessageBuilder` (Java side) instead, e.g. a
+    capture-ordering issue between the mouse-move event and the tooltip
+    snapshot for that tick.
+
+### Result (live run)
+
+New logs from the user show `age` values of `16ms`, `31ms`, `0ms`, `0ms` for
+the `_verify_tooltip_and_act` reads across one `find_ore` cycle (including the
+"Cancel"/"Examine Rocks" → "Examine Tin rocks" progression). These are all
+within ~1-2 ClientTicks (~20ms cadence) — i.e. `ctrl.tooltip()` is receiving
+fresh socket data essentially in real time. **This empirically rules out a
+stale-variable bug in the Python `BridgeConnection.tooltip`/`GameController.
+tooltip()` pipeline** — the value Python holds is (within single-digit-to-low-
+double-digit ms) the latest one the Java plugin has sent.
+
+Also re-read `GameBridgePlugin.onClientTick` / `TickMessageBuilder.
+currentTooltip()` (Java): `tooltip` is recomputed from `client.getMenuEntries()`
+fresh every ClientTick (no caching), independent of the per-`Subscription`
+`findNearest` loop — so there's no Java-side caching bug either as far as
+static reading shows.
+
+A brief side-investigation attempted a *different*, hull-based explanation
+(stale `hull_updates[LIVE_HULL_SUB_ID]` entry from a previous same-named
+subscription target, causing `_with_live_hull`/`_live_hull_canvas_pos` to aim
+at the wrong instance) and added a `worldX`/`worldY`/`plane`-proximity check to
+both. **The user rejected this**: clickboxes/hulls have been working correctly
+and are explicitly out of scope — this conversation is about the `tooltip`
+value specifically, via the dedicated `_tooltip` subscription, not
+`hull_updates`. The `_same_world_tile` change was reverted in both
+`routines/interaction.py` and `controller/controller.py` (back to 915 passed,
+10 skipped).
+
+### Open / next steps (revised)
+
+- The `tooltip_age()` instrumentation stays (useful diagnostic, low risk,
+  tested) but its data so far does not support a Python-side staleness bug.
+- Still unresolved: the user maintains, from direct observation, that
+  `_verify_tooltip_and_act` sometimes acts on a tooltip value that doesn't
+  match what was visibly hovered at that moment — scoped specifically to the
+  `tooltip`/`_tooltip` subscription pipeline, not `hull_updates`. Next
+  research angle: re-examine `GameBridgePlugin`'s `onClientTick` handler and
+  ordering relative to RuneLite's mouse-input processing for that frame (does
+  `client.getMenuEntries()` reflect the *current* frame's cursor position, or
+  the previous one?) — i.e. a one-ClientTick lag baked into
+  `currentTooltip()` itself on the Java side, which a Python-side `age` of
+  ~20ms couldn't distinguish from "correct".
+
+---
+
+## Session: 2026-06-15 (5) — Fix: find_ore wastes a 3s cycle when click_live falls back to moving the mouse
+
+### Goal
+
+Follow-up to session (4): the dashboard tooltip readout confirmed
+`ctrl.tooltip()` is live/accurate, yet `OreMiningRoutine`'s first `find_ore`
+attempt still logged `Tooltip before click: 'Cancel'`, didn't click, and
+wasted a full `MINING_XP_TIMEOUT_MS` (3s) cycle before succeeding on the
+second attempt.
+
+### Findings / Decisions
+
+- Root cause is a state-machine bug, not a tooltip-freshness bug:
+  1. `TickMessageBuilder.currentTooltip()` (Java) doesn't check
+     `client.isMenuOpen()` (unlike `MouseHighlightOverlay`, the real in-game
+     hover tooltip, which returns `null` while a menu is open). So when a
+     right-click context menu happens to be open at that ClientTick,
+     `ctrl.tooltip()` returns that menu's top entry (e.g. `"Cancel"`) instead
+     of a hover-preview tooltip for whatever the cursor is actually over.
+  2. `_verify_tooltip_and_act` (`routines/interaction.py`) correctly sees
+     `"Tin rocks"` / `"Iron rocks"` not in `"Cancel"` and calls
+     `ctrl.move_to_entity(live)` instead of clicking — working as designed.
+  3. But `click_live`/`right_click_live` previously returned `None`
+     unconditionally, so `IronMiningRoutine.find_ore` had no way to know the
+     click didn't fire — it set `mining_start_tick = game.tick` and
+     transitioned to `"mining"` regardless. `mining` then timed out after 3s
+     (no animation/XP ever started) before returning to `find_ore`, where the
+     mouse (now near the ore from the earlier `move_to_entity`) finally
+     produced a matching tooltip and the real click landed.
+  - This explained exactly the user's log sequence: `find_ore` → `mining`
+    (no click) → 3.0s timeout → `find_ore` → real click → `mining`.
+
+- **Fix implemented** (`scripts/gamebridge/routines/interaction.py`):
+  - `_verify_tooltip_and_act` now returns `bool` — `True` if `act(live)` (the
+    click) ran, `False` if the mouse was moved towards `live` instead.
+  - `click_live`/`right_click_live` now return that bool (previously `None`).
+  - `IronMiningRoutine.find_ore` (`routines/examples/iron_mining.py`) only
+    sets `mining_start_tick` and transitions to `"mining"` when
+    `click_live(...)` returns `True`; otherwise it `return None`s and retries
+    next tick. Worst case this costs one extra ~0.6s tick (the `approach`
+    settle buffer restarting) instead of the full 3s mining timeout.
+  - `OreMiningRoutine` inherits this fix unchanged (thin `ORE_NAME` subclass).
+
+- Scope decision: did **not** change `walk_to_bank`/`deposit`
+  (`iron_mining.py`), `melee_fighter.py`, or `fish_and_cook.py` call sites.
+  - `walk_to_bank`/`deposit` already `return None` regardless of
+    `click_live`'s outcome and re-evaluate `approach`/`player_near` from
+    scratch next tick — self-correcting, no unconditional-success assumption.
+  - `melee_fighter.py`'s `right_click_live` call sites set
+    `_attack_target`/`_loot_target` and `return None`; the next tick's
+    `verified_menu_click` reads the actual context menu (not the tooltip), so
+    a moved-mouse tick just means no menu opened yet and the gesture retries
+    naturally.
+  - `fish_and_cook.py`'s `find_fire` (`click_live` then `return None`) is
+    self-correcting the same way. `cooking`'s `click_live` (line ~319) does
+    set `_cook_started_tick = game.tick` regardless, which would cost
+    `COOKING_GESTURE_TICKS` (3 ticks, ~1.8s) extra on a moved-mouse tick — a
+    much smaller version of the same class of issue, but out of scope for
+    this fix (not the reported symptom; revisit if it causes problems).
+  - Did **not** change `TickMessageBuilder.currentTooltip()` (Java) to check
+    `isMenuOpen()` — the Python-side fix fully explains and resolves the
+    reported symptom without touching the Java/GAMEBRIDGE.md contract. Still
+    a candidate for a future, separate session if "Cancel"-style tooltips
+    cause other issues.
+
+### Tests
+
+- `scripts/gamebridge/tests/test_interaction.py`: added
+  `test_returns_false_when_name_not_in_tooltip` /
+  `test_returns_true_when_name_in_tooltip` for both `click_live` and
+  `right_click_live`.
+- `scripts/gamebridge/tests/test_iron_mining.py`: added
+  `TestFindOreTooltipVerification` with
+  `test_stays_in_find_ore_when_click_live_only_moves_mouse` (tooltip
+  `"Cancel"` → no click, `result is None`, `mining_start_tick` stays `None`)
+  and `test_transitions_to_mining_once_tooltip_confirms_the_ore` (tooltip
+  names the ore → clicks, transitions to `"mining"`,
+  `mining_start_tick == game.tick`).
+- `python -m pytest scripts/gamebridge/tests/ -q` → 909 passed, 10 skipped
+  (was 903 passed before this session's 6 new tests).
+
+### Open / next steps
+
+- If "Cancel"-style stale-menu tooltips turn out to affect `fish_and_cook.py`
+  `cooking` or other call sites in practice, apply the same `if not
+  self.click_live(...): return None` pattern there.
+- Consider (separately, lower priority) making
+  `TickMessageBuilder.currentTooltip()` check `client.isMenuOpen()` and
+  return `""` when a menu is open, to mirror `MouseHighlightOverlay` — would
+  need `GAMEBRIDGE.md` + `TickMessageBuilderTest.java`/`ContractTest.java`
+  updates and `./gradlew.bat :runelite-client:test`.
+
+---
+
+## Session: 2026-06-15 (4) — Dashboard: live tooltip readout next to Animation
+
+### Goal
+
+User reported `OreMiningRoutine`'s first `find_ore` never succeeds and
+suspects the tooltip read by `click_live`/`right_click_live` is stale at the
+moment it's checked. Add a live "Tooltip: …" readout to the dashboard's
+Player card (next to "Animation: …") so the user can visually confirm what
+`ctrl.tooltip()` reports in real time and compare it against what's actually
+under the cursor in-game.
+
+### Findings / Decisions
+
+- `BridgeConnection.tooltip` (set in `client.py:messages()`) is updated on
+  the `BridgeTicker` thread every time a `hullUpdate` message arrives
+  (~20ms cadence) — independent of the once-per-~600ms `tick_received`
+  signal that drives `_on_tick`. Refreshing the new label from `_on_tick`
+  alone would still only show a per-tick snapshot, not the "constantly live"
+  view requested.
+- Added a second `QTimer` (`self._tooltip_timer`, 100ms) in
+  `GameBridgeWindow.__init__` calling a new `_tick_tooltip_label()`, which
+  sets `self._player_tooltip_lbl` from `self._ctrl.tooltip()` (`"—"` when
+  empty). Reading a plain Python `str` attribute across threads is safe
+  under the GIL — same assumption `ctrl.tooltip()` itself already relies on.
+- New `self._player_tooltip_lbl` ("Tooltip: —") added to `_make_player_card`
+  directly below `_player_anim_lbl`, matching the user's "under or next to
+  Animation" request.
+
+### Tests
+
+- `dashboard.py` has no existing unit tests (PyQt6 `QMainWindow` — no
+  headless-widget test harness set up in this repo yet), consistent with
+  every other label/timer in this file (`_player_anim_lbl`,
+  `_tick_session_panel`, etc.). No new test added for this thin UI binding;
+  `python -m pytest scripts/gamebridge/tests/ -q` → 903 passed, 10 skipped
+  (unchanged), confirms nothing else broke.
+- No `GAMEBRIDGE.md` changes — pure dashboard UI, no plugin/wire-format
+  changes.
+
+### Open / next steps
+
+- **Live-verify the actual hypothesis**: run `OreMiningRoutine`, watch the
+  new "Tooltip:" readout during the first `find_ore` attempt, and confirm
+  whether it lags behind the cursor's real in-game tooltip (the suspected
+  root cause of the first-attempt failure). If confirmed stale, the next fix
+  is likely in `InteractionRoutine._verify_tooltip_and_act` /
+  `click_live`/`right_click_live` (routines/interaction.py) — e.g. waiting
+  for at least one fresh `hullUpdate` after subscribing before trusting
+  `ctrl.tooltip()`, since `LIVE_HULL_SUB_ID` subscriptions are only
+  registered just-in-time and `hull_update()`/`tooltip()` return stale/empty
+  data until the first push arrives for that subId.
+- If the dashboard label itself looks fine (matches the cursor) but
+  `find_ore` still fails on the first attempt, the bug is more likely in
+  `find_ore`'s own state machine/gating than in tooltip freshness — revisit
+  `routines/examples/iron_mining.py`'s `find_ore` (inherited by
+  `OreMiningRoutine`).
+
+---
+
+## Session: 2026-06-15 (3) — Always-on tooltip subscription, decoupled from click_live/right_click_live
+
+### Goal
+
+User feedback: `ctrl.tooltip()` was only populated while `click_live`/
+`right_click_live` happened to have an active `LIVE_HULL_SUB_ID`
+("click_target") subscription — any routine state that didn't call those
+(or whose subscription's `ttlTicks` lapsed between calls) got a stale or
+empty tooltip. Requested: just always be subscribed so `ctrl.tooltip()`
+works from connection time, regardless of what (if anything) a routine
+subscribes to for live-hull tracking.
+
+### Findings / Decisions
+
+- Confirmed in `GameBridgePlugin.onClientTick`: `hullUpdate` (and its
+  `tooltip` field) is only pushed `if subs != null && !subs.isEmpty()` for
+  that connection — it doesn't matter *which* subId/entity the subscription
+  targets, or whether it resolves `found: true`. So any always-present
+  subscription is sufficient to keep `tooltip` flowing.
+- Added `GameController.TOOLTIP_SUB_ID = "_tooltip"` and
+  `TOOLTIP_SUB_TTL_TICKS = 1_000_000` (~7 days of game ticks — long enough
+  to never need renewal for a session's lifetime, avoiding any cross-thread
+  re-subscribe scheduling).
+- `set_connection()` now calls
+  `self.subscribe_to(TOOLTIP_SUB_ID, "player", id=-1, ttl_ticks=TOOLTIP_SUB_TTL_TICKS)`
+  whenever a non-`None` connection is set. `id=-1` never matches a real
+  player so this subscription's own `entities[]` result is always
+  `found: false` — it exists purely as a keepalive. `set_connection` is
+  already called once per connection attempt by both `main.py`'s
+  `connect()` loop and the dashboard's `BridgeTicker.connection_changed`
+  (see session 2026-06-15 (2)), so this fires automatically "on startup of
+  any script" per the user's request, no new wiring needed.
+- `click_live`/`right_click_live`'s `LIVE_HULL_SUB_ID` ("click_target")
+  subscription is unchanged and still needed for its own purpose (live
+  per-entity hull tracking for click prediction) — it's now just redundant
+  for keeping `tooltip` alive, which the new keepalive subscription already
+  guarantees.
+- `GAMEBRIDGE.md` updated (Live clickbox subscriptions section) to document
+  that `set_connection` registers this keepalive automatically.
+
+### Tests
+
+- `test_controller.py::TestSubscriptions`: new
+  `test_set_connection_subscribes_to_tooltip_keepalive` (asserts
+  `conn.subscribe` called with `TOOLTIP_SUB_ID`/`"player"`/`id=-1`/
+  `TOOLTIP_SUB_TTL_TICKS`) and `test_set_connection_none_does_not_subscribe`.
+  Updated `test_subscribe_to_delegates_to_connection` to
+  `conn.subscribe.reset_mock()` after `set_connection(conn)`, since that
+  call now also issues the keepalive subscribe.
+- `python -m pytest scripts/gamebridge/tests/ -q` → **903 passed, 10
+  skipped**.
+
+### Open / next steps
+
+- Not yet live-tested — confirm `ctrl.tooltip()` returns real text
+  immediately after connecting, even before any routine calls
+  `click_live`/`right_click_live`, and that `_with_live_hull`'s separate
+  `LIVE_HULL_SUB_ID` subscription still works alongside the keepalive
+  (different subIds, both within the 20-subscription cap).
+- User noted they'll report back if this causes any performance issues
+  (extra `hullUpdate` traffic at ~20ms cadence is already the existing
+  cost of any single subscription — this just makes it permanent rather
+  than intermittent).
+
+---
+
+## Session: 2026-06-15 (2) — Fix: dashboard's GameController never received a live BridgeConnection (tooltip always "")
+
+### Goal
+
+Live-tested the tooltip-verification feature from the session below and the
+`OreMiningRoutine`/`IronMiningRoutine` always logged
+`subscribe_to(click_target) called with no active connection` and
+`Tooltip before click: ''`, so `click_live`/`right_click_live` always took
+the "move instead of click" branch. Work out why, given the Java side
+(`TickMessageBuilder.currentTooltip`, `GameBridgePlugin.onClientTick`) and the
+Python `BridgeConnection`/`GameController.tooltip()` plumbing all already had
+test coverage and looked correct.
+
+### Findings / Decisions
+
+- Root cause was entirely on the **dashboard wiring side**, not the
+  Java plugin or the wire format — `GAMEBRIDGE.md` needs no changes.
+- `dashboard.py`'s `GameBridgeWindow.__init__` builds `self._ctrl =
+  GameController(...)` but **never called `ctrl.set_connection(...)`** —
+  `BridgeTicker.run()` (old `bridge_ticker.py`) drove `client.stream()`,
+  which internally calls `client.connect()` but only yields parsed tick
+  dicts — the live `BridgeConnection` for the current attempt never escapes
+  `stream()`. So `ctrl._connection` stayed `None` forever in the dashboard,
+  making `subscribe_to`/`tooltip()` permanent no-ops (by design — see their
+  docstrings/warnings). Headless `main.py --routine` mode was unaffected:
+  it calls `client.connect()` directly and does `ctrl.set_connection(conn)`
+  itself.
+- Fix: `bridge_ticker.py` — `BridgeTicker` now drives `client.connect()`
+  directly (mirrors `stream()`'s reconnect-on-drop loop, including the
+  `RECONNECT_DELAY_S = 5.0` sleep) and gained a new `connection_changed =
+  pyqtSignal(object)`, emitting the live `BridgeConnection` right after each
+  `connect()` yield, and `None` when `conn.messages()` raises
+  `OSError`/`ConnectionError` (before the retry sleep).
+- `dashboard.py` — `_start_ticker` now also does
+  `self._ticker.connection_changed.connect(self._ctrl.set_connection)`. One
+  line; `set_connection`/`subscribe_to`/`tooltip()` were already covered by
+  `test_controller.py`.
+- `client.stream()` itself is unchanged and still used by `main.py --watch`.
+
+### Tests
+
+- New `tests/test_bridge_ticker.py` (PyQt6 required — installed into this
+  env via `pip install PyQt6` since it wasn't present):
+  `TestConnectionForwarding` covers `connection_changed` emitting the live
+  connection, `tick_received`/`ingest` firing per message, and `connect()`
+  being called with the configured host/port; `TestReconnection` covers
+  `connection_changed.emit(None)` on `ConnectionError`/`OSError` from
+  `conn.messages()`, the reconnect sleep, and resumption with the next
+  connection.
+- `python -m pytest scripts/gamebridge/tests/ -q` → **901 passed, 10
+  skipped**.
+
+### Open / next steps
+
+- The client-log `NullPointerException`s from `watchdog`/`vineyardhelper`/
+  `EasyEmpty`/`taskstracker` plugins are unrelated third-party plugins, not
+  part of this repo's gamebridge code — noise, not a lead for this bug.
+- Live-retest `OreMiningRoutine` against this dashboard fix to confirm
+  `ctrl.tooltip()` now returns real text and `click_live`/`right_click_live`
+  stop falling back to move-only.
+
+---
+
 ## Session: 2026-06-15 — Tooltip verification before click_live/right_click_live, and "drop" check in drop_items_shift_click
 
 ### Goal

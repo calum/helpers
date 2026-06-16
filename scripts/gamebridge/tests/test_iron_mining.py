@@ -250,6 +250,64 @@ class TestCameraRotationInRoutine:
         ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
         assert result == "mining"
 
+
+class TestFindOreTooltipVerification:
+    def test_stays_in_find_ore_when_click_live_only_moves_mouse(self):
+        """If the tooltip doesn't yet confirm the cursor is over the ore
+        (e.g. a right-click menu happened to be open this tick —
+        currentTooltip() returns its top entry, like "Cancel"), click_live
+        moves the mouse instead of clicking. find_ore must not transition to
+        "mining" — that would burn a full MINING_XP_TIMEOUT_MS cycle waiting
+        for an animation that never started."""
+        game = GameState()
+        game.tick = 1
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = "Cancel"  # menu was open — not a hover tooltip for the ore
+
+        r = _routine()
+        r.find_ore(game, ctrl)  # tick 1: settle buffer starts
+
+        game.tick = 2
+        result = r.find_ore(game, ctrl)  # tick 2: settle complete, but tooltip mismatch
+
+        ctrl.click_entity.assert_not_called()
+        ctrl.move_to_entity.assert_called_once_with(ORE_OFF_SCREEN)
+        assert result is None
+        assert r.mining_start_tick is None
+
+    def test_transitions_to_mining_once_tooltip_confirms_the_ore(self):
+        """After the moved-mouse tick, a later attempt whose tooltip names
+        the ore clicks it and transitions normally."""
+        game = GameState()
+        game.tick = 1
+        game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
+        game.inventory = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
+        game.objects = [ORE_OFF_SCREEN]
+        game.camera = {"yaw": 0, "pitch": 256}
+
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+        ctrl.hull_update.return_value = None
+        ctrl.tooltip.return_value = f"Mine {ORE_OFF_SCREEN['name']}"
+
+        r = _routine()
+        r.find_ore(game, ctrl)  # tick 1: settle buffer starts
+
+        game.tick = 2
+        result = r.find_ore(game, ctrl)  # tick 2: settle complete, tooltip matches — clicks
+
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.move_to_entity.assert_not_called()
+        assert result == "mining"
+        assert r.mining_start_tick == 2
+
     def test_walk_to_bank_adjusts_camera_when_not_visible(self):
         """walk_to_bank delegates to bring_entity_on_screen when bank is off-screen."""
         game = _make_game(

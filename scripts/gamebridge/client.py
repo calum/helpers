@@ -29,9 +29,10 @@ class BridgeConnection:
     messages are intercepted: each entity in ``entities[]`` is stored into
     ``hull_updates`` keyed by ``subId`` and is not yielded, and the message's
     ``tooltip`` field (the left-click action text, e.g. "Walk here" or "Attack
-    Goblin (level-2)") is stored in ``tooltip``. Use ``subscribe``/
-    ``unsubscribe`` to register interest in entities, and poll ``hull_updates``/
-    ``tooltip`` for the latest clickbox/action data.
+    Goblin (level-2)") is stored in ``tooltip``, with ``tooltip_updated_at`` set
+    to ``time.monotonic()`` at the same time. Use ``subscribe``/``unsubscribe``
+    to register interest in entities, and poll ``hull_updates``/``tooltip`` for
+    the latest clickbox/action data.
     """
 
     def __init__(self, sock: socket.socket):
@@ -39,6 +40,7 @@ class BridgeConnection:
         self._buf = ""
         self.hull_updates: Dict[str, dict] = {}
         self.tooltip: str = ""
+        self.tooltip_updated_at: float = 0.0
 
     def send(self, msg: dict) -> None:
         self._sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
@@ -84,6 +86,7 @@ class BridgeConnection:
                         if sub_id is not None:
                             self.hull_updates[sub_id] = entity
                     self.tooltip = msg.get("tooltip", "")
+                    self.tooltip_updated_at = time.monotonic()
                     continue
 
                 yield msg

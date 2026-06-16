@@ -198,7 +198,7 @@ class InteractionRoutine(Routine):
         live: dict,
         verify_tooltip: bool,
         act: Callable[[dict], None],
-    ) -> None:
+    ) -> bool:
         """Shared body of `click_live`/`right_click_live`: log the current
         tooltip, optionally verify `live["name"]` appears in it, and either
         perform `act(live)` (the click) or move the mouse towards `live`
@@ -208,9 +208,15 @@ class InteractionRoutine(Routine):
         still logged but the check is skipped — some entities (e.g. tiles
         with no left-click action) never produce a tooltip that contains
         their name.
+
+        Returns True if `act(live)` ran (the click fired), False if the
+        mouse was moved instead — callers must not assume the click happened
+        just because this was called.
         """
         tooltip = ctrl.tooltip()
-        log.debug("Tooltip before click: %r", tooltip)
+        age = ctrl.tooltip_age()
+        age_str = f"{age * 1000:.0f}ms" if isinstance(age, (int, float)) else age
+        log.debug("Tooltip before click: %r (age=%s)", tooltip, age_str)
 
         name = live.get("name")
         if verify_tooltip and name and name.lower() not in tooltip.lower():
@@ -219,11 +225,12 @@ class InteractionRoutine(Routine):
                 name, tooltip,
             )
             ctrl.move_to_entity(live)
-            return
+            return False
 
         act(live)
+        return True
 
-    def click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> None:
+    def click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> bool:
         """Subscribe to `entity` for live hull updates, then left-click it
         using the freshest available canvas position — and keep tracking
         those live updates while the cursor is moving towards it (see
@@ -240,15 +247,19 @@ class InteractionRoutine(Routine):
         mouse is moved towards `entity` instead, so a later call (once the
         tooltip catches up) can verify and click. Pass `verify_tooltip=False`
         for entities with no meaningful left-click tooltip (e.g. some tiles).
+
+        Returns True if the click fired, False if the mouse was moved instead
+        — callers that gate a state transition on "the click landed" must
+        check this rather than assuming success.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
         live = self._with_live_hull(ctrl, entity)
-        self._verify_tooltip_and_act(
+        return self._verify_tooltip_and_act(
             ctrl, live, verify_tooltip,
             lambda e: ctrl.click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
         )
 
-    def right_click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> None:
+    def right_click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> bool:
         """Subscribe to `entity` for live hull updates, then right-click it
         using the freshest available canvas position — and keep tracking
         those live updates while the cursor is moving towards it (see
@@ -258,11 +269,12 @@ class InteractionRoutine(Routine):
         `GameController.subscribe_to`.
 
         Same tooltip logging/verification as `click_live` — see its
-        docstring for details and the `verify_tooltip` flag.
+        docstring for details, the `verify_tooltip` flag, and the meaning of
+        the returned bool.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
         live = self._with_live_hull(ctrl, entity)
-        self._verify_tooltip_and_act(
+        return self._verify_tooltip_and_act(
             ctrl, live, verify_tooltip,
             lambda e: ctrl.right_click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
         )

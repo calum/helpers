@@ -34,6 +34,7 @@ from .decision.engine import DecisionEngine
 from .routines.base import Routine
 from .routines.examples.iron_mining import IronMiningRoutine
 from .routines.examples.gold_mining import GoldMiningRoutine
+from .routines.examples.ore_mining import OreMiningRoutine
 from .routines.examples.melee_fighter import MeleeFighterRoutine
 from .routines.examples.fish_and_cook import FishAndCookRoutine
 
@@ -55,6 +56,7 @@ from .bridge_ticker import BridgeTicker, RoutineRunner
 ROUTINES: dict[str, Type[Routine]] = {
     "Iron Mining": IronMiningRoutine,
     "Gold Mining": GoldMiningRoutine,
+    "Ore Mining": OreMiningRoutine,
     "Melee Fighter": MeleeFighterRoutine,
     "FishAndCook": FishAndCookRoutine,
 }
@@ -81,6 +83,14 @@ class GameBridgeWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick_session_panel)
         self._timer.start(1000)
+
+        # Refreshes the tooltip label from ctrl.tooltip() far more often than
+        # the ~600ms game-tick rate — hullUpdate (and therefore the tooltip)
+        # is pushed at ~20ms cadence, so this lets the dashboard show how
+        # fresh/stale it really is at click time.
+        self._tooltip_timer = QTimer(self)
+        self._tooltip_timer.timeout.connect(self._tick_tooltip_label)
+        self._tooltip_timer.start(100)
 
         start_hotkey_monitor(
             stop_cb=self._stop_routine,
@@ -247,6 +257,11 @@ class GameBridgeWindow(QMainWindow):
             f"color: {C.TEXT_MUTED}; font-size: 12px;")
         card.layout().addWidget(self._player_anim_lbl)
 
+        self._player_tooltip_lbl = QLabel("Tooltip: —")
+        self._player_tooltip_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        card.layout().addWidget(self._player_tooltip_lbl)
+
         self._player_target_lbl = QLabel("")
         self._player_target_lbl.setStyleSheet(
             f"color: {C.ACCENT}; font-size: 12px;")
@@ -363,6 +378,7 @@ class GameBridgeWindow(QMainWindow):
     def _start_ticker(self) -> None:
         self._ticker = BridgeTicker(ingest=self._engine.ingest, host=self._host, port=self._port)
         self._ticker.tick_received.connect(self._on_tick)
+        self._ticker.connection_changed.connect(self._ctrl.set_connection)
         self._ticker.start()
 
         self._routine_runner = RoutineRunner(self._engine)
@@ -590,6 +606,12 @@ class GameBridgeWindow(QMainWindow):
         self._session_lbl.setText(f"Session: {_hms(elapsed)}")
         f = self._human.fatigue
         self._fatigue_bar.set_value(int(f * 100), 100)
+
+    def _tick_tooltip_label(self) -> None:
+        tooltip = self._ctrl.tooltip()
+        age = self._ctrl.tooltip_age()
+        age_str = f" ({age * 1000:.0f}ms)" if age is not None else ""
+        self._player_tooltip_lbl.setText(f"Tooltip: {tooltip or '—'}{age_str}")
 
     # ------------------------------------------------------------------
     # Routine button handlers

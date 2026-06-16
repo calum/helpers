@@ -293,6 +293,25 @@ class TestBridgeConnectionMessages:
         conn = BridgeConnection(_make_sock(_line(1)))
         assert conn.tooltip == ""
 
+    def test_tooltip_updated_at_defaults_to_zero(self):
+        conn = BridgeConnection(_make_sock(_line(1)))
+        assert conn.tooltip_updated_at == 0.0
+
+    def test_hull_update_sets_tooltip_updated_at(self):
+        hull_line = _hull_update_line("fish_spot", True, tooltip="Walk here", canvasX=1, canvasY=2)
+        conn = BridgeConnection(_make_sock(hull_line + _line(1)))
+        with patch("scripts.gamebridge.client.time.monotonic", return_value=123.0):
+            next(conn.messages())
+        assert conn.tooltip_updated_at == 123.0
+
+    def test_hull_update_tooltip_updated_at_overwrites_on_repeat(self):
+        line1 = _hull_update_line("fish_spot", True, tooltip="Walk here", canvasX=1, canvasY=2)
+        line2 = _hull_update_line("fish_spot", True, tooltip="Attack Goblin (level-2)", canvasX=1, canvasY=2)
+        conn = BridgeConnection(_make_sock(line1 + line2 + _line(1)))
+        with patch("scripts.gamebridge.client.time.monotonic", side_effect=[100.0, 200.0]):
+            next(conn.messages())
+        assert conn.tooltip_updated_at == 200.0
+
     def test_messages_raises_on_disconnect(self):
         conn = BridgeConnection(_make_sock())
         with pytest.raises(ConnectionError):
