@@ -85,7 +85,9 @@ INTERFACES: Dict[int, InterfaceInfo] = {
     387: InterfaceInfo("equipment"),
     162: InterfaceInfo("chatbox"),
     160: InterfaceInfo("minimap"),
-    6: InterfaceInfo("silver_crafting"),
+    6:   InterfaceInfo("silver_crafting"),
+    270: InterfaceInfo("skillmulti"),  # "How many would you like to smelt/cook?" dialog
+    312: InterfaceInfo("smithing"),   # "What would you like to make?" anvil production dialog
 }
 
 

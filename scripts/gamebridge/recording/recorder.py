@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from .resolver import resolve_click
+from .summariser import summarise
 
 if TYPE_CHECKING:
     from ..state.game_state import GameState
@@ -136,7 +137,14 @@ class SessionRecorder:
 
         log.info("Recording stopped: %s (%d ticks, %d clicks, %.0fs)",
                  path, summary["ticks"], summary["clicks"], summary["durationSeconds"])
-        return {"path": path, **summary}
+
+        summary_path = None
+        try:
+            summary_path = summarise(path)
+        except Exception:
+            log.exception("Failed to summarise %s — raw recording is intact", path)
+
+        return {"path": path, "summaryPath": summary_path, **summary}
 
     # ------------------------------------------------------------------
     # Capture

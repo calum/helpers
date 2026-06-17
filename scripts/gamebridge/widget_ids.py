@@ -59,8 +59,8 @@ class Bankmain:
     ITEMS = (12, 0x0c)  # 0x000c_000c — bank items container (dynamic children = bank slots)
 
     # Deposit buttons (shown in the bank interface itself)
-    DEPOSITINV   = (12, 0x29)  # 0x000c_0029 — "Deposit inventory" button
-    DEPOSITWORN  = (12, 0x2b)  # 0x000c_002b — "Deposit worn items" button
+    DEPOSITINV   = (12, 0x30)  # 0x000c_0030 — "Deposit inventory" button
+    DEPOSITWORN  = (12, 0x31)  # 0x000c_0031 — "Deposit worn items" button
 
     # Toggle buttons (the small icons next to quantity selectors)
     DEPOSITINV_TOGGLE   = (12, 0x7f)  # 0x000c_007f — inventory deposit toggle
@@ -78,6 +78,21 @@ class Inventory:
     GROUP = 149
 
     ITEMS = (149, 0x00)  # 0x0095_0000 — inventory container (dynamic children = item slots)
+
+
+class Smithing:
+    """
+    The smithing production dialog ("What would you like to make?"), shown when clicking
+    an Anvil.
+
+    Java source: ``InterfaceID.Smithing``  (group 312 = 0x0138)
+    Exposed by GameBridge via ``exposeInterfaces`` (default on).
+
+    Item slots are searched by ``itemId`` rather than a fixed ``childId`` because the
+    anvil shows every item smithable from the current metal, and the slot index depends
+    on which tab/row the player has scrolled to.
+    """
+    GROUP = 312
 
 
 class Wornitems:

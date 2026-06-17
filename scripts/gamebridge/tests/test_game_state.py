@@ -959,11 +959,11 @@ class TestWidgetConstants:
 
     def test_bankmain_depositinv_tuple(self):
         from scripts.gamebridge.widget_ids import Bankmain
-        assert Bankmain.DEPOSITINV == (12, 41)
+        assert Bankmain.DEPOSITINV == (12, 48)
 
     def test_bankmain_depositworn_tuple(self):
         from scripts.gamebridge.widget_ids import Bankmain
-        assert Bankmain.DEPOSITWORN == (12, 43)
+        assert Bankmain.DEPOSITWORN == (12, 49)
 
     def test_inventory_items_tuple(self):
         from scripts.gamebridge.widget_ids import Inventory
@@ -982,12 +982,12 @@ class TestWidgetConstants:
     def test_find_widget_via_bankmain_constant(self):
         from scripts.gamebridge.widget_ids import Bankmain
         g = GameState()
-        w = _widget(group_id=12, child_id=41, item_id=-1, qty=0)
+        w = _widget(group_id=12, child_id=48, item_id=-1, qty=0)
         g.update(_base_msg(widgets=[w]))
         result = g.find_widget(*Bankmain.DEPOSITINV)
         assert result is not None
         assert result["groupId"] == 12
-        assert result["childId"] == 41
+        assert result["childId"] == 48
 
     def test_find_widget_returns_none_when_absent(self):
         from scripts.gamebridge.widget_ids import BankDepositBox
