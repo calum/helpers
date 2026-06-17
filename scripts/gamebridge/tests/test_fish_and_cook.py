@@ -799,7 +799,7 @@ class TestStopped:
 
 
 # ---------------------------------------------------------------------------
-# Helpers — _next_raw_fish / _click_inventory_item
+# Helpers — _next_raw_fish / click_inventory_item
 # ---------------------------------------------------------------------------
 
 class TestNextRawFish:
@@ -822,7 +822,7 @@ class TestClickInventoryItem:
         game = _make_game(widgets=[_inv_widget(590, child_id=0), match])
         ctrl = _ctrl()
 
-        result = _routine()._click_inventory_item(game, ctrl, 317)
+        result = _routine().click_inventory_item(game, ctrl, 317)
 
         assert result is True
         ctrl.click_widget.assert_called_once_with(match)
@@ -831,7 +831,7 @@ class TestClickInventoryItem:
         game = _make_game(widgets=[_inv_widget(590, child_id=0)])
         ctrl = _ctrl()
 
-        result = _routine()._click_inventory_item(game, ctrl, 317)
+        result = _routine().click_inventory_item(game, ctrl, 317)
 
         assert result is False
         ctrl.click_widget.assert_not_called()

@@ -141,26 +141,11 @@ class IronMiningRoutine(InteractionRoutine):
         return None  # still mining
 
     def walk_to_bank(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
-        """
-        Click the nearest bank deposit box to walk toward it (see
-        `InteractionRoutine.approach`). Transition to deposit once adjacent.
-        """
+        """Walk to the nearest bank deposit box and transition to deposit once adjacent."""
         if game.inventory_empty():
             return "find_ore"
-
-        box = game.nearest_object(self.BANK_NAME)
-
-        if box is None:
-            log.warning("No %s found — are you near a bank?", self.BANK_NAME)
-            return None
-
-        if game.player_near(box, tiles=2):
+        if self.walk_to_object(game, ctrl, self.BANK_NAME):
             return "deposit"
-
-        if not self.approach(game, ctrl, box):
-            return None
-
-        self.click_live(ctrl, box, "object")
         return None  # walking
 
     def deposit(self, game: "GameState", ctrl: "GameController") -> Optional[str]:

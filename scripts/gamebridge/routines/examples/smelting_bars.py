@@ -39,7 +39,7 @@ from typing import Optional, TYPE_CHECKING
 from ..base import initial_state
 from ..interaction import InteractionRoutine
 from ...input.keyboard import Key
-from ...widget_ids import Bankmain
+from ... import item_ids
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -54,9 +54,9 @@ class SmeltingBarsRoutine(InteractionRoutine):
     FURNACE_NAME = "Furnace"
     BANK_BOOTH_NAME = "Bank booth"
 
-    TIN_ORE_ID    = 438
-    COPPER_ORE_ID = 436
-    BRONZE_BAR_ID = 2349
+    TIN_ORE_ID    = item_ids.TIN_ORE
+    COPPER_ORE_ID = item_ids.COPPER_ORE
+    BRONZE_BAR_ID = item_ids.BRONZE_BAR
 
     # G270:38 — the Skillmulti item slot used by both smelting and cooking
     # (same widget as FishAndCookRoutine.COOK_WIDGET).  itemId discriminates.
@@ -70,10 +70,8 @@ class SmeltingBarsRoutine(InteractionRoutine):
 
     def __init__(self) -> None:
         super().__init__()
-        self._deposit_clicked_tick: int    = -99
         self._withdraw_tin_tick: int       = -99
         self._withdraw_copper_tick: int    = -99
-        self._bank_clicked_tick: int       = -99
         self._smelt_start_tick: Optional[int] = None
         self._furnace_clicked: bool        = False
 
@@ -84,61 +82,34 @@ class SmeltingBarsRoutine(InteractionRoutine):
     @initial_state
     def banking(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """
-        Drive the full bank cycle tick-by-tick, testing observable game state
-        rather than an explicit sub-state enum:
+        Drive the full bank cycle tick-by-tick:
 
-        1. If inventory already has both ore types (and no bars) → walk to furnace.
-        2. Bank not open → approach the bank booth and click to open it.
-        3. Bank open, has bars → click "Deposit inventory" (throttled).
+        1. Ores loaded, no bars → walk to furnace.
+        2. Bank not open → open_bank() approaches and clicks the booth.
+        3. Bank open, has bars → deposit_inventory() (throttled).
         4. Bank open, no tin → find and click the Tin ore slot.
         5. Bank open, no copper → find and click the Copper ore slot.
-        6. Bank open, has both ores → press Esc and walk to furnace.
+        6. Both ores present, bank somehow still open → Esc, walk to furnace.
         """
         bank_open  = game.is_interface_open("bank")
         has_bars   = game.inventory_has_item(self.BRONZE_BAR_ID)
         has_tin    = game.inventory_has_item(self.TIN_ORE_ID)
         has_copper = game.inventory_has_item(self.COPPER_ORE_ID)
 
-        # Ores loaded and ready — close the bank if it somehow drifted open
-        # (e.g. the routine started while the player was standing at the bank),
-        # then head to the furnace.
         if has_tin and has_copper and not has_bars:
             if bank_open:
                 ctrl.press_key(Key.ESCAPE)
             return "walk_to_furnace"
 
-        # ── Open the bank ──────────────────────────────────────────────
-        if not bank_open:
-            # Grace period after clicking the booth — avoid toggling it closed
-            # on the very next tick.
-            if (self._bank_clicked_tick >= 0
-                    and game.tick - self._bank_clicked_tick < self.BANK_OPEN_GRACE_TICKS):
-                return None
-
-            bank = game.nearest_object(self.BANK_BOOTH_NAME)
-            if bank is None:
-                log.warning("No %s found — are you near a bank?", self.BANK_BOOTH_NAME)
-                return None
-
-            if not self.approach(game, ctrl, bank):
-                return None
-
-            if self.click_live(ctrl, bank, "object"):
-                self._bank_clicked_tick = game.tick
+        if not self.open_bank(game, ctrl, self.BANK_BOOTH_NAME, self.BANK_OPEN_GRACE_TICKS):
             return None
 
-        # ── Bank is open ───────────────────────────────────────────────
-
         if has_bars:
-            deposit_btn = game.find_interface_widget(*Bankmain.DEPOSITINV)
-            if deposit_btn is not None:
-                if game.tick - self._deposit_clicked_tick >= self.DEPOSIT_THROTTLE_TICKS:
-                    ctrl.click_widget(deposit_btn)
-                    self._deposit_clicked_tick = game.tick
+            self.deposit_inventory(game, ctrl, self.DEPOSIT_THROTTLE_TICKS)
             return None
 
         if not has_tin:
-            tin_slot = self._find_bank_item(game, self.TIN_ORE_ID)
+            tin_slot = self.find_bank_item(game, self.TIN_ORE_ID)
             if tin_slot is None:
                 log.warning("No Tin ore (id %d) found in bank — please restock.", self.TIN_ORE_ID)
                 return None
@@ -148,7 +119,7 @@ class SmeltingBarsRoutine(InteractionRoutine):
             return None
 
         if not has_copper:
-            copper_slot = self._find_bank_item(game, self.COPPER_ORE_ID)
+            copper_slot = self.find_bank_item(game, self.COPPER_ORE_ID)
             if copper_slot is None:
                 log.warning("No Copper ore (id %d) found in bank — please restock.", self.COPPER_ORE_ID)
                 return None
@@ -157,29 +128,13 @@ class SmeltingBarsRoutine(InteractionRoutine):
                 self._withdraw_copper_tick = game.tick
             return None
 
-        # has_tin AND has_copper AND bank open (reached if bank was already
-        # open when the routine entered with ores already in inventory)
         ctrl.press_key(Key.ESCAPE)
         return "walk_to_furnace"
 
     def walk_to_furnace(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
-        """
-        Walk to the Furnace.  Uses approach() so camera rotation and minimap
-        walking are handled transparently.  Transitions to smelt once the
-        player is within FURNACE_NEAR_TILES.
-        """
-        furnace = game.nearest_object(self.FURNACE_NAME)
-        if furnace is None:
-            log.warning("No %s in scene — check the plugin object filter.", self.FURNACE_NAME)
-            return None
-
-        if game.player_near(furnace, tiles=self.FURNACE_NEAR_TILES):
+        """Walk to the Furnace, transitioning to smelt once adjacent."""
+        if self.walk_to_object(game, ctrl, self.FURNACE_NAME, self.FURNACE_NEAR_TILES):
             return "smelt"
-
-        if not self.approach(game, ctrl, furnace):
-            return None
-
-        self.click_live(ctrl, furnace, "object")
         return None
 
     def smelt(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -243,19 +198,3 @@ class SmeltingBarsRoutine(InteractionRoutine):
 
         return None
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _find_bank_item(self, game: "GameState", item_id: int) -> Optional[dict]:
-        """Return the first G12 interface widget whose itemId matches, or None.
-
-        Searches game.interfaces (populated when exposeInterfaces is on,
-        the default) rather than game.widgets (exposeWidgets, default off)
-        so the routine works without enabling extra plugin config.
-        """
-        return next(
-            (w for w in game.interfaces
-             if w.get("groupId") == Bankmain.GROUP and w.get("itemId") == item_id),
-            None,
-        )

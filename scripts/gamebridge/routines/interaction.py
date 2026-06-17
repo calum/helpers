@@ -31,7 +31,7 @@ from typing import Optional, TYPE_CHECKING
 
 from .base import Routine
 from ..input.keyboard import Key
-from ..widget_ids import Inventory
+from ..widget_ids import Bankmain, Inventory
 
 if TYPE_CHECKING:
     from ..state.game_state import GameState
@@ -78,6 +78,9 @@ class InteractionRoutine(Routine):
         self._drop_queue: list[dict] = []
         self._drop_pending: Optional[dict] = None
         self._drop_skipped: set = set()
+        # Banking helpers — see open_bank / deposit_inventory
+        self._bank_clicked_tick: int = -99
+        self._deposit_clicked_tick: int = -99
 
     # ------------------------------------------------------------------
     # Approach
@@ -368,3 +371,139 @@ class InteractionRoutine(Routine):
         ctrl.move_to_widget(widget)
         self._drop_pending = widget
         return True
+
+    # ------------------------------------------------------------------
+    # Walking helpers
+    # ------------------------------------------------------------------
+
+    def walk_to_entity(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        entity: dict,
+        kind: str = "object",
+        near_tiles: int = 2,
+    ) -> bool:
+        """Walk toward `entity`, clicking it to move once the camera/player
+        are ready. Returns True when the player is within `near_tiles`
+        (caller may begin interacting). Returns False while the approach or
+        minimap walk is still in progress.
+
+        Typical usage in a "walk to X, then do Y" state:
+
+            if self.walk_to_entity(game, ctrl, fire, near_tiles=1):
+                return "cooking"
+            return None
+        """
+        if game.player_near(entity, tiles=near_tiles):
+            return True
+        if not self.approach(game, ctrl, entity):
+            return False
+        self.click_live(ctrl, entity, kind)
+        return False
+
+    def walk_to_object(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        name: str,
+        near_tiles: int = 2,
+    ) -> bool:
+        """Find the nearest object named `name` and walk toward it.
+        Returns True when the player has arrived (within `near_tiles`).
+        Returns False when the object is not in the scene (logs a warning)
+        or while the approach / minimap walk is still in progress.
+
+        Typical usage:
+
+            if self.walk_to_object(game, ctrl, self.FURNACE_NAME, self.FURNACE_NEAR_TILES):
+                return "smelt"
+            return None
+        """
+        obj = game.nearest_object(name)
+        if obj is None:
+            log.warning("No %s in scene", name)
+            return False
+        return self.walk_to_entity(game, ctrl, obj, near_tiles=near_tiles)
+
+    # ------------------------------------------------------------------
+    # Inventory helpers
+    # ------------------------------------------------------------------
+
+    def click_inventory_item(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        item_id: int,
+        group_id: int = Inventory.GROUP,
+    ) -> bool:
+        """Left-click the first inventory slot holding `item_id` (e.g. to
+        select it for a "Use" gesture). Returns True if a matching slot was
+        found and clicked, False if the item is not in the inventory."""
+        for w in game.widgets:
+            if w.get("groupId") == group_id and w.get("itemId") == item_id:
+                ctrl.click_widget(w)
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Banking helpers
+    # ------------------------------------------------------------------
+
+    def find_bank_item(self, game: "GameState", item_id: int) -> Optional[dict]:
+        """Return the first Bankmain interface widget holding `item_id`, or
+        None. Used to locate a specific item in an open bank so it can be
+        withdrawn with `ctrl.click_widget`."""
+        return next(
+            (w for w in game.interfaces
+             if w.get("groupId") == Bankmain.GROUP and w.get("itemId") == item_id),
+            None,
+        )
+
+    def open_bank(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        booth_name: str = "Bank booth",
+        grace_ticks: int = 4,
+    ) -> bool:
+        """Ensure the bank interface is open. Returns True immediately if it
+        already is. Otherwise approaches and clicks the nearest `booth_name`
+        object, then returns False so the caller waits for the next tick.
+
+        A `grace_ticks` window after clicking the booth prevents the routine
+        from toggling it closed on the very next tick before it has had a
+        chance to open.
+        """
+        if game.is_interface_open("bank"):
+            return True
+        if (self._bank_clicked_tick >= 0
+                and game.tick - self._bank_clicked_tick < grace_ticks):
+            return False
+        bank = game.nearest_object(booth_name)
+        if bank is None:
+            log.warning("No %s found — are you near a bank?", booth_name)
+            return False
+        if not self.approach(game, ctrl, bank):
+            return False
+        if self.click_live(ctrl, bank, "object"):
+            self._bank_clicked_tick = game.tick
+        return False
+
+    def deposit_inventory(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        throttle_ticks: int = 8,
+    ) -> bool:
+        """Click the bank "Deposit inventory" button, throttled to one click
+        per `throttle_ticks` so the server has time to process the deposit
+        before we retry. Returns True if a click was issued this tick."""
+        deposit_btn = game.find_interface_widget(*Bankmain.DEPOSITINV)
+        if deposit_btn is None:
+            return False
+        if game.tick - self._deposit_clicked_tick >= throttle_ticks:
+            ctrl.click_widget(deposit_btn)
+            self._deposit_clicked_tick = game.tick
+            return True
+        return False

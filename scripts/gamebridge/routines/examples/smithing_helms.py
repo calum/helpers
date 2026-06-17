@@ -46,7 +46,8 @@ from typing import Optional, TYPE_CHECKING
 from ..base import initial_state
 from ..interaction import InteractionRoutine
 from ...input.keyboard import Key
-from ...widget_ids import Bankmain, Smithing
+from ...widget_ids import Smithing
+from ... import item_ids
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -61,8 +62,8 @@ class SmithingHelmsRoutine(InteractionRoutine):
     ANVIL_NAME     = "Anvil"
     BANK_BOOTH_NAME = "Bank booth"
 
-    BRONZE_BAR_ID  = 2349
-    BRONZE_HELM_ID = 1155  # Bronze full helm
+    BRONZE_BAR_ID  = item_ids.BRONZE_BAR
+    BRONZE_HELM_ID = item_ids.BRONZE_HELM
     BARS_PER_HELM  = 2     # Bronze bars consumed per helm
 
     ANVIL_NEAR_TILES           = 2   # max Manhattan distance to consider "at anvil"
@@ -74,9 +75,7 @@ class SmithingHelmsRoutine(InteractionRoutine):
 
     def __init__(self) -> None:
         super().__init__()
-        self._deposit_clicked_tick: int      = -99
         self._withdraw_tick: int             = -99
-        self._bank_clicked_tick: int         = -99
         self._anvil_clicked: bool            = False
         self._anvil_clicked_tick: int        = -99
         self._smith_start_tick: Optional[int] = None
@@ -90,52 +89,30 @@ class SmithingHelmsRoutine(InteractionRoutine):
         """
         Drive the bank cycle tick-by-tick:
 
-        1. Inventory has bars and no helms (ready to smith) → walk to anvil.
-        2. Bank not open → approach the bank booth and open it.
-        3. Bank open, has helms → deposit inventory (throttled).
+        1. Bars loaded, no helms → walk to anvil.
+        2. Bank not open → open_bank() approaches and clicks the booth.
+        3. Bank open, has helms → deposit_inventory() (throttled).
         4. Bank open, no bars → find and click the Bronze bar slot.
-        5. Bank open, has bars and no helms → press Esc and walk to anvil.
+        5. Bars present, no helms, bank open → Esc, walk to anvil.
         """
         bank_open = game.is_interface_open("bank")
         has_bars  = game.inventory_count(self.BRONZE_BAR_ID) >= self.BARS_PER_HELM
         has_helms = game.inventory_has_item(self.BRONZE_HELM_ID)
 
-        # Bars loaded and ready — close any drifted-open bank, then head to anvil.
         if has_bars and not has_helms:
             if bank_open:
                 ctrl.press_key(Key.ESCAPE)
             return "walk_to_anvil"
 
-        # ── Open the bank ──────────────────────────────────────────────
-        if not bank_open:
-            if (self._bank_clicked_tick >= 0
-                    and game.tick - self._bank_clicked_tick < self.BANK_OPEN_GRACE_TICKS):
-                return None
-
-            bank = game.nearest_object(self.BANK_BOOTH_NAME)
-            if bank is None:
-                log.warning("No %s found — are you near a bank?", self.BANK_BOOTH_NAME)
-                return None
-
-            if not self.approach(game, ctrl, bank):
-                return None
-
-            if self.click_live(ctrl, bank, "object"):
-                self._bank_clicked_tick = game.tick
+        if not self.open_bank(game, ctrl, self.BANK_BOOTH_NAME, self.BANK_OPEN_GRACE_TICKS):
             return None
 
-        # ── Bank is open ───────────────────────────────────────────────
-
         if has_helms:
-            deposit_btn = game.find_interface_widget(*Bankmain.DEPOSITINV)
-            if deposit_btn is not None:
-                if game.tick - self._deposit_clicked_tick >= self.DEPOSIT_THROTTLE_TICKS:
-                    ctrl.click_widget(deposit_btn)
-                    self._deposit_clicked_tick = game.tick
+            self.deposit_inventory(game, ctrl, self.DEPOSIT_THROTTLE_TICKS)
             return None
 
         if not has_bars:
-            bar_slot = self._find_bank_bar(game)
+            bar_slot = self.find_bank_item(game, self.BRONZE_BAR_ID)
             if bar_slot is None:
                 log.warning("No Bronze bars (id %d) in bank — please restock.", self.BRONZE_BAR_ID)
                 return None
@@ -144,28 +121,13 @@ class SmithingHelmsRoutine(InteractionRoutine):
                 self._withdraw_tick = game.tick
             return None
 
-        # has_bars, no helms, bank somehow still open
         ctrl.press_key(Key.ESCAPE)
         return "walk_to_anvil"
 
     def walk_to_anvil(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
-        """
-        Walk to the Anvil.  Uses approach() so camera rotation and minimap
-        walking are handled transparently.  Transitions to smith once the
-        player is within ANVIL_NEAR_TILES.
-        """
-        anvil = game.nearest_object(self.ANVIL_NAME)
-        if anvil is None:
-            log.warning("No %s in scene — check the plugin object filter.", self.ANVIL_NAME)
-            return None
-
-        if game.player_near(anvil, tiles=self.ANVIL_NEAR_TILES):
+        """Walk to the Anvil, transitioning to smith once adjacent."""
+        if self.walk_to_object(game, ctrl, self.ANVIL_NAME, self.ANVIL_NEAR_TILES):
             return "smith"
-
-        if not self.approach(game, ctrl, anvil):
-            return None
-
-        self.click_live(ctrl, anvil, "object")
         return None
 
     def smith(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -242,14 +204,3 @@ class SmithingHelmsRoutine(InteractionRoutine):
 
         return None
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _find_bank_bar(self, game: "GameState") -> Optional[dict]:
-        """Return the first G12 interface widget whose itemId is Bronze bar, or None."""
-        return next(
-            (w for w in game.interfaces
-             if w.get("groupId") == Bankmain.GROUP and w.get("itemId") == self.BRONZE_BAR_ID),
-            None,
-        )

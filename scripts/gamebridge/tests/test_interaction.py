@@ -17,7 +17,8 @@ from unittest.mock import MagicMock
 from scripts.gamebridge.input.keyboard import Key
 from scripts.gamebridge.routines.base import initial_state
 from scripts.gamebridge.routines.interaction import DropMode, InteractionRoutine, MenuClick, OCCLUSION_NUDGE_YAW
-from scripts.gamebridge.widget_ids import Inventory
+from scripts.gamebridge.state.game_state import GameState
+from scripts.gamebridge.widget_ids import Bankmain, Inventory
 
 
 class _DummyRoutine(InteractionRoutine):
@@ -648,3 +649,286 @@ class TestDropItemsShiftClick:
             r.drop_items_shift_click(game, ctrl, DROP_ITEM_IDS, verify_tooltip=True)
 
         assert "Drop Logs" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# walk_to_entity — near/approach/click-live gating on an entity dict
+# ---------------------------------------------------------------------------
+
+_OBJ = {
+    "id": 24009, "name": "Furnace",
+    "worldX": 2976, "worldY": 3369, "plane": 0,
+    "onScreen": True, "canvasX": 350, "canvasY": 250,
+    "minimapX": 630, "minimapY": 85,
+}
+
+
+def _game_state(player_x: int = 2947, player_y: int = 3368, tick: int = 10) -> GameState:
+    gs = GameState()
+    gs.tick = tick
+    gs.player = {"worldX": player_x, "worldY": player_y, "plane": 0, "animation": -1}
+    gs.camera = {"yaw": 0, "pitch": 362}
+    gs.interfaces = []
+    return gs
+
+
+def _live_ctrl() -> MagicMock:
+    ctrl = MagicMock()
+    ctrl.bring_entity_on_screen.return_value = True
+    ctrl.hull_update.return_value = None
+    ctrl.tooltip.return_value = _OBJ["name"]
+    return ctrl
+
+
+class TestWalkToEntity:
+    def test_returns_true_when_player_already_within_near_tiles(self):
+        """If the player is adjacent (distance ≤ near_tiles) nothing is clicked."""
+        game = _game_state(player_x=2975, player_y=3369)  # distance 1
+        ctrl = _live_ctrl()
+        result = _routine().walk_to_entity(game, ctrl, _OBJ, near_tiles=2)
+        assert result is True
+        ctrl.click_entity.assert_not_called()
+
+    def test_returns_false_when_too_far(self):
+        game = _game_state(player_x=2947, player_y=3368)  # distance > 2
+        result = _routine().walk_to_entity(_game_state(), _live_ctrl(), _OBJ)
+        assert result is False
+
+    def test_approach_gates_click_for_one_settle_tick(self):
+        """First idle tick sets the settle buffer; no click yet."""
+        game = _game_state(tick=10)
+        ctrl = _live_ctrl()
+        _routine().walk_to_entity(game, ctrl, _OBJ)
+        ctrl.click_entity.assert_not_called()
+
+    def test_click_fires_after_settle_tick(self):
+        """Second consecutive idle tick clears the buffer and fires click_live."""
+        game = _game_state(tick=10)
+        ctrl = _live_ctrl()
+        r = _routine()
+        r.walk_to_entity(game, ctrl, _OBJ)       # tick 10: settle
+        game.tick = 11
+        r.walk_to_entity(game, ctrl, _OBJ)       # tick 11: click
+        ctrl.click_entity.assert_called_once()
+
+    def test_near_tiles_param_respected(self):
+        """With near_tiles=5 a player 3 tiles away is already 'arrived'."""
+        game = _game_state(player_x=2973, player_y=3369)  # distance 3
+        result = _routine().walk_to_entity(game, _live_ctrl(), _OBJ, near_tiles=5)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# walk_to_object — name lookup wrapping walk_to_entity
+# ---------------------------------------------------------------------------
+
+_OBJECTS_SCENE = [_OBJ]
+
+
+class TestWalkToObject:
+    def test_returns_false_and_logs_warning_when_not_found(self, caplog):
+        game = _game_state()
+        game.objects = []
+        with caplog.at_level("WARNING"):
+            result = _routine().walk_to_object(game, _live_ctrl(), "Furnace")
+        assert result is False
+        assert "furnace" in caplog.text.lower()
+
+    def test_returns_true_when_near_found_object(self):
+        game = _game_state(player_x=2975, player_y=3369)  # distance 1
+        game.objects = _OBJECTS_SCENE
+        result = _routine().walk_to_object(game, _live_ctrl(), "Furnace", near_tiles=2)
+        assert result is True
+
+    def test_returns_false_and_approaches_when_far(self):
+        game = _game_state(tick=10)
+        game.objects = _OBJECTS_SCENE
+        result = _routine().walk_to_object(game, _live_ctrl(), "Furnace")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# click_inventory_item — left-click the first matching inventory slot
+# ---------------------------------------------------------------------------
+
+def _inv_item(item_id: int, child_id: int = 0) -> dict:
+    return {
+        "groupId": Inventory.GROUP, "childId": child_id, "itemId": item_id,
+        "quantity": 1, "bounds": {"x": child_id * 40, "y": 0, "width": 32, "height": 32},
+    }
+
+
+class TestClickInventoryItem:
+    def test_clicks_first_matching_slot_and_returns_true(self):
+        game = _game()
+        game.widgets = [_inv_item(590, 0), _inv_item(1511, 1)]
+        ctrl = MagicMock()
+        result = _routine().click_inventory_item(game, ctrl, 1511)
+        ctrl.click_widget.assert_called_once_with(_inv_item(1511, 1))
+        assert result is True
+
+    def test_returns_false_when_item_not_in_inventory(self):
+        game = _game()
+        game.widgets = [_inv_item(590, 0)]
+        ctrl = MagicMock()
+        result = _routine().click_inventory_item(game, ctrl, 1511)
+        ctrl.click_widget.assert_not_called()
+        assert result is False
+
+    def test_respects_custom_group_id(self):
+        """A widget in a different group is ignored even if item_id matches."""
+        game = _game()
+        game.widgets = [{"groupId": 999, "childId": 0, "itemId": 1511, "quantity": 1}]
+        ctrl = MagicMock()
+        result = _routine().click_inventory_item(game, ctrl, 1511, group_id=Inventory.GROUP)
+        ctrl.click_widget.assert_not_called()
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# find_bank_item — search open-bank interfaces for a specific item
+# ---------------------------------------------------------------------------
+
+def _bank_widget(item_id: int, child_id: int = 5) -> dict:
+    return {
+        "groupId": Bankmain.GROUP, "childId": child_id,
+        "itemId": item_id, "quantity": 50,
+        "bounds": {"x": 361, "y": 155, "width": 36, "height": 32}, "text": "",
+    }
+
+
+class TestFindBankItem:
+    def test_returns_widget_when_item_present_in_bank(self):
+        game = _game()
+        widget = _bank_widget(438)
+        game.interfaces = [widget]
+        result = _routine().find_bank_item(game, 438)
+        assert result == widget
+
+    def test_returns_none_when_item_absent(self):
+        game = _game()
+        game.interfaces = [_bank_widget(436)]
+        result = _routine().find_bank_item(game, 438)
+        assert result is None
+
+    def test_ignores_non_bank_groups(self):
+        game = _game()
+        game.interfaces = [{"groupId": 149, "childId": 0, "itemId": 438, "quantity": 1}]
+        result = _routine().find_bank_item(game, 438)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# open_bank — approach + click booth, grace period, returns True when open
+# ---------------------------------------------------------------------------
+
+_BANK_BOOTH_OBJ = {
+    "id": 24101, "name": "Bank booth",
+    "worldX": 2947, "worldY": 3367, "plane": 0,
+    "onScreen": True, "canvasX": 250, "canvasY": 190,
+    "hull": [[240, 180], [260, 180], [260, 200], [240, 200]],
+    "minimapX": 600, "minimapY": 83,
+}
+
+_BANK_IFACE_ROOT = {
+    "groupId": 12, "childId": 0,
+    "itemId": -1, "quantity": 0,
+    "bounds": {"x": 4, "y": 4, "width": 512, "height": 334},
+    "text": "",
+}
+
+
+def _bank_game(tick: int = 100, bank_open: bool = False) -> GameState:
+    game = _game_state(tick=tick)
+    game.objects = [_BANK_BOOTH_OBJ]
+    game.interfaces = [_BANK_IFACE_ROOT] if bank_open else []
+    game.widgets = []
+    return game
+
+
+class TestOpenBank:
+    def test_returns_true_when_bank_already_open(self):
+        game = _bank_game(bank_open=True)
+        result = _routine().open_bank(game, _live_ctrl())
+        assert result is True
+
+    def test_returns_false_during_grace_period(self):
+        r = _routine()
+        r._bank_clicked_tick = 100
+        game = _bank_game(tick=102)
+        result = r.open_bank(game, _live_ctrl(), grace_ticks=4)
+        assert result is False
+
+    def test_retries_after_grace_period_expires(self):
+        r = _routine()
+        r._bank_clicked_tick = 100
+        ctrl = _live_ctrl()
+        r.open_bank(_bank_game(tick=104), ctrl, grace_ticks=4)    # settle
+        r.open_bank(_bank_game(tick=105), ctrl, grace_ticks=4)    # click
+        ctrl.click_entity.assert_called_once()
+
+    def test_returns_false_and_logs_when_no_booth(self, caplog):
+        game = _bank_game()
+        game.objects = []
+        with caplog.at_level("WARNING"):
+            result = _routine().open_bank(game, _live_ctrl())
+        assert result is False
+        assert "bank" in caplog.text.lower()
+
+    def test_records_bank_clicked_tick_after_click(self):
+        r = _routine()
+        ctrl = _live_ctrl()
+        r.open_bank(_bank_game(tick=10), ctrl)   # settle
+        r.open_bank(_bank_game(tick=11), ctrl)   # click
+        assert r._bank_clicked_tick == 11
+
+
+# ---------------------------------------------------------------------------
+# deposit_inventory — throttled "Deposit inventory" button click
+# ---------------------------------------------------------------------------
+
+_DEPOSIT_BTN = {
+    "groupId": Bankmain.GROUP,
+    "childId": Bankmain.DEPOSITINV[1],
+    "itemId": -1, "quantity": 0,
+    "bounds": {"x": 347, "y": 301, "width": 29, "height": 22},
+    "text": "",
+}
+
+
+def _deposit_game(tick: int = 100, has_btn: bool = True) -> GameState:
+    game = _game_state(tick=tick)
+    game.interfaces = [_DEPOSIT_BTN] if has_btn else []
+    game.widgets = []
+    return game
+
+
+class TestDepositInventory:
+    def test_clicks_deposit_button_and_returns_true(self):
+        ctrl = MagicMock()
+        result = _routine().deposit_inventory(_deposit_game(tick=100), ctrl)
+        ctrl.click_widget.assert_called_once_with(_DEPOSIT_BTN)
+        assert result is True
+
+    def test_throttled_within_throttle_ticks(self):
+        r = _routine()
+        ctrl = MagicMock()
+        r.deposit_inventory(_deposit_game(tick=100), ctrl)
+        ctrl.reset_mock()
+        for delta in (1, 4, 7):
+            r.deposit_inventory(_deposit_game(tick=100 + delta), ctrl)
+        ctrl.click_widget.assert_not_called()
+
+    def test_allowed_at_throttle_tick_boundary(self):
+        r = _routine()
+        ctrl = MagicMock()
+        r.deposit_inventory(_deposit_game(tick=100), ctrl)
+        ctrl.reset_mock()
+        r.deposit_inventory(_deposit_game(tick=108), ctrl)
+        ctrl.click_widget.assert_called_once()
+
+    def test_returns_false_when_no_deposit_button(self):
+        ctrl = MagicMock()
+        result = _routine().deposit_inventory(_deposit_game(has_btn=False), ctrl)
+        ctrl.click_widget.assert_not_called()
+        assert result is False

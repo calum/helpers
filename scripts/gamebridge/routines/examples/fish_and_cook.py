@@ -52,6 +52,7 @@ from typing import Optional, TYPE_CHECKING
 from ..base import initial_state
 from ..interaction import DropMode, InteractionRoutine, MenuClick
 from ...input.keyboard import Key
+from ... import item_ids
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -66,15 +67,14 @@ class FishAndCookRoutine(InteractionRoutine):
     FISHING_SPOT_NAME = "Fishing spot"
     FIRE_NAME = "Fire"
     MINIMAP_GROUP = 160
-    INVENTORY_GROUP = 149
 
-    TINDERBOX_ID     = 590
-    LOGS_ID          = 1511
-    RAW_SHRIMP_ID    = 317
-    COOKED_SHRIMP_ID = 315
-    RAW_ANCHOVIES_ID = 321
-    ANCHOVIES_ID     = 319
-    BURNT_FISH_ID    = 7954  # generic "Burnt fish" — shared by burnt shrimp AND burnt anchovies
+    TINDERBOX_ID     = item_ids.TINDERBOX
+    LOGS_ID          = item_ids.LOGS
+    RAW_SHRIMP_ID    = item_ids.RAW_SHRIMP
+    COOKED_SHRIMP_ID = item_ids.COOKED_SHRIMP
+    RAW_ANCHOVIES_ID = item_ids.RAW_ANCHOVIES
+    ANCHOVIES_ID     = item_ids.ANCHOVIES
+    BURNT_FISH_ID    = item_ids.BURNT_FISH
 
     DROP_ITEM_IDS = (RAW_SHRIMP_ID, RAW_ANCHOVIES_ID, COOKED_SHRIMP_ID, ANCHOVIES_ID, BURNT_FISH_ID)
 
@@ -186,10 +186,9 @@ class FishAndCookRoutine(InteractionRoutine):
         """
         Look for a `Fire` already standing within `FIRE_SEARCH_RADIUS` tiles
         before lighting our own — saves a log and avoids littering the area
-        with abandoned fires. Walks over to the nearest one in range (same
-        "approach, then click to walk" shape as `IronMiningRoutine.walk_to_bank`)
-        and starts cooking once adjacent; falls back to `step_aside` to light
-        a fresh one if nothing is in range.
+        with abandoned fires. Walks over to the nearest one in range and starts
+        cooking once adjacent; falls back to `step_aside` to light a fresh one
+        if nothing is in range.
         """
         fire = self._nearest_fire_in_range(game)
 
@@ -199,13 +198,8 @@ class FishAndCookRoutine(InteractionRoutine):
         elif fire is None:
             return "step_aside"
 
-        if game.player_near(fire, tiles=1):
+        if self.walk_to_entity(game, ctrl, fire, near_tiles=1):
             return "cooking"
-
-        if not self.approach(game, ctrl, fire):
-            return None
-
-        self.click_live(ctrl, fire, "object")
         return None
 
     def step_aside(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -241,11 +235,11 @@ class FishAndCookRoutine(InteractionRoutine):
             return "stopped"
 
         if not self._used_logs:
-            if self._click_inventory_item(game, ctrl, self.LOGS_ID):
+            if self.click_inventory_item(game, ctrl, self.LOGS_ID):
                 self._used_logs = True
             return None
 
-        if self._click_inventory_item(game, ctrl, self.TINDERBOX_ID):
+        if self.click_inventory_item(game, ctrl, self.TINDERBOX_ID):
             self._used_logs = False
             self._fire_attempt_tick = game.tick
             return "confirm_fire"
@@ -338,7 +332,7 @@ class FishAndCookRoutine(InteractionRoutine):
                 return None
             self._cook_started_tick = None
 
-        if self._click_inventory_item(game, ctrl, raw_id):
+        if self.click_inventory_item(game, ctrl, raw_id):
             self._cook_selected = True
 
         return None
@@ -377,14 +371,6 @@ class FishAndCookRoutine(InteractionRoutine):
         if game.inventory_has_item(self.RAW_ANCHOVIES_ID):
             return self.RAW_ANCHOVIES_ID
         return None
-
-    def _click_inventory_item(self, game: "GameState", ctrl: "GameController", item_id: int) -> bool:
-        """Left-click the first inventory slot holding `item_id` (selects it for "Use")."""
-        for w in game.widgets:
-            if w.get("groupId") == self.INVENTORY_GROUP and w.get("itemId") == item_id:
-                ctrl.click_widget(w)
-                return True
-        return False
 
     def _walk_to_random_nearby_tile(self, game: "GameState", ctrl: "GameController") -> bool:
         """
