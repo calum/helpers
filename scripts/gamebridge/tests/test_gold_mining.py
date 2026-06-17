@@ -71,7 +71,7 @@ class TestGoldMiningRoutine:
 
         # Tick 2: settle complete — clicks and enters mining
         result = r.find_ore(_empty_game(tick=2), ctrl)
-        ctrl.click_entity.assert_called_once_with(GOLD_ROCK_ON_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(GOLD_ROCK_ON_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Gold rocks')
         assert result == "mining"
 
     def test_find_ore_ignores_iron_rock(self):

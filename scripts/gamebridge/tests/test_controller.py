@@ -1468,3 +1468,126 @@ class TestReleaseAllKeys:
         mock_kb.key_up.assert_not_called()
 
         assert ctrl.hull_update("fish_spot") is None
+
+
+# ---------------------------------------------------------------------------
+# click_entity — verify_name tooltip check (fires after mouse arrives)
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestClickEntityVerifyName:
+    def _setup(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+
+    def _ctrl_with_tooltip(self, tooltip: str) -> GameController:
+        ctrl = _ctrl()
+        conn = MagicMock()
+        conn.tooltip = tooltip
+        conn.tooltip_updated_at = 1.0
+        conn.hull_updates = {}
+        ctrl._connection = conn
+        return ctrl
+
+    def test_clicks_and_returns_true_when_verify_name_not_set(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        result = _ctrl().click_entity(_entity(500, 300, on_screen=True))
+        mock_mouse.click_left.assert_called_once()
+        assert result is True
+
+    def test_clicks_and_returns_true_when_name_in_tooltip(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Mine Iron rocks")
+        result = ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        mock_mouse.click_left.assert_called_once()
+        assert result is True
+
+    def test_skips_click_and_returns_false_when_name_not_in_tooltip(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Walk here")
+        result = ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        mock_mouse.click_left.assert_not_called()
+        assert result is False
+
+    def test_tooltip_check_is_case_insensitive(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("MINE IRON ROCKS")
+        result = ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        mock_mouse.click_left.assert_called_once()
+        assert result is True
+
+    def test_mouse_moves_before_tooltip_check(self, mock_mouse, mock_settings):
+        """Mouse must arrive at the entity before the tooltip is read — that is
+        the whole point of the fix: the tooltip reflects where the cursor IS,
+        not where it was when the tick started."""
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Walk here")
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        mock_mouse.wind_mouse_to_prediction.assert_called_once()
+        mock_mouse.click_left.assert_not_called()
+
+    def test_returns_false_when_off_screen(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        result = _ctrl().click_entity(_entity(500, 300, on_screen=False), verify_name="Iron rocks")
+        assert result is False
+
+    def test_logs_tooltip_before_click(self, mock_mouse, mock_settings, caplog):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Mine Iron rocks")
+        with caplog.at_level(logging.DEBUG, logger="scripts.gamebridge.controller.controller"):
+            ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        assert "Mine Iron rocks" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# right_click_entity — verify_name tooltip check (fires after mouse arrives)
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestRightClickEntityVerifyName:
+    def _setup(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+
+    def _ctrl_with_tooltip(self, tooltip: str) -> GameController:
+        ctrl = _ctrl()
+        conn = MagicMock()
+        conn.tooltip = tooltip
+        conn.tooltip_updated_at = 1.0
+        conn.hull_updates = {}
+        ctrl._connection = conn
+        return ctrl
+
+    def test_right_clicks_and_returns_true_when_verify_name_not_set(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        result = _ctrl().right_click_entity(_entity(500, 300, on_screen=True))
+        mock_mouse.click_right.assert_called_once()
+        assert result is True
+
+    def test_right_clicks_and_returns_true_when_name_in_tooltip(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Attack Goblin (level-2)")
+        result = ctrl.right_click_entity(_entity(500, 300, on_screen=True, name="Goblin"), verify_name="Goblin")
+        mock_mouse.click_right.assert_called_once()
+        assert result is True
+
+    def test_skips_right_click_and_returns_false_when_name_not_in_tooltip(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Walk here")
+        result = ctrl.right_click_entity(_entity(500, 300, on_screen=True, name="Goblin"), verify_name="Goblin")
+        mock_mouse.click_right.assert_not_called()
+        assert result is False
+
+    def test_mouse_moves_before_tooltip_check(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = self._ctrl_with_tooltip("Walk here")
+        ctrl.right_click_entity(_entity(500, 300, on_screen=True, name="Goblin"), verify_name="Goblin")
+        mock_mouse.wind_mouse_to_prediction.assert_called_once()
+        mock_mouse.click_right.assert_not_called()
+
+    def test_returns_false_when_off_screen(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        result = _ctrl().right_click_entity(_entity(500, 300, on_screen=False), verify_name="Goblin")
+        assert result is False

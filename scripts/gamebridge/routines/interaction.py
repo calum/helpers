@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum, auto
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from .base import Routine
 from ..input.keyboard import Key
@@ -192,44 +192,6 @@ class InteractionRoutine(Routine):
                 live[field] = update[field]
         return live
 
-    def _verify_tooltip_and_act(
-        self,
-        ctrl: "GameController",
-        live: dict,
-        verify_tooltip: bool,
-        act: Callable[[dict], None],
-    ) -> bool:
-        """Shared body of `click_live`/`right_click_live`: log the current
-        tooltip, optionally verify `live["name"]` appears in it, and either
-        perform `act(live)` (the click) or move the mouse towards `live`
-        instead so the next call gets a fresher tooltip to check.
-
-        If `verify_tooltip` is False, or `live` has no `name`, the tooltip is
-        still logged but the check is skipped — some entities (e.g. tiles
-        with no left-click action) never produce a tooltip that contains
-        their name.
-
-        Returns True if `act(live)` ran (the click fired), False if the
-        mouse was moved instead — callers must not assume the click happened
-        just because this was called.
-        """
-        tooltip = ctrl.tooltip()
-        age = ctrl.tooltip_age()
-        age_str = f"{age * 1000:.0f}ms" if isinstance(age, (int, float)) else age
-        log.debug("Tooltip before click: %r (age=%s)", tooltip, age_str)
-
-        name = live.get("name")
-        if verify_tooltip and name and name.lower() not in tooltip.lower():
-            log.debug(
-                "%r not found in tooltip %r — moving mouse instead of clicking",
-                name, tooltip,
-            )
-            ctrl.move_to_entity(live)
-            return False
-
-        act(live)
-        return True
-
     def click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> bool:
         """Subscribe to `entity` for live hull updates, then left-click it
         using the freshest available canvas position — and keep tracking
@@ -239,25 +201,21 @@ class InteractionRoutine(Routine):
         `kind` is one of "npc"/"object"/"player"/"groundItem" — see
         `GameController.subscribe_to`.
 
-        Before clicking, the current `ctrl.tooltip()` is logged at debug
-        level and, if `verify_tooltip` is True (the default) and `entity` has
-        a `name`, checked to contain that name — confirming the cursor is
-        actually hovering this entity rather than scenery/another entity in
-        front of it. If the name isn't found, the click is skipped and the
-        mouse is moved towards `entity` instead, so a later call (once the
+        If `verify_tooltip` is True (the default) and `entity` has a `name`,
+        the tooltip is checked for that name right before the click fires —
+        after the mouse has arrived at the entity (see
+        `GameController.click_entity`). If not found, the click is skipped
+        and the mouse is already near the entity, so a later call (once the
         tooltip catches up) can verify and click. Pass `verify_tooltip=False`
         for entities with no meaningful left-click tooltip (e.g. some tiles).
 
-        Returns True if the click fired, False if the mouse was moved instead
-        — callers that gate a state transition on "the click landed" must
-        check this rather than assuming success.
+        Returns True if the click fired, False otherwise — callers that gate
+        a state transition on "the click landed" must check this.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
         live = self._with_live_hull(ctrl, entity)
-        return self._verify_tooltip_and_act(
-            ctrl, live, verify_tooltip,
-            lambda e: ctrl.click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
-        )
+        verify_name = entity.get("name") if verify_tooltip else None
+        return ctrl.click_entity(live, sub_id=self.LIVE_HULL_SUB_ID, verify_name=verify_name)
 
     def right_click_live(self, ctrl: "GameController", entity: dict, kind: str, verify_tooltip: bool = True) -> bool:
         """Subscribe to `entity` for live hull updates, then right-click it
@@ -265,19 +223,13 @@ class InteractionRoutine(Routine):
         those live updates while the cursor is moving towards it (see
         `GameController._plan_live_click`).
 
-        `kind` is one of "npc"/"object"/"player"/"groundItem" — see
-        `GameController.subscribe_to`.
-
-        Same tooltip logging/verification as `click_live` — see its
-        docstring for details, the `verify_tooltip` flag, and the meaning of
-        the returned bool.
+        Same tooltip verification as `click_live` — see its docstring for
+        details, the `verify_tooltip` flag, and the meaning of the returned bool.
         """
         ctrl.subscribe_to(self.LIVE_HULL_SUB_ID, kind, name=entity.get("name"), id=entity.get("id"))
         live = self._with_live_hull(ctrl, entity)
-        return self._verify_tooltip_and_act(
-            ctrl, live, verify_tooltip,
-            lambda e: ctrl.right_click_entity(e, sub_id=self.LIVE_HULL_SUB_ID),
-        )
+        verify_name = entity.get("name") if verify_tooltip else None
+        return ctrl.right_click_entity(live, sub_id=self.LIVE_HULL_SUB_ID, verify_name=verify_name)
 
     # ------------------------------------------------------------------
     # Dropping inventory items

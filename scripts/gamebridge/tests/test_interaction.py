@@ -190,18 +190,10 @@ class TestVerifiedMenuClick:
 # using the freshest available position
 # ---------------------------------------------------------------------------
 
-# Tooltip text containing ENTITY's name — used by tests below to satisfy the
-# default `verify_tooltip=True` check so click_entity/right_click_entity is
-# actually reached (otherwise click_live/right_click_live would move the
-# mouse instead — see TestClickLiveTooltipVerification).
-MATCHING_TOOLTIP = f"Mine {ENTITY['name']}"
-
-
 class TestClickLive:
     def test_subscribes_with_entity_name_and_id(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -212,31 +204,34 @@ class TestClickLive:
     def test_clicks_original_entity_when_no_hull_update_yet(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(
+            ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name=ENTITY["name"]
+        )
 
     def test_clicks_original_entity_when_hull_update_not_found(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = {"found": False}
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(
+            ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name=ENTITY["name"]
+        )
 
     def test_clicks_original_entity_when_hull_update_for_different_entity(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = {
             "found": True, "name": "Gold rocks", "canvasX": 999, "canvasY": 999,
         }
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(
+            ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name=ENTITY["name"]
+        )
 
     def test_clicks_with_refreshed_position_when_hull_update_matches(self):
         ctrl = MagicMock()
@@ -246,7 +241,6 @@ class TestClickLive:
             "hull": [[550, 440], [560, 440], [560, 450], [550, 450]],
             "worldX": ENTITY["worldX"], "worldY": ENTITY["worldY"], "plane": 0,
         }
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -257,8 +251,8 @@ class TestClickLive:
         assert clicked["hull"] == [[550, 440], [560, 440], [560, 450], [550, 450]]
         # Fields outside _LIVE_HULL_FIELDS (e.g. id) are preserved from entity.
         assert clicked["id"] == ENTITY["id"]
-        # The click keeps tracking this subscription while the cursor moves.
         assert call.kwargs["sub_id"] == InteractionRoutine.LIVE_HULL_SUB_ID
+        assert call.kwargs["verify_name"] == ENTITY["name"]
 
     def test_name_match_is_case_insensitive(self):
         ctrl = MagicMock()
@@ -266,7 +260,6 @@ class TestClickLive:
             "found": True, "name": ENTITY["name"].upper(),
             "canvasX": 111, "canvasY": 222,
         }
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().click_live(ctrl, ENTITY, "object")
 
@@ -279,7 +272,6 @@ class TestRightClickLive:
     def test_subscribes_with_entity_name_and_id(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
@@ -290,11 +282,12 @@ class TestRightClickLive:
     def test_right_clicks_original_entity_when_no_hull_update_yet(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
-        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.right_click_entity.assert_called_once_with(
+            ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name=ENTITY["name"]
+        )
 
     def test_right_clicks_with_refreshed_position_when_hull_update_matches(self):
         ctrl = MagicMock()
@@ -302,7 +295,6 @@ class TestRightClickLive:
             "found": True, "name": ENTITY["name"],
             "onScreen": True, "canvasX": 321, "canvasY": 123,
         }
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
@@ -311,144 +303,87 @@ class TestRightClickLive:
         assert clicked["canvasX"] == 321
         assert clicked["canvasY"] == 123
         assert call.kwargs["sub_id"] == InteractionRoutine.LIVE_HULL_SUB_ID
+        assert call.kwargs["verify_name"] == ENTITY["name"]
 
 
 # ---------------------------------------------------------------------------
-# click_live / right_click_live — tooltip verification before clicking
+# click_live / right_click_live — verify_name delegation
+#
+# Tooltip verification is now inside GameController.click_entity/
+# right_click_entity (tested in test_controller.py). These tests confirm
+# click_live/right_click_live pass the right verify_name kwarg through.
 # ---------------------------------------------------------------------------
 
-class TestClickLiveTooltipVerification:
-    def test_moves_mouse_instead_of_clicking_when_name_not_in_tooltip(self):
+class TestClickLiveVerifyName:
+    def test_passes_entity_name_as_verify_name_by_default(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Walk here"
 
         _routine().click_live(ctrl, ENTITY, "object")
 
-        ctrl.click_entity.assert_not_called()
-        ctrl.move_to_entity.assert_called_once_with(ENTITY)
+        assert ctrl.click_entity.call_args.kwargs["verify_name"] == ENTITY["name"]
 
-    def test_returns_false_when_name_not_in_tooltip(self):
-        """Callers gating a state transition on "the click landed" rely on
-        this — a moved-mouse-instead-of-clicked tick must not look like a
-        successful click."""
+    def test_passes_none_as_verify_name_when_verify_tooltip_false(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Cancel"
-
-        result = _routine().click_live(ctrl, ENTITY, "object")
-
-        assert result is False
-
-    def test_clicks_when_name_in_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
-
-        _routine().click_live(ctrl, ENTITY, "object")
-
-        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
-        ctrl.move_to_entity.assert_not_called()
-
-    def test_returns_true_when_name_in_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
-
-        result = _routine().click_live(ctrl, ENTITY, "object")
-
-        assert result is True
-
-    def test_tooltip_check_is_case_insensitive(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP.upper()
-
-        _routine().click_live(ctrl, ENTITY, "object")
-
-        ctrl.click_entity.assert_called_once()
-        ctrl.move_to_entity.assert_not_called()
-
-    def test_verify_tooltip_false_clicks_regardless_of_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Walk here"
 
         _routine().click_live(ctrl, ENTITY, "object", verify_tooltip=False)
 
-        ctrl.click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
-        ctrl.move_to_entity.assert_not_called()
+        assert ctrl.click_entity.call_args.kwargs["verify_name"] is None
 
-    def test_entity_without_name_skips_check(self):
+    def test_passes_none_when_entity_has_no_name(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Walk here"
         entity = {k: v for k, v in ENTITY.items() if k != "name"}
 
         _routine().click_live(ctrl, entity, "object")
 
-        ctrl.click_entity.assert_called_once()
-        ctrl.move_to_entity.assert_not_called()
+        assert ctrl.click_entity.call_args.kwargs["verify_name"] is None
 
-    def test_logs_tooltip_before_click(self, caplog):
+    def test_returns_result_of_click_entity(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
+        ctrl.click_entity.return_value = False
 
-        with caplog.at_level(logging.DEBUG, logger="scripts.gamebridge.routines.interaction"):
-            _routine().click_live(ctrl, ENTITY, "object")
+        result = _routine().click_live(ctrl, ENTITY, "object")
 
-        assert MATCHING_TOOLTIP in caplog.text
+        assert result is False
 
 
-class TestRightClickLiveTooltipVerification:
-    def test_moves_mouse_instead_of_right_clicking_when_name_not_in_tooltip(self):
+class TestRightClickLiveVerifyName:
+    def test_passes_entity_name_as_verify_name_by_default(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Walk here"
 
         _routine().right_click_live(ctrl, ENTITY, "npc")
 
-        ctrl.right_click_entity.assert_not_called()
-        ctrl.move_to_entity.assert_called_once_with(ENTITY)
+        assert ctrl.right_click_entity.call_args.kwargs["verify_name"] == ENTITY["name"]
 
-    def test_returns_false_when_name_not_in_tooltip(self):
+    def test_passes_none_as_verify_name_when_verify_tooltip_false(self):
         ctrl = MagicMock()
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Cancel"
+
+        _routine().right_click_live(ctrl, ENTITY, "npc", verify_tooltip=False)
+
+        assert ctrl.right_click_entity.call_args.kwargs["verify_name"] is None
+
+    def test_passes_none_when_entity_has_no_name(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        entity = {k: v for k, v in ENTITY.items() if k != "name"}
+
+        _routine().right_click_live(ctrl, entity, "npc")
+
+        assert ctrl.right_click_entity.call_args.kwargs["verify_name"] is None
+
+    def test_returns_result_of_right_click_entity(self):
+        ctrl = MagicMock()
+        ctrl.hull_update.return_value = None
+        ctrl.right_click_entity.return_value = False
 
         result = _routine().right_click_live(ctrl, ENTITY, "npc")
 
         assert result is False
-
-    def test_right_clicks_when_name_in_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
-
-        _routine().right_click_live(ctrl, ENTITY, "npc")
-
-        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
-        ctrl.move_to_entity.assert_not_called()
-
-    def test_returns_true_when_name_in_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = MATCHING_TOOLTIP
-
-        result = _routine().right_click_live(ctrl, ENTITY, "npc")
-
-        assert result is True
-
-    def test_verify_tooltip_false_right_clicks_regardless_of_tooltip(self):
-        ctrl = MagicMock()
-        ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Walk here"
-
-        _routine().right_click_live(ctrl, ENTITY, "npc", verify_tooltip=False)
-
-        ctrl.right_click_entity.assert_called_once_with(ENTITY, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
-        ctrl.move_to_entity.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

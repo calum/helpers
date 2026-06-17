@@ -77,10 +77,9 @@ class IronMiningRoutine(InteractionRoutine):
         do so (see `InteractionRoutine.approach`).
         If inventory is already full, skip straight to banking.
 
-        `click_live` can fall back to moving the mouse instead of clicking
-        if the tooltip doesn't yet confirm the cursor is over the ore (e.g.
-        a right-click menu happened to be open this tick — see
-        `InteractionRoutine._verify_tooltip_and_act`). Only transition to
+        `click_live` defers the tooltip check until after the mouse arrives
+        at the entity (see `GameController.click_entity`), so it may skip
+        the click if the tooltip hasn't caught up yet. Only transition to
         `mining` when the click actually fired; otherwise stay here and
         retry next tick rather than waiting out a mining timeout for a click
         that never landed.

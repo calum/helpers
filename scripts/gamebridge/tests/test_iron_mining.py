@@ -247,18 +247,16 @@ class TestCameraRotationInRoutine:
         # Tick 2: settle complete — clicks and transitions to mining
         game.tick = 2
         result = r.find_ore(game, ctrl)
-        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Iron rocks')
         assert result == "mining"
 
 
 class TestFindOreTooltipVerification:
-    def test_stays_in_find_ore_when_click_live_only_moves_mouse(self):
-        """If the tooltip doesn't yet confirm the cursor is over the ore
-        (e.g. a right-click menu happened to be open this tick —
-        currentTooltip() returns its top entry, like "Cancel"), click_live
-        moves the mouse instead of clicking. find_ore must not transition to
-        "mining" — that would burn a full MINING_XP_TIMEOUT_MS cycle waiting
-        for an animation that never started."""
+    def test_stays_in_find_ore_when_click_live_skips_click(self):
+        """If click_entity returns False (tooltip didn't confirm the cursor is
+        over the ore — e.g. another entity was in front), find_ore must not
+        transition to "mining" — that would burn a full MINING_XP_TIMEOUT_MS
+        cycle waiting for an animation that never started."""
         game = GameState()
         game.tick = 1
         game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
@@ -269,22 +267,21 @@ class TestFindOreTooltipVerification:
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = "Cancel"  # menu was open — not a hover tooltip for the ore
+        ctrl.click_entity.return_value = False  # tooltip check failed inside click_entity
 
         r = _routine()
         r.find_ore(game, ctrl)  # tick 1: settle buffer starts
 
         game.tick = 2
-        result = r.find_ore(game, ctrl)  # tick 2: settle complete, but tooltip mismatch
+        result = r.find_ore(game, ctrl)  # tick 2: settle complete, but click skipped
 
-        ctrl.click_entity.assert_not_called()
-        ctrl.move_to_entity.assert_called_once_with(ORE_OFF_SCREEN)
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Iron rocks')
         assert result is None
         assert r.mining_start_tick is None
 
-    def test_transitions_to_mining_once_tooltip_confirms_the_ore(self):
-        """After the moved-mouse tick, a later attempt whose tooltip names
-        the ore clicks it and transitions normally."""
+    def test_transitions_to_mining_once_click_lands(self):
+        """When click_entity returns True (tooltip confirmed, click fired),
+        find_ore transitions to "mining"."""
         game = GameState()
         game.tick = 1
         game.player = {"worldX": 3220, "worldY": 3218, "plane": 0, "animation": -1}
@@ -295,16 +292,15 @@ class TestFindOreTooltipVerification:
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = True
         ctrl.hull_update.return_value = None
-        ctrl.tooltip.return_value = f"Mine {ORE_OFF_SCREEN['name']}"
+        ctrl.click_entity.return_value = True  # tooltip confirmed, click fired
 
         r = _routine()
         r.find_ore(game, ctrl)  # tick 1: settle buffer starts
 
         game.tick = 2
-        result = r.find_ore(game, ctrl)  # tick 2: settle complete, tooltip matches — clicks
+        result = r.find_ore(game, ctrl)  # tick 2: settle complete, click lands
 
-        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
-        ctrl.move_to_entity.assert_not_called()
+        ctrl.click_entity.assert_called_once_with(ORE_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Iron rocks')
         assert result == "mining"
         assert r.mining_start_tick == 2
 
@@ -350,7 +346,7 @@ class TestFindOreTooltipVerification:
         # Tick 2: settle complete — clicks to start walking
         game.tick = 2
         result = r.walk_to_bank(game, ctrl)
-        ctrl.click_entity.assert_called_once_with(MINE_CART_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(MINE_CART_OFF_SCREEN, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Mine cart')
         assert result is None
 
 
@@ -536,7 +532,7 @@ class TestOcclusionGuard:
         game.tick += 1
         result = r.find_ore(game, ctrl)    # tick 2: settle complete — click fires
 
-        ctrl.click_entity.assert_called_once_with(ORE_ON_SCREEN_CLEAR, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID)
+        ctrl.click_entity.assert_called_once_with(ORE_ON_SCREEN_CLEAR, sub_id=InteractionRoutine.LIVE_HULL_SUB_ID, verify_name='Iron rocks')
         assert result == "mining"
 
     def test_walk_to_bank_does_not_click_when_occluded(self):

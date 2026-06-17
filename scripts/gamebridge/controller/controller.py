@@ -376,16 +376,24 @@ class GameController:
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
 
-    def click_entity(self, entity: dict, sub_id: Optional[str] = None) -> None:
+    def click_entity(self, entity: dict, sub_id: Optional[str] = None, verify_name: Optional[str] = None) -> bool:
         """Left-click an on-screen entity, tracking it if it moves.
 
         If `sub_id` is given, the click also tracks that entity's live
         hullUpdate subscription while the cursor is moving towards it — see
         _plan_live_click and InteractionRoutine.click_live.
+
+        If `verify_name` is given, the tooltip is checked for that name right
+        before the click fires — after the mouse has arrived at the entity.
+        If not found, the click is skipped and False is returned; the mouse is
+        already near the entity, so the caller can retry on the next tick once
+        the tooltip catches up.
+
+        Returns True if the click fired, False otherwise.
         """
         pos = self._onscreen_canvas_pos(entity, "click_entity")
         if pos is None:
-            return
+            return False
         cx, cy = pos
         now = time.monotonic()
         if self.min_click_interval > 0 and now - self._last_entity_click < self.min_click_interval:
@@ -393,7 +401,7 @@ class GameController:
                 "click_entity: throttled — %.2fs since last click (min %.2fs)",
                 now - self._last_entity_click, self.min_click_interval,
             )
-            return
+            return False
         cur_x, cur_y = mouse_input.get_position()
         if sub_id is not None:
             intent, predict = self._plan_live_click(entity, sub_id, cur_x, cur_y)
@@ -403,6 +411,16 @@ class GameController:
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
+
+        if verify_name is not None:
+            tooltip = self.tooltip()
+            age = self.tooltip_age()
+            age_str = f"{age * 1000:.0f}ms" if isinstance(age, (int, float)) else age
+            log.debug("Tooltip before click: %r (age=%s)", tooltip, age_str)
+            if verify_name.lower() not in tooltip.lower():
+                log.debug("%r not found in tooltip %r — skipping click", verify_name, tooltip)
+                return False
+
         mouse_input.click_left()
 
         if intent.double_click:
@@ -412,16 +430,23 @@ class GameController:
         self._last_entity_click = time.monotonic()
         log.debug("Clicked %s (canvas %.0f, %.0f)", entity.get("name", "?"), cx, cy)
         self._after_click()
+        return True
 
-    def right_click_entity(self, entity: dict, sub_id: Optional[str] = None) -> None:
+    def right_click_entity(self, entity: dict, sub_id: Optional[str] = None, verify_name: Optional[str] = None) -> bool:
         """Right-click an on-screen entity, tracking it if it moves.
 
         If `sub_id` is given, the click also tracks that entity's live
         hullUpdate subscription while the cursor is moving towards it — see
         _plan_live_click and InteractionRoutine.right_click_live.
+
+        If `verify_name` is given, the tooltip is checked for that name right
+        before the click fires — after the mouse has arrived at the entity.
+        If not found, the click is skipped and False is returned.
+
+        Returns True if the click fired, False otherwise.
         """
         if self._onscreen_canvas_pos(entity, "right_click_entity") is None:
-            return
+            return False
         cur_x, cur_y = mouse_input.get_position()
         if sub_id is not None:
             intent, predict = self._plan_live_click(entity, sub_id, cur_x, cur_y)
@@ -431,10 +456,21 @@ class GameController:
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
+
+        if verify_name is not None:
+            tooltip = self.tooltip()
+            age = self.tooltip_age()
+            age_str = f"{age * 1000:.0f}ms" if isinstance(age, (int, float)) else age
+            log.debug("Tooltip before right-click: %r (age=%s)", tooltip, age_str)
+            if verify_name.lower() not in tooltip.lower():
+                log.debug("%r not found in tooltip %r — skipping right-click", verify_name, tooltip)
+                return False
+
         mouse_input.click_right()
 
         log.debug("Right-clicked %s", entity.get("name", "?"))
         self._after_click()
+        return True
 
     def click_widget(self, widget: dict) -> None:
         """Left-click the centre of a UI widget slot."""
