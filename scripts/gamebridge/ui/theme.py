@@ -1,6 +1,8 @@
 """Color palette, global stylesheet, and small display helpers."""
 from __future__ import annotations
 
+from typing import Optional
+
 from PyQt6.QtGui import QColor
 
 
@@ -210,6 +212,42 @@ def _hms(seconds: float) -> str:
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)
     return f"{h}h {m:02d}m {s:02d}s" if h else f"{m:02d}m {s:02d}s"
+
+
+def _break_label(estimate: Optional[tuple[str, float]]) -> str:
+    """Format a DecisionEngine.next_break_estimate tuple for display."""
+    if estimate is None:
+        return "Next break: —"
+    label, eta = estimate
+    pretty = label.replace("_", " ").title()
+    return f"Next break: ~{pretty} in {_hms(eta)}"
+
+
+def _fatigue_rate_per_min(history: list[tuple[float, float]]) -> Optional[float]:
+    """
+    Estimate fatigue's rate of change in %/min from a (timestamp, fatigue)
+    history, by comparing the oldest and newest sample in the window.
+
+    Returns None if there isn't enough history yet to measure a trend.
+    """
+    if len(history) < 2:
+        return None
+    t0, f0 = history[0]
+    t1, f1 = history[-1]
+    dt = t1 - t0
+    if dt <= 0:
+        return None
+    return (f1 - f0) / dt * 60.0 * 100.0
+
+
+def _fatigue_rate_label(rate_per_min: Optional[float]) -> str:
+    """Format a _fatigue_rate_per_min() result for display."""
+    if rate_per_min is None:
+        return "Fatigue trend: —"
+    if abs(rate_per_min) < 0.05:
+        return "Fatigue trend: steady"
+    sign = "+" if rate_per_min > 0 else ""
+    return f"Fatigue trend: {sign}{rate_per_min:.1f}%/min"
 
 
 def _yaw_dir(yaw: int) -> str:

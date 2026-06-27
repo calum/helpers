@@ -135,6 +135,42 @@ def test_break_freq_mult_one_normal_threshold():
 
 
 # ------------------------------------------------------------------ #
+# break_eta_seconds
+# ------------------------------------------------------------------ #
+
+def test_break_eta_before_threshold_includes_remaining_wait():
+	"""Below the 1800s threshold, ETA is time-to-threshold plus the roll wait."""
+	human = HumanEmulator(rng_seed=0)
+	eta = human.break_eta_seconds(1700.0)
+	expected_roll_wait = human.BREAK_ROLL_INTERVAL_S / human.BREAK_ROLL_PROB
+	assert eta == pytest.approx(100.0 + expected_roll_wait)
+
+
+def test_break_eta_past_threshold_is_just_the_roll_wait():
+	"""Once past the threshold, only the expected roll wait remains."""
+	human = HumanEmulator(rng_seed=0)
+	eta = human.break_eta_seconds(2000.0)
+	expected_roll_wait = human.BREAK_ROLL_INTERVAL_S / human.BREAK_ROLL_PROB
+	assert eta == pytest.approx(expected_roll_wait)
+
+
+def test_break_eta_shrinks_as_fatigue_lowers_the_threshold():
+	"""Higher fatigue lowers the threshold, so the same session length yields
+	a smaller (or equal) ETA."""
+	fresh = HumanEmulator(rng_seed=0, fatigue=0.0)
+	tired = HumanEmulator(rng_seed=0, fatigue=1.0)
+	assert tired.break_eta_seconds(900.0) < fresh.break_eta_seconds(900.0)
+
+
+def test_break_eta_respects_break_freq_mult():
+	"""Doubling break_freq_mult halves the threshold, shrinking the ETA."""
+	human = HumanEmulator(rng_seed=0)
+	baseline = human.break_eta_seconds(900.0)
+	human._break_freq_mult = 2.0
+	assert human.break_eta_seconds(900.0) < baseline
+
+
+# ------------------------------------------------------------------ #
 # New instance variables have correct defaults
 # ------------------------------------------------------------------ #
 

@@ -32,8 +32,8 @@ class _Ctrl:
         self.release_all_keys_calls += 1
 
 
-def _engine(human=None) -> DecisionEngine:
-    return DecisionEngine(ctrl=_Ctrl(), human=human)
+def _engine(human=None, scheduler=None) -> DecisionEngine:
+    return DecisionEngine(ctrl=_Ctrl(), human=human, scheduler=scheduler)
 
 
 def _msg(tick: int = 1) -> dict:
@@ -452,3 +452,55 @@ class TestBreakLogic:
         e.process_tick(_msg())
         assert r.tick_count == 1
         assert e.on_break is False
+
+
+class TestNextBreakEstimate:
+    def test_none_without_human_or_scheduler(self):
+        e = _engine()
+        assert e.next_break_estimate is None
+
+    def test_none_while_on_break(self):
+        human = MagicMock()
+        human.should_take_break.return_value = True
+        human.break_duration.return_value = 60.0
+        e = _engine(human=human)
+        e.set_routine(_NopRoutine())
+        e.process_tick(_msg())  # triggers the break
+        assert e.on_break is True
+        assert e.next_break_estimate is None
+
+    def test_uses_human_eta_labelled_rest(self):
+        human = MagicMock()
+        human.should_take_break.return_value = False
+        human.break_eta_seconds.return_value = 123.0
+        e = _engine(human=human)
+        label, eta = e.next_break_estimate
+        assert label == "Rest"
+        assert eta == pytest.approx(123.0)
+
+    def test_picks_soonest_of_human_and_scheduler(self):
+        human = MagicMock()
+        human.should_take_break.return_value = False
+        human.break_eta_seconds.return_value = 500.0
+
+        scheduler = MagicMock()
+        from scripts.gamebridge.human.interruptions import InterruptionType
+        scheduler.next_interruption_estimate.return_value = (InterruptionType.DISCORD_MESSAGE, 50.0)
+
+        e = _engine(human=human, scheduler=scheduler)
+        label, eta = e.next_break_estimate
+        assert label == "discord_message"
+        assert eta == pytest.approx(50.0)
+
+    def test_falls_back_to_human_when_scheduler_has_no_estimate(self):
+        human = MagicMock()
+        human.should_take_break.return_value = False
+        human.break_eta_seconds.return_value = 200.0
+
+        scheduler = MagicMock()
+        scheduler.next_interruption_estimate.return_value = None
+
+        e = _engine(human=human, scheduler=scheduler)
+        label, eta = e.next_break_estimate
+        assert label == "Rest"
+        assert eta == pytest.approx(200.0)

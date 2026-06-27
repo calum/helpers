@@ -235,3 +235,31 @@ class DecisionEngine:
         if self._scheduler is not None and self._scheduler.active is not None:
             return self._scheduler.active.config.type.value
         return None
+
+    @property
+    def next_break_estimate(self) -> Optional[tuple[str, float]]:
+        """
+        Best estimate of (type label, seconds) until the routine next pauses
+        on its own — either the fatigue-driven rest break (HumanEmulator) or
+        a scheduled interruption (InterruptionScheduler), whichever is sooner.
+
+        Both sources are random processes, not fixed timers, so this is an
+        expected value rather than a guarantee. Returns None while already on
+        a break, or if neither a human emulator nor a scheduler is configured.
+        """
+        if self._on_break:
+            return None
+
+        candidates: list[tuple[str, float]] = []
+        if self._human is not None:
+            session_s = time.monotonic() - self._session_start
+            candidates.append(("Rest", self._human.break_eta_seconds(session_s)))
+        if self._scheduler is not None:
+            estimate = self._scheduler.next_interruption_estimate()
+            if estimate is not None:
+                itype, eta = estimate
+                candidates.append((itype.value, eta))
+
+        if not candidates:
+            return None
+        return min(candidates, key=lambda c: c[1])

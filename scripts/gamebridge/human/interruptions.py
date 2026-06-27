@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -270,6 +271,31 @@ class InterruptionScheduler:
 		if phase == "post":
 			return cfg.post_click_error_multiplier
 		return 1.0
+
+	def next_interruption_estimate(self) -> Optional[tuple[InterruptionType, float]]:
+		"""
+		Best estimate of (type, seconds) until the next interruption fires.
+
+		_maybe_trigger() rolls a Poisson-ish process per type (prob_per_hour),
+		so there's no fixed schedule — this returns the type with the soonest
+		expected trigger time: whatever's left of its min_gap_s, plus the mean
+		wait of its Poisson process (3600 / prob_per_hour seconds). Returns
+		None if one is already active, or no type can ever auto-trigger.
+		"""
+		if self._active is not None:
+			return None
+		now = time.monotonic()
+		best: Optional[tuple[InterruptionType, float]] = None
+		for cfg in self._configs.values():
+			if cfg.prob_per_hour <= 0:
+				continue
+			last = self._last_triggered.get(cfg.type, -math.inf)
+			gap_remaining = max(0.0, cfg.min_gap_s - (now - last))
+			expected_wait = 3600.0 / cfg.prob_per_hour
+			eta = gap_remaining + expected_wait
+			if best is None or eta < best[1]:
+				best = (cfg.type, eta)
+		return best
 
 	# ------------------------------------------------------------------
 	# Internal helpers

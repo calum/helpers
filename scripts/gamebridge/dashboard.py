@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import time
+from collections import deque
 from typing import Type
 
 log = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ from PyQt6.QtGui import QBrush, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QMainWindow, QPushButton, QScrollArea, QSizePolicy,
-    QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
+    QSplitter, QStatusBar, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -41,7 +42,10 @@ from .routines.examples.smelting_bars import SmeltingBarsRoutine
 from .routines.examples.smithing_helms import SmithingHelmsRoutine
 from .routines.examples.rod_fishing import RodFishingRoutine
 
-from .ui.theme import C, STYLESHEET, _qc, _iface_color, _hms, _yaw_dir
+from .ui.theme import (
+    C, STYLESHEET, _qc, _iface_color, _hms, _yaw_dir,
+    _break_label, _fatigue_rate_label, _fatigue_rate_per_min,
+)
 from .ui.components import Card, HDivider, StatBar, ConnectionDot
 from .ui.minimap import MinimapWidget
 from .ui.inventory import InventoryWidget
@@ -49,6 +53,7 @@ from .ui.hull_debug import HullDebugTab
 from .ui.testing_tab import TestingTab
 from .ui.recording_tab import RecordingTab
 from .ui.settings_tab import SettingsTab
+from .ui.log_tab import LogTab
 from .hotkeys import start_hotkey_monitor, HOTKEY_STOP, HOTKEY_KILL
 from .bridge_ticker import BridgeTicker, RoutineRunner
 
@@ -82,6 +87,9 @@ class GameBridgeWindow(QMainWindow):
         self._engine = DecisionEngine(ctrl=self._ctrl, human=self._human)
         self._session_start = time.monotonic()
         self._connected     = False
+        # Rolling (timestamp, fatigue) window used to estimate the fatigue
+        # trend shown in the routine card — see _tick_session_panel.
+        self._fatigue_history: deque[tuple[float, float]] = deque(maxlen=30)
 
         self._build_ui()
         self._start_ticker()
@@ -109,14 +117,18 @@ class GameBridgeWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("GameBridge")
-        self.setMinimumSize(1080, 680)
+        self.setMinimumSize(860, 560)
         self.resize(1300, 820)
 
-        root_widget = QWidget()
-        self.setCentralWidget(root_widget)
-        root = QHBoxLayout(root_widget)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        # A QSplitter (rather than a fixed-width sidebar) lets the user drag
+        # the boundary between panels, so the layout actually adapts to the
+        # window size instead of clipping/wasting space when resized.
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setContentsMargins(12, 12, 12, 12)
+        splitter.setHandleWidth(10)
+        splitter.setChildrenCollapsible(False)
+        splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
+        self.setCentralWidget(splitter)
 
         # ── Left sidebar ─────────────────────────────────────────────
 
@@ -124,7 +136,8 @@ class GameBridgeWindow(QMainWindow):
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setFixedWidth(274)
+        left_scroll.setMinimumWidth(220)
+        left_scroll.setMaximumWidth(420)
 
         left_host = QWidget()
         left_host.setStyleSheet("background: transparent;")
@@ -181,11 +194,13 @@ class GameBridgeWindow(QMainWindow):
 
         left.addStretch()
         left_scroll.setWidget(left_host)
-        root.addWidget(left_scroll)
+        splitter.addWidget(left_scroll)
 
         # ── Right panel ───────────────────────────────────────────────
 
-        right = QVBoxLayout()
+        right_widget = QWidget()
+        right = QVBoxLayout(right_widget)
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(10)
 
         right.addWidget(self._make_status_bar_widget())
@@ -215,10 +230,13 @@ class GameBridgeWindow(QMainWindow):
         self._testing_tab = TestingTab(ctrl=self._ctrl, engine=self._engine)
         self._recording_tab = RecordingTab(ctrl=self._ctrl, engine=self._engine)
         self._settings_tab = SettingsTab(on_status=lambda msg: self._status_msg.setText(msg))
+        self._log_tab = LogTab()
         self._tabs.addTab(self._hull_tab, "Hull Debug")
         self._tabs.addTab(self._testing_tab, "Testing")
         self._tabs.addTab(self._recording_tab, "Recording")
         self._tabs.addTab(self._settings_tab, "Settings")
+        self._tabs.addTab(self._log_tab, "Logs")
+        self._log_tab.attach()
 
         nearby.layout().addWidget(self._tabs)
         right.addWidget(nearby, stretch=1)
@@ -232,7 +250,10 @@ class GameBridgeWindow(QMainWindow):
         log_card.layout().addWidget(self._debug_log)
         right.addWidget(log_card)
 
-        root.addLayout(right, stretch=1)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([274, 1000])
 
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
@@ -266,6 +287,11 @@ class GameBridgeWindow(QMainWindow):
         self._player_tooltip_lbl = QLabel("Tooltip: —")
         self._player_tooltip_lbl.setStyleSheet(
             f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        self._player_tooltip_lbl.setWordWrap(True)
+        fm = self._player_tooltip_lbl.fontMetrics()
+        self._player_tooltip_lbl.setFixedHeight(fm.lineSpacing() * 2)
+        self._player_tooltip_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         card.layout().addWidget(self._player_tooltip_lbl)
 
         self._player_target_lbl = QLabel("")
@@ -360,6 +386,18 @@ class GameBridgeWindow(QMainWindow):
         fat_row.addWidget(fat_lbl)
         fat_row.addWidget(self._fatigue_bar, stretch=1)
         card.layout().addLayout(fat_row)
+
+        row3 = QHBoxLayout()
+        self._fatigue_rate_lbl = QLabel("Fatigue trend: —")
+        self._fatigue_rate_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        self._next_break_lbl = QLabel("Next break: —")
+        self._next_break_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        row3.addWidget(self._fatigue_rate_lbl)
+        row3.addStretch()
+        row3.addWidget(self._next_break_lbl)
+        card.layout().addLayout(row3)
 
         return card
 
@@ -613,6 +651,12 @@ class GameBridgeWindow(QMainWindow):
         f = self._human.fatigue
         self._fatigue_bar.set_value(int(f * 100), 100)
 
+        self._fatigue_history.append((time.monotonic(), f))
+        rate = _fatigue_rate_per_min(list(self._fatigue_history))
+        self._fatigue_rate_lbl.setText(_fatigue_rate_label(rate))
+
+        self._next_break_lbl.setText(_break_label(self._engine.next_break_estimate))
+
     def _tick_tooltip_label(self) -> None:
         tooltip = self._ctrl.tooltip()
         age = self._ctrl.tooltip_age()
@@ -675,6 +719,7 @@ class GameBridgeWindow(QMainWindow):
         exit with the process, as it always has.
         """
         self._recording_tab.stop_if_recording()
+        self._log_tab.detach()
         self._routine_runner.stop()
         self._routine_runner.wait(2000)
         super().closeEvent(event)

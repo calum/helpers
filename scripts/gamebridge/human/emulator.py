@@ -256,6 +256,16 @@ class HumanEmulator:
     # Break modelling
     # ------------------------------------------------------------------
 
+    # should_take_break() rolls once per DecisionEngine.drive() call, which
+    # runs roughly once per published GameState snapshot (~one game tick).
+    # break_eta_seconds() uses these to turn that roll into an expected wait.
+    BREAK_ROLL_INTERVAL_S: float = 0.6
+    BREAK_ROLL_PROB: float = 0.05
+
+    def _break_threshold(self) -> float:
+        """Session length (seconds) after which break rolls become possible."""
+        return (1800.0 - self.fatigue * 600.0) / self._break_freq_mult
+
     def should_take_break(self, session_duration_s: float) -> bool:
         """
         Return True if the model decides the player should pause.
@@ -263,13 +273,26 @@ class HumanEmulator:
         Threshold drops from 30 min to ~20 min as fatigue climbs.
         A small random roll prevents completely predictable behaviour.
         """
-        threshold = (1800.0 - self.fatigue * 600.0) / self._break_freq_mult
-        if session_duration_s < threshold:
+        if session_duration_s < self._break_threshold():
             return False
         # 5 % chance per tick once over the threshold
-        return self._rng.random() < 0.05
+        return self._rng.random() < self.BREAK_ROLL_PROB
 
     def break_duration(self) -> float:
         """Sample a break length in seconds (20 s – 5 min)."""
         return self._rng.uniform(20.0, 300.0)
+
+    def break_eta_seconds(self, session_duration_s: float) -> float:
+        """
+        Estimate seconds remaining until the fatigue-driven break triggers.
+
+        should_take_break() is a random process, not a fixed schedule — once
+        session_duration_s crosses the fatigue threshold it's only a 5%
+        chance per roll — so this is an expected value: time left to reach
+        the threshold, plus the mean wait of that roll (1 / BREAK_ROLL_PROB
+        rolls, BREAK_ROLL_INTERVAL_S apart) once eligible.
+        """
+        remaining_to_threshold = max(0.0, self._break_threshold() - session_duration_s)
+        expected_roll_wait = self.BREAK_ROLL_INTERVAL_S / self.BREAK_ROLL_PROB
+        return remaining_to_threshold + expected_roll_wait
 
