@@ -143,7 +143,7 @@ class GameController:
         # True while input is routed through the Game Bridge connection
         # (synthetic AWT events onto the canvas) rather than OS SendInput —
         # see use_bridge_input()/use_os_input() and _to_input_coords below.
-        self._using_bridge_input: bool = False
+        self._using_bridge_input: bool = True
 
     # ------------------------------------------------------------------
     # Input transport — OS SendInput (default) vs. Game Bridge canvas
@@ -1049,10 +1049,20 @@ class GameController:
         subscription so hull_update()/tooltip() are populated immediately,
         without every routine needing its own subscription just to read the
         tooltip.
+
+        Bridge input is the default transport (see _using_bridge_input):
+        as soon as a connection exists this switches mouse/keyboard input to
+        route through it automatically, so routines never reach for
+        OS-level SendInput and hijack the user's physical mouse/keyboard.
+        Losing the connection falls back to use_os_input() since the bridge
+        backend has nothing to send to without one.
         """
         self._connection = connection
         if connection is not None:
             self.subscribe_to(self.TOOLTIP_SUB_ID, "player", id=-1, ttl_ticks=self.TOOLTIP_SUB_TTL_TICKS)
+            self.use_bridge_input()
+        else:
+            self.use_os_input()
 
     def subscribe_to(
         self,

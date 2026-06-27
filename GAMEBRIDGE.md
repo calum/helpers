@@ -871,11 +871,17 @@ handling entirely.
 
 ### Python usage
 
+`GameController.set_connection()` switches to Game Bridge input automatically
+the moment a connection is established (and back to OS-level SendInput when
+it drops) — this is the default transport, so routines never take over the
+user's physical mouse/keyboard. Call `use_os_input()`/`use_bridge_input()`
+explicitly only to override that for a specific session:
+
 ```python
-ctrl.use_bridge_input()   # route all subsequent input through the canvas
-ctrl.click_entity(goblin) # unchanged call — same WindMouse path, different transport
+ctrl.use_os_input()        # opt out — fall back to OS-level SendInput
+ctrl.click_entity(goblin)  # unchanged call — same WindMouse path, different transport
 ctrl.press_key(Key.F5)
-ctrl.use_os_input()       # back to OS-level SendInput (the default)
+ctrl.use_bridge_input()    # back to the default canvas-injection transport
 ```
 
 Malformed messages (missing `x`/`y`, an unrecognised `action`, a `"press"`

@@ -61,6 +61,19 @@ def _ctrl(window=WINDOW) -> GameController:
     return ctrl
 
 
+@pytest.fixture(autouse=True)
+def _reset_real_input_backends():
+    """set_connection() now switches the real mouse_input/kb_input module
+    backend as a side effect (see TestSetConnectionInputSwitch) — tests that
+    don't patch those modules would otherwise leave a real BridgeInputBackend
+    installed as global module state, bleeding into unrelated tests run
+    afterward. Always clear it once the test using it is done."""
+    yield
+    from scripts.gamebridge.input import mouse as _mouse_mod, keyboard as _kb_mod
+    _mouse_mod.clear_backend()
+    _kb_mod.clear_backend()
+
+
 def _entity(cx: int, cy: int, on_screen: bool = True, name: str = "Thing") -> dict:
     """An NPC-shaped entity dict — has the `id`/`index` fields EntityTracker's
     generic velocity() dispatcher needs to route without KeyError (it's never
@@ -205,6 +218,7 @@ class TestClampToWindow:
 class TestUseBridgeInput:
     def test_no_connection_logs_warning_and_does_not_switch(self, caplog):
         ctrl = _ctrl()
+        ctrl._using_bridge_input = False  # not yet established — see test_is_the_default
         with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
                 patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb, \
                 caplog.at_level(logging.WARNING):
@@ -216,40 +230,78 @@ class TestUseBridgeInput:
         assert "no active connection" in caplog.text
 
     def test_with_connection_sets_backend_on_both_modules(self):
-        ctrl = _ctrl()
-        conn = MagicMock(spec=BridgeConnection)
-        ctrl.set_connection(conn)
+        with patch("scripts.gamebridge.controller.controller.mouse_input"), \
+                patch("scripts.gamebridge.controller.controller.kb_input"):
+            ctrl = _ctrl()
+            conn = MagicMock(spec=BridgeConnection)
+            ctrl.set_connection(conn)  # already switches once — see TestSetConnectionInputSwitch
 
-        with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
-                patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
-            ctrl.use_bridge_input()
+            with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                    patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
+                ctrl.use_bridge_input()
 
-        assert ctrl._using_bridge_input
-        mock_mouse.set_backend.assert_called_once()
-        mock_kb.set_backend.assert_called_once()
-        # Both modules must be handed the exact same backend instance.
-        assert mock_mouse.set_backend.call_args.args[0] is mock_kb.set_backend.call_args.args[0]
+            assert ctrl._using_bridge_input
+            mock_mouse.set_backend.assert_called_once()
+            mock_kb.set_backend.assert_called_once()
+            # Both modules must be handed the exact same backend instance.
+            assert mock_mouse.set_backend.call_args.args[0] is mock_kb.set_backend.call_args.args[0]
 
 
 class TestUseOsInput:
     def test_clears_backend_on_both_modules_and_flag(self):
-        ctrl = _ctrl()
-        conn = MagicMock(spec=BridgeConnection)
-        ctrl.set_connection(conn)
         with patch("scripts.gamebridge.controller.controller.mouse_input"), \
                 patch("scripts.gamebridge.controller.controller.kb_input"):
-            ctrl.use_bridge_input()
+            ctrl = _ctrl()
+            conn = MagicMock(spec=BridgeConnection)
+            ctrl.set_connection(conn)
+
+            with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                    patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
+                ctrl.use_os_input()
+
+            assert not ctrl._using_bridge_input
+            mock_mouse.clear_backend.assert_called_once()
+            mock_kb.clear_backend.assert_called_once()
+
+    def test_is_the_default(self):
+        # Bridge input is the default transport so routines never reach for
+        # OS-level SendInput and hijack the user's physical mouse/keyboard —
+        # see set_connection(), which switches to it as soon as a connection
+        # is established.
+        assert _ctrl()._using_bridge_input
+
+
+# ---------------------------------------------------------------------------
+# set_connection — auto-switches input transport (default-bridge-input fix)
+# ---------------------------------------------------------------------------
+
+class TestSetConnectionInputSwitch:
+    def test_connecting_switches_to_bridge_input(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
 
         with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
                 patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
-            ctrl.use_os_input()
+            ctrl.set_connection(conn)
+
+        assert ctrl._using_bridge_input
+        mock_mouse.set_backend.assert_called_once()
+        mock_kb.set_backend.assert_called_once()
+
+    def test_disconnecting_falls_back_to_os_input(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        with patch("scripts.gamebridge.controller.controller.mouse_input"), \
+                patch("scripts.gamebridge.controller.controller.kb_input"):
+            ctrl.set_connection(conn)
+
+        with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
+            ctrl.set_connection(None)
 
         assert not ctrl._using_bridge_input
         mock_mouse.clear_backend.assert_called_once()
         mock_kb.clear_backend.assert_called_once()
-
-    def test_is_the_default(self):
-        assert not _ctrl()._using_bridge_input
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +318,7 @@ class TestToInputCoords:
     def test_os_mode_converts_canvas_to_screen(self, mock_settings):
         mock_settings.get.return_value = 0
         ctrl = _ctrl()
+        ctrl._using_bridge_input = False  # bridge input is the default — see TestUseOsInput
         assert ctrl._to_input_coords(50, 50) == ctrl._canvas_to_screen(50, 50)
 
     def test_bridge_mode_returns_canvas_coords_unchanged(self, mock_settings):
@@ -277,6 +330,7 @@ class TestToInputCoords:
 class TestClampToInputBounds:
     def test_os_mode_clamps_to_window(self):
         ctrl = _ctrl()
+        ctrl._using_bridge_input = False  # bridge input is the default — see TestUseOsInput
         assert ctrl._clamp_to_input_bounds(2000, 400) == ctrl._clamp_to_window(2000, 400)
 
     def test_bridge_mode_clamps_to_canvas_bounds(self):
@@ -1224,6 +1278,7 @@ class TestClickMinimapEntity:
         human = _human()
         ctrl = GameController(human=human)
         ctrl._window = WINDOW
+        ctrl._using_bridge_input = False  # exercising the OS-mode screen-coord path
         entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
         ctrl.click_minimap_entity(entity, _WalkGameState(tick=10))
         # plan_click should have been called with screen coords derived from (650, 90)
