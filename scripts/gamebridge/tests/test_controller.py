@@ -1749,3 +1749,140 @@ class TestRightClickEntityVerifyName:
         self._setup(mock_mouse, mock_settings)
         result = _ctrl().right_click_entity(_entity(500, 300, on_screen=False), verify_name="Goblin")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Anti-ban click telemetry — click_at/right_click_at/click_entity/
+# right_click_entity must append a ClickSample to ctrl.stats on every click
+# they actually issue, and must not on a blocked/skipped click. See
+# human.stats.AntiBanStats and GameController._record_click_stats.
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    """time.monotonic() stand-in: strictly increasing, never raises
+    StopIteration regardless of call count (unlike a fixed side_effect
+    list), so elapsed time between any two adjacent calls is a deterministic
+    positive `step` — exactly what move_elapsed/down_up_ms compute between
+    their own adjacent before/after reads."""
+
+    def __init__(self, start: float = 1000.0, step: float = 0.1):
+        self._value = start
+        self._step = step
+
+    def __call__(self) -> float:
+        self._value += self._step
+        return self._value
+
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestClickStatsRecording:
+    def _setup(self, mock_mouse, mock_settings):
+        mock_settings.get.return_value = 0
+        mock_mouse.get_position.return_value = (600, 400)
+
+    def _intent(self, double_click=False, actual_x=650.0, actual_y=450.0):
+        return MagicMock(
+            pre_move_pause=0.0, post_move_pause=0.0, double_click=double_click,
+            actual_x=actual_x, actual_y=actual_y,
+        )
+
+    def test_click_at_records_a_sample(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = self._intent()
+        ctrl.click_at(500, 300)
+        assert len(ctrl.stats.samples()) == 1
+
+    def test_click_at_error_px_is_aim_to_actual_distance(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = self._intent(actual_x=650.0, actual_y=450.0)
+        ctrl.click_at(500, 300)
+        # bridge input is the default (no offset) -> aim == (500, 300) canvas-local
+        sample = ctrl.stats.samples()[0]
+        assert sample.error_px == pytest.approx(((650 - 500) ** 2 + (450 - 300) ** 2) ** 0.5)
+
+    def test_click_at_double_click_flag_is_recorded(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = self._intent(double_click=True)
+        ctrl.click_at(500, 300)
+        assert ctrl.stats.samples()[0].double_click is True
+
+    def test_click_at_blocked_does_not_record(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.click_at(-10, 300)
+        assert ctrl.stats.samples() == []
+
+    def test_click_at_down_up_ms_reflects_elapsed_time(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = self._intent()
+        with patch("scripts.gamebridge.controller.controller.time.monotonic", side_effect=_Clock()):
+            ctrl.click_at(500, 300)
+        # click_start and the down_up_ms read are adjacent monotonic() calls
+        # (mouse_input.click_left is mocked, no calls of its own in between).
+        assert ctrl.stats.samples()[0].down_up_ms == pytest.approx(100.0)
+
+    def test_right_click_at_records_a_sample(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl._human.plan_click.return_value = self._intent()
+        ctrl.right_click_at(500, 300)
+        assert len(ctrl.stats.samples()) == 1
+
+    def test_right_click_at_blocked_does_not_record(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.right_click_at(-10, 300)
+        assert ctrl.stats.samples() == []
+
+    def test_click_entity_records_a_sample(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.click_entity(_entity(500, 300, on_screen=True))
+        assert len(ctrl.stats.samples()) == 1
+
+    def test_click_entity_blocked_does_not_record(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.click_entity(_entity(500, 300, on_screen=False))
+        assert ctrl.stats.samples() == []
+
+    def test_click_entity_skipped_by_verify_name_does_not_record(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        conn = MagicMock()
+        conn.tooltip = "Walk here"
+        conn.tooltip_updated_at = 1.0
+        conn.hull_updates = {}
+        ctrl._connection = conn
+        ctrl.click_entity(_entity(500, 300, on_screen=True, name="Iron rocks"), verify_name="Iron rocks")
+        assert ctrl.stats.samples() == []
+
+    def test_click_entity_move_speed_reflects_cursor_displacement(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        mock_mouse.get_position.side_effect = [(600.0, 400.0), (700.0, 450.0)]
+        ctrl = _ctrl()
+        with patch("scripts.gamebridge.controller.controller.time.monotonic", side_effect=_Clock()):
+            ctrl.click_entity(_entity(500, 300, on_screen=True))
+        # move_start and the move_elapsed read are adjacent monotonic() calls
+        # (wind_mouse_to_prediction is mocked, no calls of its own in between),
+        # so elapsed is exactly one _Clock step (0.1s) regardless of how many
+        # other monotonic() calls happen elsewhere in the method.
+        dist = ((700.0 - 600.0) ** 2 + (450.0 - 400.0) ** 2) ** 0.5
+        assert ctrl.stats.samples()[0].move_speed_px_s == pytest.approx(dist / 0.1)
+
+    def test_right_click_entity_records_a_sample(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.right_click_entity(_entity(500, 300, on_screen=True))
+        assert len(ctrl.stats.samples()) == 1
+
+    def test_right_click_entity_blocked_does_not_record(self, mock_mouse, mock_settings):
+        self._setup(mock_mouse, mock_settings)
+        ctrl = _ctrl()
+        ctrl.right_click_entity(_entity(500, 300, on_screen=False))
+        assert ctrl.stats.samples() == []

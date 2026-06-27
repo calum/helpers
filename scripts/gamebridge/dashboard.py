@@ -52,6 +52,7 @@ from .ui.inventory import InventoryWidget
 from .ui.hull_debug import HullDebugTab
 from .ui.testing_tab import TestingTab
 from .ui.recording_tab import RecordingTab
+from .ui.antiban_tab import AntiBanTab
 from .ui.settings_tab import SettingsTab
 from .ui.log_tab import LogTab
 from .hotkeys import start_hotkey_monitor, HOTKEY_STOP, HOTKEY_KILL
@@ -229,11 +230,13 @@ class GameBridgeWindow(QMainWindow):
         self._hull_tab = HullDebugTab(engine=self._engine)
         self._testing_tab = TestingTab(ctrl=self._ctrl, engine=self._engine)
         self._recording_tab = RecordingTab(ctrl=self._ctrl, engine=self._engine)
+        self._antiban_tab = AntiBanTab(ctrl=self._ctrl)
         self._settings_tab = SettingsTab(on_status=lambda msg: self._status_msg.setText(msg))
         self._log_tab = LogTab()
         self._tabs.addTab(self._hull_tab, "Hull Debug")
         self._tabs.addTab(self._testing_tab, "Testing")
         self._tabs.addTab(self._recording_tab, "Recording")
+        self._tabs.addTab(self._antiban_tab, "Anti-Ban")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._log_tab, "Logs")
         self._log_tab.attach()

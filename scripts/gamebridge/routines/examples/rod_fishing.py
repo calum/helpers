@@ -178,8 +178,11 @@ class RodFishingRoutine(InteractionRoutine):
         px, py = game.player_pos
         if abs(px - self.TREE_WORLD_X) + abs(py - self.TREE_WORLD_Y) <= self.MINIMAP_RANGE:
             return "walk_to_tree"
-        
-        # Check if player is already near the Fern waypoint; if so, we can transition to walk_to_tree directly
+
+        # Fern is farther from Tree than MINIMAP_RANGE, so merely arriving at
+        # Fern doesn't satisfy the check above — without this, the routine
+        # would re-click the same Fern tile forever once there, never
+        # advancing toward the Tree.
         if abs(px - self.FERN_WORLD_X) + abs(py - self.FERN_WORLD_Y) <= 4:
             return "walk_to_tree"
 

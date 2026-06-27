@@ -304,8 +304,10 @@ class TestWalkToFern:
         assert _routine().walk_to_fern(game, _ctrl()) == "walk_to_tree"
 
     def test_beyond_minimap_range_of_tree_issues_minimap_click(self):
-        # player at (3100, 3460): 24 tiles from Tree (3100, 3436) — beyond MINIMAP_RANGE=20
-        game = _make_game(player_x=3100, player_y=3460, interfaces=[MINIMAP_WIDGET])
+        # player at (3100, 3470): 34 tiles from Tree (3100, 3436) — beyond
+        # MINIMAP_RANGE=20 — and 14 tiles from Fern (3098, 3458) — beyond the
+        # near-Fern shortcut's 4-tile threshold, so this should still walk.
+        game = _make_game(player_x=3100, player_y=3470, interfaces=[MINIMAP_WIDGET])
         ctrl = _ctrl()
         ctrl.click_minimap_entity.return_value = True
         result = _routine().walk_to_fern(game, ctrl)
@@ -313,7 +315,7 @@ class TestWalkToFern:
         assert result is None
 
     def test_uses_real_fern_minimap_when_in_range(self):
-        game = _make_game(player_x=3100, player_y=3460, objects=[FERN_OBJ_INRANGE])
+        game = _make_game(player_x=3100, player_y=3470, objects=[FERN_OBJ_INRANGE])
         ctrl = _ctrl()
         ctrl.click_minimap_entity.return_value = True
         _routine().walk_to_fern(game, ctrl)
@@ -321,7 +323,7 @@ class TestWalkToFern:
         assert target is FERN_OBJ_INRANGE
 
     def test_falls_back_to_synthetic_when_fern_out_of_range(self):
-        game = _make_game(player_x=3100, player_y=3460, objects=[FERN_OBJ_OUTOFRANGE],
+        game = _make_game(player_x=3100, player_y=3470, objects=[FERN_OBJ_OUTOFRANGE],
                           interfaces=[MINIMAP_WIDGET])
         ctrl = _ctrl()
         ctrl.click_minimap_entity.return_value = True
@@ -330,8 +332,19 @@ class TestWalkToFern:
         assert target["name"] == "waypoint"
 
     def test_no_minimap_widget_does_not_crash(self):
-        game = _make_game(player_x=3100, player_y=3460, interfaces=[])
+        game = _make_game(player_x=3100, player_y=3470, interfaces=[])
         _routine().walk_to_fern(game, _ctrl())  # should not raise
+
+    def test_near_fern_but_far_from_tree_transitions_without_reclicking(self):
+        # player at (3100, 3460): 4 tiles from Fern (3098, 3458) but 24 tiles
+        # from Tree — beyond Fern alone would never satisfy the
+        # within-MINIMAP_RANGE-of-Tree check, so this must transition to
+        # walk_to_tree directly instead of re-clicking the same Fern tile.
+        game = _make_game(player_x=3100, player_y=3460, interfaces=[MINIMAP_WIDGET])
+        ctrl = _ctrl()
+        result = _routine().walk_to_fern(game, ctrl)
+        ctrl.click_minimap_entity.assert_not_called()
+        assert result == "walk_to_tree"
 
 
 # ---------------------------------------------------------------------------
@@ -657,12 +670,16 @@ class TestWalkToBankTree:
         assert result is None
 
     def test_uses_real_tree_minimap_when_in_range(self):
-        game = _make_game(player_y=3420, objects=[TREE_OBJ_INRANGE])
+        # walk_to_bank_tree aims 5 tiles past the Tree (TREE_WORLD_Y + 5) to
+        # avoid oscillating right at the boundary, so the matching real
+        # entity must sit at that tile, not the Tree's own coordinates.
+        waypoint_obj = {**TREE_OBJ_INRANGE, "worldY": R.TREE_WORLD_Y + 5}
+        game = _make_game(player_y=3420, objects=[waypoint_obj])
         ctrl = _ctrl()
         ctrl.click_minimap_entity.return_value = True
         _routine().walk_to_bank_tree(game, ctrl)
         target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is TREE_OBJ_INRANGE
+        assert target is waypoint_obj
 
     def test_falls_back_to_synthetic_when_tree_out_of_range(self):
         game = _make_game(player_y=3420, objects=[TREE_OBJ_OUTOFRANGE],
@@ -689,12 +706,16 @@ class TestWalkToBankFern:
         assert result is None
 
     def test_uses_real_fern_minimap_when_in_range(self):
-        game = _make_game(player_y=3438, objects=[FERN_OBJ_INRANGE])
+        # walk_to_bank_fern aims 5 tiles past the Fern (FERN_WORLD_Y + 5) to
+        # avoid oscillating right at the boundary, so the matching real
+        # entity must sit at that tile, not the Fern's own coordinates.
+        waypoint_obj = {**FERN_OBJ_INRANGE, "worldY": R.FERN_WORLD_Y + 5}
+        game = _make_game(player_y=3438, objects=[waypoint_obj])
         ctrl = _ctrl()
         ctrl.click_minimap_entity.return_value = True
         _routine().walk_to_bank_fern(game, ctrl)
         target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is FERN_OBJ_INRANGE
+        assert target is waypoint_obj
 
     def test_falls_back_to_synthetic_when_fern_out_of_range(self):
         game = _make_game(player_y=3438, objects=[FERN_OBJ_OUTOFRANGE],

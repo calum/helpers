@@ -10,11 +10,13 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import logging
+import math
 import time
 from typing import Callable, Optional
 
 from ..client import BridgeConnection
 from ..human.emulator import ClickIntent, HumanEmulator
+from ..human.stats import AntiBanStats
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
 from ..input.bridge_input import BridgeInputBackend
@@ -122,6 +124,11 @@ class GameController:
         # (fed once per drive() cycle), never touched from the ingest thread.
         self._tracker = EntityTracker()
         self._window: Optional[tuple[int, int, int, int]] = None
+        # Rolling click telemetry (timing/accuracy/speed) — see human.stats
+        # and _record_click_stats. Purely observational; the dashboard's
+        # Anti-Ban tab reads this to graph it, nothing here feeds back into
+        # routine behaviour.
+        self.stats = AntiBanStats()
         self.min_click_interval: float = 0.0
         self._last_entity_click: float = 0.0
         self._session_start: float = time.monotonic()
@@ -412,6 +419,36 @@ class GameController:
             return None
         return cx, cy
 
+    def _record_click_stats(
+        self,
+        aim_x: float, aim_y: float,
+        start_x: float, start_y: float,
+        end_x: float, end_y: float,
+        move_elapsed: float,
+        down_up_ms: float,
+        double_click: bool,
+    ) -> None:
+        """Append one click's telemetry to self.stats (see human.stats.AntiBanStats).
+
+        error_px is the distance between where the click was aimed (aim_x/y,
+        in the active input backend's coordinate space) and where the cursor
+        actually was when the click fired (end_x/y) — the same "landed vs.
+        intended" gap the human emulator's Gaussian click error produces.
+        move_speed_px_s is the straight-line distance the cursor covered
+        (start -> end) divided by how long the approach actually took —
+        distinct from HumanEmulator's move_speed, a 0..1 "deliberateness"
+        input to WindMouse, not a px/s rate.
+        """
+        error_px = math.hypot(end_x - aim_x, end_y - aim_y)
+        dist = math.hypot(end_x - start_x, end_y - start_y)
+        move_speed_px_s = dist / move_elapsed if move_elapsed > 0 else 0.0
+        self.stats.record_click(
+            error_px=error_px,
+            move_speed_px_s=move_speed_px_s,
+            down_up_ms=down_up_ms,
+            double_click=double_click,
+        )
+
     def _after_click(self) -> None:
         """Call after every click: accumulate fatigue and take a break if due."""
         self._human.accumulate_fatigue(0.0002)
@@ -470,8 +507,12 @@ class GameController:
         else:
             intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
+        aim_x, aim_y = self._to_input_coords(cx, cy)
         time.sleep(intent.pre_move_pause)
+        move_start = time.monotonic()
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
+        move_elapsed = time.monotonic() - move_start
+        end_x, end_y = mouse_input.get_position()
         time.sleep(intent.post_move_pause)
 
         if verify_name is not None:
@@ -483,12 +524,18 @@ class GameController:
                 log.debug("%r not found in tooltip %r — skipping click", verify_name, tooltip)
                 return False
 
+        click_start = time.monotonic()
         mouse_input.click_left()
+        down_up_ms = (time.monotonic() - click_start) * 1000.0
 
         if intent.double_click:
             time.sleep(0.055)
             mouse_input.click_left()
 
+        self._record_click_stats(
+            aim_x, aim_y, cur_x, cur_y, end_x, end_y,
+            move_elapsed, down_up_ms, intent.double_click,
+        )
         self._last_entity_click = time.monotonic()
         log.debug("Clicked %s (canvas %.0f, %.0f)", entity.get("name", "?"), cx, cy)
         self._after_click()
@@ -507,16 +554,22 @@ class GameController:
 
         Returns True if the click fired, False otherwise.
         """
-        if self._onscreen_canvas_pos(entity, "right_click_entity") is None:
+        pos = self._onscreen_canvas_pos(entity, "right_click_entity")
+        if pos is None:
             return False
+        cx, cy = pos
         cur_x, cur_y = mouse_input.get_position()
         if sub_id is not None:
             intent, predict = self._plan_live_click(entity, sub_id, cur_x, cur_y)
         else:
             intent, predict = self._plan_moving_click(entity, cur_x, cur_y)
 
+        aim_x, aim_y = self._to_input_coords(cx, cy)
         time.sleep(intent.pre_move_pause)
+        move_start = time.monotonic()
         mouse_input.wind_mouse_to_prediction(cur_x, cur_y, predict, move_speed=intent.move_speed)
+        move_elapsed = time.monotonic() - move_start
+        end_x, end_y = mouse_input.get_position()
         time.sleep(intent.post_move_pause)
 
         if verify_name is not None:
@@ -528,8 +581,14 @@ class GameController:
                 log.debug("%r not found in tooltip %r — skipping right-click", verify_name, tooltip)
                 return False
 
+        click_start = time.monotonic()
         mouse_input.click_right()
+        down_up_ms = (time.monotonic() - click_start) * 1000.0
 
+        self._record_click_stats(
+            aim_x, aim_y, cur_x, cur_y, end_x, end_y,
+            move_elapsed, down_up_ms, intent.double_click,
+        )
         log.debug("Right-clicked %s", entity.get("name", "?"))
         self._after_click()
         return True
@@ -808,9 +867,14 @@ class GameController:
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
+        move_start = time.monotonic()
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        move_elapsed = time.monotonic() - move_start
         time.sleep(intent.post_move_pause)
+        click_start = time.monotonic()
         mouse_input.click_left()
+        down_up_ms = (time.monotonic() - click_start) * 1000.0
+        self._record_click_stats(sx, sy, cur_x, cur_y, ax, ay, move_elapsed, down_up_ms, intent.double_click)
         self._after_click()
 
     def right_click_at(self, canvas_x: float, canvas_y: float) -> None:
@@ -824,9 +888,14 @@ class GameController:
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
+        move_start = time.monotonic()
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
+        move_elapsed = time.monotonic() - move_start
         time.sleep(intent.post_move_pause)
+        click_start = time.monotonic()
         mouse_input.click_right()
+        down_up_ms = (time.monotonic() - click_start) * 1000.0
+        self._record_click_stats(sx, sy, cur_x, cur_y, ax, ay, move_elapsed, down_up_ms, intent.double_click)
         self._after_click()
 
     # ------------------------------------------------------------------
