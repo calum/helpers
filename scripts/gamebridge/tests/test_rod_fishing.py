@@ -2,6 +2,9 @@
 Tests for RodFishingRoutine.
 
 Covers:
+  - resume: full + raw fish → cooking; full + no raw fish → banking/
+    walk_to_bank_fern/walk_to_bank_tree depending on position; not full →
+    find_spot/walk_to_tree/walk_to_fern depending on distance to Tree
   - banking: no bankable items → walk_to_fern; cooked fish → opens bank; full
     deposit cycle; bank open after deposit → Escape; _batches_cooked reset
   - walk_to_fern: Tree on minimap → walk_to_tree; real Fern entity used when in range; synthetic fallback when out of range
@@ -148,6 +151,93 @@ COOK_DIALOG = {
     "groupId": 270, "childId": 38, "itemId": -1, "quantity": 0,
     "bounds": {"x": 400, "y": 250, "width": 200, "height": 30}, "text": "Cook 27 Raw Trout",
 }
+
+
+# ---------------------------------------------------------------------------
+# resume (entry point)
+# ---------------------------------------------------------------------------
+
+class TestResume:
+    def test_fresh_routine_starts_in_resume_state(self):
+        assert _routine().current_state == "resume"
+
+    def test_full_inventory_with_raw_fish_goes_to_cooking(self):
+        game = _make_game(inventory=_full_inv(R.RAW_TROUT_ID))
+        assert _routine().resume(game, _ctrl()) == "cooking"
+
+    def test_full_inventory_with_raw_salmon_goes_to_cooking(self):
+        game = _make_game(inventory=_full_inv(R.RAW_SALMON_ID))
+        assert _routine().resume(game, _ctrl()) == "cooking"
+
+    def test_full_inventory_no_raw_fish_near_bank_goes_to_banking(self):
+        # player_y >= FERN_WORLD_Y (3458)
+        game = _make_game(player_y=3460, inventory=_full_inv(R.COOKED_TROUT_ID))
+        assert _routine().resume(game, _ctrl()) == "banking"
+
+    def test_full_inventory_no_raw_fish_between_tree_and_fern_goes_to_walk_to_bank_fern(self):
+        # TREE_WORLD_Y (3436) <= player_y < FERN_WORLD_Y (3458)
+        game = _make_game(player_y=3440, inventory=_full_inv(R.COOKED_TROUT_ID))
+        assert _routine().resume(game, _ctrl()) == "walk_to_bank_fern"
+
+    def test_full_inventory_no_raw_fish_south_of_tree_goes_to_walk_to_bank_tree(self):
+        # player_y < TREE_WORLD_Y (3436)
+        game = _make_game(player_y=3420, inventory=_full_inv(R.COOKED_TROUT_ID))
+        assert _routine().resume(game, _ctrl()) == "walk_to_bank_tree"
+
+    def test_not_full_already_near_tree_goes_to_find_spot(self):
+        # player at the Tree itself — within TREE_NEAR_TILES (12)
+        game = _make_game(player_x=3100, player_y=3436)
+        assert _routine().resume(game, _ctrl()) == "find_spot"
+
+    def test_not_full_within_minimap_range_of_tree_goes_to_walk_to_tree(self):
+        # 18 tiles from Tree (3100, 3436) — beyond TREE_NEAR_TILES, within MINIMAP_RANGE (20)
+        game = _make_game(player_x=3100, player_y=3454)
+        assert _routine().resume(game, _ctrl()) == "walk_to_tree"
+
+    def test_not_full_far_from_tree_goes_to_walk_to_fern(self):
+        # 34 tiles from Tree (3100, 3436) — beyond MINIMAP_RANGE
+        game = _make_game(player_x=3100, player_y=3470)
+        assert _routine().resume(game, _ctrl()) == "walk_to_fern"
+
+
+# ---------------------------------------------------------------------------
+# _resume_toward_bank / _resume_toward_spot
+# ---------------------------------------------------------------------------
+
+class TestResumeTowardBank:
+    def test_at_fern_y_returns_banking(self):
+        game = _make_game(player_y=3458)
+        assert _routine()._resume_toward_bank(game) == "banking"
+
+    def test_at_tree_y_returns_walk_to_bank_fern(self):
+        game = _make_game(player_y=3436)
+        assert _routine()._resume_toward_bank(game) == "walk_to_bank_fern"
+
+    def test_south_of_tree_returns_walk_to_bank_tree(self):
+        game = _make_game(player_y=3000)
+        assert _routine()._resume_toward_bank(game) == "walk_to_bank_tree"
+
+
+class TestResumeTowardSpot:
+    def test_at_tree_near_threshold_returns_find_spot(self):
+        # exactly TREE_NEAR_TILES (12) away
+        game = _make_game(player_x=3100, player_y=3448)
+        assert _routine()._resume_toward_spot(game) == "find_spot"
+
+    def test_just_beyond_near_threshold_returns_walk_to_tree(self):
+        # 13 tiles away — beyond TREE_NEAR_TILES, within MINIMAP_RANGE
+        game = _make_game(player_x=3100, player_y=3449)
+        assert _routine()._resume_toward_spot(game) == "walk_to_tree"
+
+    def test_at_minimap_range_threshold_returns_walk_to_tree(self):
+        # exactly MINIMAP_RANGE (20) away
+        game = _make_game(player_x=3100, player_y=3456)
+        assert _routine()._resume_toward_spot(game) == "walk_to_tree"
+
+    def test_just_beyond_minimap_range_returns_walk_to_fern(self):
+        # 21 tiles away — beyond MINIMAP_RANGE
+        game = _make_game(player_x=3100, player_y=3457)
+        assert _routine()._resume_toward_spot(game) == "walk_to_fern"
 
 
 # ---------------------------------------------------------------------------

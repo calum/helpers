@@ -776,6 +776,114 @@ has arrived, and after `unsubscribe`/TTL expiry it simply stops updating
 
 ---
 
+## Injecting input
+
+A connected client may send `mouseEvent`/`keyEvent` messages to inject mouse
+and keyboard input **directly into the game client**, bypassing OS-level
+input entirely. The plugin translates each message into a synthetic AWT
+event and dispatches it straight onto the game's `Canvas`
+(`Canvas.dispatchEvent`) — the same object the game's own input listeners
+are attached to.
+
+This is an alternative *transport* to OS-level `SendInput` (see
+`scripts/gamebridge/input/mouse.py` / `keyboard.py`); the Python side's
+`BridgeInputBackend` (`scripts/gamebridge/input/bridge_input.py`) implements
+it, and `GameController.use_bridge_input()` / `use_os_input()` switch
+between the two. Click planning, WindMouse path generation, and the
+HumanEmulator's timing model are completely unaffected by which transport
+is active — only where the final move/click/key events end up changes.
+
+**Coordinates are canvas-local**, the same space `canvasX`/`canvasY` and
+`hull` use elsewhere in this document — *not* OS screen pixels. There is no
+window offset to add: the plugin dispatches directly onto the canvas.
+
+### `mouseEvent`
+
+```json
+{"type": "mouseEvent", "action": "press", "x": 480, "y": 360, "button": 1, "clickCount": 1}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | always `"mouseEvent"` |
+| `action` | string | `"move"`, `"press"`, `"release"`, `"drag"`, or `"wheel"` |
+| `x` / `y` | int | canvas-local pixel coordinates. Fractional values are rounded (not truncated) on the Java side. |
+| `button` | int | AWT button id — `1` = left, `2` = middle, `3` = right. Required for `"press"`/`"drag"`; omitted/ignored for `"move"`/`"wheel"`. |
+| `clickCount` | int | Optional, `"press"`/`"release"` only — defaults to `1` if omitted. Send `2` to report a real double-click (`MouseEvent.getClickCount() == 2`); propagated to the auto-synthesized `MOUSE_CLICKED` event too. `BridgeInputBackend` tracks this automatically (same position/button within 500 ms — Windows' default double-click window — and 4px increments the count; otherwise it resets to `1`). |
+| `rotation` | int | `"wheel"` only — signed notch count, AWT `wheelRotation` convention: negative = up/away, positive = down/toward. |
+
+A `"release"` also triggers a synthesized `MOUSE_CLICKED` event for the same
+button/position immediately afterward, since synthetic events bypass the
+platform's own press-release-without-drag → click synthesis. A discrete
+click is therefore just a `"press"` followed by a `"release"` a few tens of
+milliseconds later — exactly what `BridgeInputBackend.click_left`/
+`click_right` send.
+
+`"drag"` builds a `MOUSE_DRAGGED` event carrying whichever mouse button(s)
+are currently held (see "Held modifier/button state" below) — send a
+`"press"` first, then one or more `"drag"` messages as the cursor moves,
+then `"release"`. `GameController.use_bridge_input()` routines get this for
+free via `mouse.drag_to(start_x, start_y, dest_x, dest_y)`, which brackets a
+normal WindMouse path with `button_down`/`button_up`.
+
+`"wheel"` builds a `java.awt.event.MouseWheelEvent` (`WHEEL_UNIT_SCROLL`,
+scroll amount `3`, matching a typical mouse) dispatched the same way as
+other mouse events. Use `ctrl.scroll(amount)` (or `mouse.scroll(amount)`
+directly) to send it — works under both the OS-SendInput and Game-Bridge
+backends:
+
+```python
+ctrl.scroll(-3)  # scroll up/away three notches
+```
+
+### Held modifier/button state
+
+`InputEventDispatcher` accumulates which modifier keys (Shift/Ctrl/Alt) and
+mouse buttons are currently held, per connection, across however many
+`mouseEvent`/`keyEvent` messages that connection has sent — a held Shift
+from an earlier `keyEvent` is reflected in `getModifiersEx()` on a later
+`mouseEvent`, and vice versa. This state is cleared whenever a client
+disconnects, so a connection dropped mid-gesture (e.g. with a key or button
+still held) can never leave a modifier "stuck" for the next connection.
+
+### `keyEvent`
+
+```json
+{"type": "keyEvent", "action": "press", "keyCode": 37}
+```
+
+```json
+{"type": "keyEvent", "action": "type", "keyChar": "a"}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | always `"keyEvent"` |
+| `action` | string | `"press"`, `"release"`, or `"type"` |
+| `keyCode` | int | AWT `KeyEvent.VK_*` constant. Required for `"press"`/`"release"`; ignored for `"type"`. |
+| `keyChar` | string | A single character. Required for `"type"`; ignored for `"press"`/`"release"`. |
+
+`"press"`/`"release"` model a physical key — use these for movement/function
+keys and modifiers (arrow keys, F-keys, Shift held across a sequence, etc.).
+`"type"` fires a single `KEY_TYPED` event carrying a character directly —
+simpler for text input (chat, search boxes) since it sidesteps shift/layout
+handling entirely.
+
+### Python usage
+
+```python
+ctrl.use_bridge_input()   # route all subsequent input through the canvas
+ctrl.click_entity(goblin) # unchanged call — same WindMouse path, different transport
+ctrl.press_key(Key.F5)
+ctrl.use_os_input()       # back to OS-level SendInput (the default)
+```
+
+Malformed messages (missing `x`/`y`, an unrecognised `action`, a `"press"`
+with no `keyCode`, etc.) are logged and ignored — they never raise or stall
+the tick loop.
+
+---
+
 ## Building a game state model
 
 ```python
@@ -930,3 +1038,6 @@ def stream_with_reconnect(host='127.0.0.1', port=7070, retry_delay=5.0):
 | `runelite-client/…/plugins/gamebridge/GameBridgeConfig.java` | Config interface |
 | `runelite-client/…/plugins/gamebridge/BridgeServer.java` | Embedded TCP server |
 | `runelite-client/…/plugins/gamebridge/HullFilter.java` | ID/name filter for convex hull data |
+| `runelite-client/…/plugins/gamebridge/InputEventDispatcher.java` | Translates inbound `mouseEvent`/`keyEvent` messages into synthetic AWT events dispatched onto the game's Canvas — see "Injecting input" above |
+| `scripts/gamebridge/input/bridge_input.py` | Python-side transport for "Injecting input" — `BridgeInputBackend` |
+| `scripts/gamebridge/input/mouse.py` | OS-level (`SendInput`) mouse transport — WindMouse, `button_down`/`button_up`/`drag_to`, `scroll` |

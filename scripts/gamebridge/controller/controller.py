@@ -17,6 +17,7 @@ from ..client import BridgeConnection
 from ..human.emulator import ClickIntent, HumanEmulator
 from ..input import mouse as mouse_input
 from ..input import keyboard as kb_input
+from ..input.bridge_input import BridgeInputBackend
 from ..input.keyboard import Key
 from .. import settings as _settings
 from ..fov import decide_camera_action
@@ -139,6 +140,67 @@ class GameController:
         # Modifier keys currently held down via hold_key() — see hold_key/
         # release_key/release_all_keys.
         self._held_keys: set[str] = set()
+        # True while input is routed through the Game Bridge connection
+        # (synthetic AWT events onto the canvas) rather than OS SendInput —
+        # see use_bridge_input()/use_os_input() and _to_input_coords below.
+        self._using_bridge_input: bool = False
+
+    # ------------------------------------------------------------------
+    # Input transport — OS SendInput (default) vs. Game Bridge canvas
+    # injection. Only the transport changes here: WindMouse, HumanEmulator
+    # timing, and every public click/key method below are unaffected by
+    # which one is active.
+    # ------------------------------------------------------------------
+
+    def use_bridge_input(self) -> None:
+        """Route mouse/keyboard input through synthetic AWT events
+        dispatched directly onto the game's Canvas (Game Bridge
+        mouseEvent/keyEvent messages) instead of OS-level SendInput.
+
+        Requires set_connection() to already have an active connection.
+        Coordinates handed to the backend become canvas-local from this
+        point on (see _to_input_coords/_clamp_to_input_bounds) — the Java
+        side dispatches mouseEvent x/y straight onto the canvas, with no
+        window offset applied.
+        """
+        if self._connection is None:
+            log.warning("use_bridge_input() called with no active connection")
+            return
+        backend = BridgeInputBackend(self._connection)
+        mouse_input.set_backend(backend)
+        kb_input.set_backend(backend)
+        self._using_bridge_input = True
+        log.info("Routing input through Game Bridge (canvas-direct AWT events)")
+
+    def use_os_input(self) -> None:
+        """Revert to OS-level SendInput (the default)."""
+        mouse_input.clear_backend()
+        kb_input.clear_backend()
+        self._using_bridge_input = False
+        log.info("Routing input through OS-level SendInput")
+
+    def _to_input_coords(self, cx: float, cy: float) -> tuple[float, float]:
+        """Map a canvas coordinate to whatever coordinate space the active
+        input backend expects: OS screen pixels for SendInput (via
+        _canvas_to_screen), or canvas-local pixels unchanged for the Game
+        Bridge backend.
+        """
+        if self._using_bridge_input:
+            return cx, cy
+        return self._canvas_to_screen(cx, cy)
+
+    def _clamp_to_input_bounds(self, x: float, y: float) -> tuple[float, float]:
+        """Clamp a point already in the active backend's coordinate space
+        (see _to_input_coords) so humanized click error never carries the
+        cursor outside the game window/canvas.
+        """
+        if not self._using_bridge_input:
+            return self._clamp_to_window(x, y)
+        if self._window is None:
+            return x, y
+        left, top, right, bottom = self._window
+        w, h = right - left, bottom - top
+        return max(0, min(x, w - 1)), max(0, min(y, h - 1))
 
     # ------------------------------------------------------------------
     # Window management
@@ -265,13 +327,13 @@ class GameController:
         """
         now = time.monotonic()
         target = MovingTarget.from_entity(entity, self._tracker.velocity(entity, "canvas"), now)
-        sx, sy = self._canvas_to_screen(*target.predict(now))
+        sx, sy = self._to_input_coords(*target.predict(now))
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         err_x, err_y = intent.actual_x - sx, intent.actual_y - sy
 
         def predict(at_time: float) -> tuple[float, float]:
-            px, py = self._canvas_to_screen(*target.predict(at_time))
-            return self._clamp_to_window(px + err_x, py + err_y)
+            px, py = self._to_input_coords(*target.predict(at_time))
+            return self._clamp_to_input_bounds(px + err_x, py + err_y)
 
         return intent, predict
 
@@ -314,15 +376,15 @@ class GameController:
         """
         now = time.monotonic()
         target = MovingTarget.from_entity(entity, self._tracker.velocity(entity, "canvas"), now)
-        sx, sy = self._canvas_to_screen(*target.predict(now))
+        sx, sy = self._to_input_coords(*target.predict(now))
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
         err_x, err_y = intent.actual_x - sx, intent.actual_y - sy
 
         def predict(at_time: float) -> tuple[float, float]:
             live = self._live_hull_canvas_pos(sub_id, entity)
             cx, cy = live if live is not None else target.predict(at_time)
-            px, py = self._canvas_to_screen(cx, cy)
-            return self._clamp_to_window(px + err_x, py + err_y)
+            px, py = self._to_input_coords(cx, cy)
+            return self._clamp_to_input_bounds(px + err_x, py + err_y)
 
         return intent, predict
 
@@ -514,10 +576,10 @@ class GameController:
         if not self._is_canvas_coord_valid(cx, cy):
             log.warning("move_to_widget: canvas (%.0f, %.0f) outside viewport — skipping", cx, cy)
             return
-        sx, sy = self._canvas_to_screen(cx, cy)
+        sx, sy = self._to_input_coords(cx, cy)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         log.debug("Moved to widget G%d:%d at canvas (%.0f, %.0f)",
@@ -610,10 +672,10 @@ class GameController:
         target_x = mx / 2 if space_left >= space_right else mx + mw + space_right / 2
         target_y = min(max(my + mh / 2, 0), canvas_h - 1)
 
-        sx, sy = self._canvas_to_screen(target_x, target_y)
+        sx, sy = self._to_input_coords(target_x, target_y)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         log.debug("Dismissing menu — moved mouse to canvas (%.0f, %.0f)", target_x, target_y)
@@ -741,10 +803,10 @@ class GameController:
             log.warning("click_at: canvas (%.0f, %.0f) outside viewport — skipping",
                         canvas_x, canvas_y)
             return
-        sx, sy = self._canvas_to_screen(canvas_x, canvas_y)
+        sx, sy = self._to_input_coords(canvas_x, canvas_y)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
@@ -757,10 +819,10 @@ class GameController:
             log.warning("right_click_at: canvas (%.0f, %.0f) outside viewport — skipping",
                         canvas_x, canvas_y)
             return
-        sx, sy = self._canvas_to_screen(canvas_x, canvas_y)
+        sx, sy = self._to_input_coords(canvas_x, canvas_y)
         cur_x, cur_y = mouse_input.get_position()
         intent = self._human.plan_click(sx, sy, cur_x, cur_y)
-        ax, ay = self._clamp_to_window(intent.actual_x, intent.actual_y)
+        ax, ay = self._clamp_to_input_bounds(intent.actual_x, intent.actual_y)
         time.sleep(intent.pre_move_pause)
         mouse_input.wind_mouse(cur_x, cur_y, ax, ay, move_speed=intent.move_speed)
         time.sleep(intent.post_move_pause)
@@ -781,6 +843,18 @@ class GameController:
         time.sleep(self._human.random_pause(0.02, 0.08))
         kb_input.press_key(key)
         log.debug("Pressed key '%s'", key)
+
+    def scroll(self, amount: int) -> None:
+        """Scroll the mouse wheel `amount` notches at the current cursor
+        position, routed through whichever transport is active.
+
+        Follows AWT's wheelRotation convention (matching the Game Bridge
+        wire format): negative = up/away, positive = down/toward. Just the
+        primitive — the scroll-to-zoom camera feature itself (TODO.md) is
+        out of scope here.
+        """
+        mouse_input.scroll(amount)
+        log.debug("Scrolled wheel by %d", amount)
 
     def hold_key(self, key: str) -> None:
         """Press `key` down and hold it — pairs with `release_key`.

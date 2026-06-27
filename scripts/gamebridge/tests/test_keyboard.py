@@ -15,6 +15,9 @@ from __future__ import annotations
 import ctypes
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
+from scripts.gamebridge.input import keyboard
 from scripts.gamebridge.input.keyboard import (
     Key,
     _INPUT,
@@ -331,3 +334,67 @@ class TestSendScanReturnsResultAndError:
             result, error = _send_scan(0x2A, False, key_up=False)
 
         assert (result, error) == (1, 0)
+
+
+# ---------------------------------------------------------------------------
+# Pluggable backend — see GameController.use_bridge_input()
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_backend_after_each_test():
+    """Guarantee no test leaks a backend into the next one — set_backend()
+    mutates module-level state shared across the whole test session."""
+    yield
+    keyboard.clear_backend()
+
+
+class TestBackendDelegation:
+    def test_press_key_delegates_to_backend_when_set(self):
+        backend = MagicMock()
+        keyboard.set_backend(backend)
+
+        press_key(Key.ESCAPE, hold_ms=75.0)
+
+        backend.press_key.assert_called_once_with(Key.ESCAPE, hold_ms=75.0)
+
+    def test_key_down_delegates_to_backend_when_set(self):
+        backend = MagicMock()
+        keyboard.set_backend(backend)
+
+        key_down(Key.SHIFT)
+
+        backend.key_down.assert_called_once_with(Key.SHIFT)
+
+    def test_key_up_delegates_to_backend_when_set(self):
+        backend = MagicMock()
+        keyboard.set_backend(backend)
+
+        key_up(Key.SHIFT)
+
+        backend.key_up.assert_called_once_with(Key.SHIFT)
+
+    def test_type_text_routes_each_char_through_backend(self):
+        """type_text() itself is unchanged — it only calls press_key()
+        per character, so a backend swap is all it takes to retarget it."""
+        backend = MagicMock()
+        keyboard.set_backend(backend)
+
+        with patch.object(keyboard, "time"):
+            type_text("hi")
+
+        assert backend.press_key.call_args_list == [
+            call("h", hold_ms=30.0),
+            call("i", hold_ms=30.0),
+        ]
+
+    def test_clear_backend_restores_os_sendinput_path(self):
+        backend = MagicMock()
+        keyboard.set_backend(backend)
+        keyboard.clear_backend()
+
+        with patch.object(keyboard, "_send_scan") as mock_send, \
+                patch.object(keyboard, "time"):
+            press_key(Key.ESCAPE)
+
+        mock_send.assert_called()
+        backend.press_key.assert_not_called()

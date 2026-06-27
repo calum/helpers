@@ -88,6 +88,7 @@ public class GameBridgePlugin extends Plugin
 	private final Map<BridgeServer.ClientEntry, Map<String, Subscription>> subscriptions = new HashMap<>();
 
 	private TickMessageBuilder tickBuilder;
+	private InputEventDispatcher inputDispatcher;
 
 	/**
 	 * A Python-registered interest in the nearest entity matching {@code kind}/{@code id}/{@code name}.
@@ -125,6 +126,7 @@ public class GameBridgePlugin extends Plugin
 		objectFilter.parse(config.objectFilter());
 		server.start(config.port());
 		tickBuilder = new TickMessageBuilder(client, config, hullFilter, objectFilter);
+		inputDispatcher = new InputEventDispatcher(client);
 	}
 
 	@Override
@@ -245,11 +247,20 @@ public class GameBridgePlugin extends Plugin
 	public void onGameTick(GameTick event)
 	{
 		server.activateNewClients();
+		List<BridgeServer.ClientEntry> beforeBroadcast = new ArrayList<>(server.activeClients());
 		server.broadcast(gson.toJson(tickBuilder.build(pendingEvents, pendingVarbits)));
 		pendingEvents.clear();
 		pendingVarbits.clear();
 		tickSubscriptionTtls();
 		pruneDisconnectedSubscriptions();
+
+		// A dropped connection mid-gesture (e.g. a key/button held down) must
+		// not leave InputEventDispatcher's accumulated modifier state stuck
+		// for the next connection.
+		if (!server.activeClients().containsAll(beforeBroadcast))
+		{
+			inputDispatcher.reset();
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -313,6 +324,14 @@ public class GameBridgePlugin extends Plugin
 			else if ("unsubscribe".equals(type))
 			{
 				handleUnsubscribe(entry, msg);
+			}
+			else if ("mouseEvent".equals(type))
+			{
+				inputDispatcher.dispatchMouseEvent(msg);
+			}
+			else if ("keyEvent".equals(type))
+			{
+				inputDispatcher.dispatchKeyEvent(msg);
 			}
 		}
 	}

@@ -199,6 +199,109 @@ class TestClampToWindow:
 
 
 # ---------------------------------------------------------------------------
+# use_bridge_input / use_os_input — input transport switch
+# ---------------------------------------------------------------------------
+
+class TestUseBridgeInput:
+    def test_no_connection_logs_warning_and_does_not_switch(self, caplog):
+        ctrl = _ctrl()
+        with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb, \
+                caplog.at_level(logging.WARNING):
+            ctrl.use_bridge_input()
+
+        assert not ctrl._using_bridge_input
+        mock_mouse.set_backend.assert_not_called()
+        mock_kb.set_backend.assert_not_called()
+        assert "no active connection" in caplog.text
+
+    def test_with_connection_sets_backend_on_both_modules(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+
+        with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
+            ctrl.use_bridge_input()
+
+        assert ctrl._using_bridge_input
+        mock_mouse.set_backend.assert_called_once()
+        mock_kb.set_backend.assert_called_once()
+        # Both modules must be handed the exact same backend instance.
+        assert mock_mouse.set_backend.call_args.args[0] is mock_kb.set_backend.call_args.args[0]
+
+
+class TestUseOsInput:
+    def test_clears_backend_on_both_modules_and_flag(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+        with patch("scripts.gamebridge.controller.controller.mouse_input"), \
+                patch("scripts.gamebridge.controller.controller.kb_input"):
+            ctrl.use_bridge_input()
+
+        with patch("scripts.gamebridge.controller.controller.mouse_input") as mock_mouse, \
+                patch("scripts.gamebridge.controller.controller.kb_input") as mock_kb:
+            ctrl.use_os_input()
+
+        assert not ctrl._using_bridge_input
+        mock_mouse.clear_backend.assert_called_once()
+        mock_kb.clear_backend.assert_called_once()
+
+    def test_is_the_default(self):
+        assert not _ctrl()._using_bridge_input
+
+
+# ---------------------------------------------------------------------------
+# _to_input_coords / _clamp_to_input_bounds — coordinate space dispatch
+#
+# OS-backend mode reuses _canvas_to_screen/_clamp_to_window unchanged (see
+# TestScreenToCanvas/TestClampToWindow above); bridge mode must hand the
+# Java side canvas-local coordinates with no window offset, since
+# InputEventDispatcher dispatches mouseEvent x/y straight onto the canvas.
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+class TestToInputCoords:
+    def test_os_mode_converts_canvas_to_screen(self, mock_settings):
+        mock_settings.get.return_value = 0
+        ctrl = _ctrl()
+        assert ctrl._to_input_coords(50, 50) == ctrl._canvas_to_screen(50, 50)
+
+    def test_bridge_mode_returns_canvas_coords_unchanged(self, mock_settings):
+        ctrl = _ctrl()
+        ctrl._using_bridge_input = True
+        assert ctrl._to_input_coords(50, 75) == (50, 75)
+
+
+class TestClampToInputBounds:
+    def test_os_mode_clamps_to_window(self):
+        ctrl = _ctrl()
+        assert ctrl._clamp_to_input_bounds(2000, 400) == ctrl._clamp_to_window(2000, 400)
+
+    def test_bridge_mode_clamps_to_canvas_bounds(self):
+        ctrl = _ctrl()
+        ctrl._using_bridge_input = True
+        assert ctrl._clamp_to_input_bounds(2000, 400) == (CANVAS_W - 1, 400)
+
+    def test_bridge_mode_clamps_negative_to_zero(self):
+        ctrl = _ctrl()
+        ctrl._using_bridge_input = True
+        assert ctrl._clamp_to_input_bounds(-5, -5) == (0, 0)
+
+    def test_bridge_mode_inside_bounds_unchanged(self):
+        ctrl = _ctrl()
+        ctrl._using_bridge_input = True
+        assert ctrl._clamp_to_input_bounds(500, 300) == (500, 300)
+
+    def test_bridge_mode_no_window_returns_original(self):
+        ctrl = GameController(human=_human())
+        ctrl._using_bridge_input = True
+        ctrl._window = None
+        assert ctrl._clamp_to_input_bounds(9999, 9999) == (9999, 9999)
+
+
+# ---------------------------------------------------------------------------
 # _onscreen_canvas_pos — shared guard for move/click/right-click
 # ---------------------------------------------------------------------------
 

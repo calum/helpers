@@ -30,7 +30,28 @@ MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_ABSOLUTE = 0x8000
+
+WHEEL_DELTA = 120  # standard Windows mouse wheel notch size
+
+# AWT button identifiers (java.awt.event.MouseEvent.BUTTON1/2/3) — kept
+# consistent with input.bridge_input.BUTTON_LEFT/MIDDLE/RIGHT so button_down/
+# button_up/drag_to accept the same values regardless of active backend.
+BUTTON_LEFT = 1
+BUTTON_MIDDLE = 2
+BUTTON_RIGHT = 3
+
+_DOWN_FLAGS = {
+    BUTTON_LEFT: MOUSEEVENTF_LEFTDOWN,
+    BUTTON_MIDDLE: MOUSEEVENTF_MIDDLEDOWN,
+    BUTTON_RIGHT: MOUSEEVENTF_RIGHTDOWN,
+}
+_UP_FLAGS = {
+    BUTTON_LEFT: MOUSEEVENTF_LEFTUP,
+    BUTTON_MIDDLE: MOUSEEVENTF_MIDDLEUP,
+    BUTTON_RIGHT: MOUSEEVENTF_RIGHTUP,
+}
 
 
 class _MOUSEINPUT(ctypes.Structure):
@@ -77,15 +98,41 @@ def _to_absolute(x: float, y: float) -> tuple[int, int]:
 
 
 # ------------------------------------------------------------------ #
+# Pluggable transport — see GameController.use_bridge_input()
+# ------------------------------------------------------------------ #
+# get_position()/move_to()/click_left()/click_right() delegate here when set.
+# wind_mouse()/wind_mouse_to_prediction() never check this directly — they
+# only ever call the four functions above, so swapping the backend here is
+# the only change needed to retarget the whole WindMouse algorithm at a
+# different transport (OS SendInput vs. Game Bridge canvas injection).
+_backend = None
+
+
+def set_backend(backend) -> None:
+    """Route get_position/move_to/click_left/click_right through `backend`
+    instead of OS-level SendInput. `backend` must implement the same four
+    functions with identical signatures (see input.bridge_input.BridgeInputBackend).
+    """
+    global _backend
+    _backend = backend
+
+
+def clear_backend() -> None:
+    """Revert to OS-level SendInput (the default)."""
+    global _backend
+    _backend = None
+
+
+# ------------------------------------------------------------------ #
 # Low-level helpers
 # ------------------------------------------------------------------ #
 
-def _send_mouse_event(flags: int, dx: int = 0, dy: int = 0) -> None:
+def _send_mouse_event(flags: int, dx: int = 0, dy: int = 0, mouse_data: int = 0) -> None:
     inp = _INPUT()
     inp.type = INPUT_MOUSE
     inp.mi.dx = dx
     inp.mi.dy = dy
-    inp.mi.mouseData = 0
+    inp.mi.mouseData = mouse_data
     inp.mi.dwFlags = flags
     inp.mi.time = 0
     inp.mi.dwExtraInfo = None
@@ -98,6 +145,8 @@ def _send_mouse_event(flags: int, dx: int = 0, dy: int = 0) -> None:
 
 def get_position() -> tuple[int, int]:
     """Return current cursor position in screen pixels."""
+    if _backend is not None:
+        return _backend.get_position()
     pt = ctypes.wintypes.POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
     return pt.x, pt.y
@@ -105,12 +154,18 @@ def get_position() -> tuple[int, int]:
 
 def move_to(x: float, y: float) -> None:
     """Instantly move the cursor to screen position (x, y)."""
+    if _backend is not None:
+        _backend.move_to(x, y)
+        return
     ax, ay = _to_absolute(x, y)
     _send_mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay)
 
 
 def click_left(x: float | None = None, y: float | None = None) -> None:
     """Left-click at the current position (or at (x, y) if given)."""
+    if _backend is not None:
+        _backend.click_left(x, y)
+        return
     if x is not None and y is not None:
         move_to(x, y)
     _send_mouse_event(MOUSEEVENTF_LEFTDOWN)
@@ -120,6 +175,9 @@ def click_left(x: float | None = None, y: float | None = None) -> None:
 
 def click_right(x: float | None = None, y: float | None = None) -> None:
     """Right-click at the current position (or at (x, y) if given)."""
+    if _backend is not None:
+        _backend.click_right(x, y)
+        return
     if x is not None and y is not None:
         move_to(x, y)
     _send_mouse_event(MOUSEEVENTF_RIGHTDOWN)
@@ -127,9 +185,101 @@ def click_right(x: float | None = None, y: float | None = None) -> None:
     _send_mouse_event(MOUSEEVENTF_RIGHTUP)
 
 
+def button_down(button: int = BUTTON_LEFT) -> None:
+    """Press and hold a mouse button — pair with `button_up` to release it.
+
+    Used by `drag_to` to bracket a WindMouse move with a held button, the
+    same way a real click-and-drag works.
+    """
+    if _backend is not None:
+        _backend.button_down(button)
+        return
+    flags = _DOWN_FLAGS.get(button)
+    if flags is not None:
+        _send_mouse_event(flags)
+
+
+def button_up(button: int = BUTTON_LEFT) -> None:
+    """Release a mouse button previously held down with `button_down`."""
+    if _backend is not None:
+        _backend.button_up(button)
+        return
+    flags = _UP_FLAGS.get(button)
+    if flags is not None:
+        _send_mouse_event(flags)
+
+
+def drag_to(
+    start_x: float,
+    start_y: float,
+    dest_x: float,
+    dest_y: float,
+    button: int = BUTTON_LEFT,
+    **wind_mouse_kwargs,
+) -> None:
+    """Click-and-drag from (start_x, start_y) to (dest_x, dest_y).
+
+    Holds `button` down, moves along a WindMouse path, then releases —
+    no new movement/physics code, this just brackets `wind_mouse` with
+    `button_down`/`button_up`.
+    """
+    button_down(button)
+    wind_mouse(start_x, start_y, dest_x, dest_y, **wind_mouse_kwargs)
+    button_up(button)
+
+
+def scroll(amount: int) -> None:
+    """Scroll the mouse wheel by `amount` notches.
+
+    Follows AWT's wheelRotation convention (matching the Game Bridge wire
+    format and InputEventDispatcher): negative = up/away, positive =
+    down/toward — regardless of which backend (OS SendInput or Game Bridge
+    canvas injection) is active. Windows' own MOUSEEVENTF_WHEEL mouseData
+    uses the opposite sign convention, so it is negated here.
+    """
+    if _backend is not None:
+        _backend.scroll(amount)
+        return
+    _send_mouse_event(MOUSEEVENTF_WHEEL, mouse_data=-amount * WHEEL_DELTA)
+
+
 # ------------------------------------------------------------------ #
 # WindMouse — realistic curved trajectory
 # ------------------------------------------------------------------ #
+
+# Per-step probability of a "stutter" wait — a real HID device's polling
+# isn't perfectly uniform; USB scheduling hiccups occasionally produce a much
+# longer gap between reports. A uniform ±12% jitter alone never produces
+# this, so a rare multiplicative spike is layered on top.
+STUTTER_CHANCE = 0.04
+STUTTER_MULT_RANGE = (2.0, 4.0)
+
+
+def _step_wait(
+    progress: float,
+    move_speed: float,
+    rng: random.Random,
+    *,
+    min_wait_ms: float = 3.0,
+    max_wait_ms: float = 11.0,
+) -> float:
+    """Compute the inter-step wait (ms) for one WindMouse step.
+
+    Ease-in-out: slow at the start and near the target, fast through the
+    middle — `progress` (0..1) is how far along the path the cursor is, and
+    the bell curve peaks at 0.5. `move_speed` (0.0 = fast, 1.0 = slow/
+    deliberate) scales the whole wait up. A small per-step Gaussian jitter
+    plus a rare stutter (see STUTTER_CHANCE/STUTTER_MULT_RANGE) round out
+    the timing so it doesn't look like a uniform synthetic cadence.
+    """
+    ease = 4.0 * progress * (1.0 - progress)
+    wait = max_wait_ms - (max_wait_ms - min_wait_ms) * ease
+    wait *= 1.0 + move_speed * 1.5
+    wait += rng.gauss(0.0, wait * 0.12)
+    if rng.random() < STUTTER_CHANCE:
+        wait *= rng.uniform(*STUTTER_MULT_RANGE)
+    return max(0.001, wait)
+
 
 def wind_mouse(
     start_x: float,
@@ -202,14 +352,9 @@ def wind_mouse(
         dist = math.hypot(dest_x - cx, dest_y - cy)
         move_to(cx, cy)
 
-        # Ease-in-out: slow at start and near target, fast through the middle.
-        # progress goes 0→1 over the path; the bell curve peaks at 0.5.
         progress = 1.0 - dist / max(1.0, total_dist)
-        ease = 4.0 * progress * (1.0 - progress)
-        wait = max_wait_ms - (max_wait_ms - min_wait_ms) * ease
-        wait *= 1.0 + move_speed * 1.5   # deliberate moves take longer per step
-        wait += rng.gauss(0.0, wait * 0.12)  # small per-step jitter
-        time.sleep(max(0.001, wait) / 1000.0)
+        wait = _step_wait(progress, move_speed, rng, min_wait_ms=min_wait_ms, max_wait_ms=max_wait_ms)
+        time.sleep(wait / 1000.0)
 
     move_to(dest_x, dest_y)
 
@@ -290,11 +435,8 @@ def wind_mouse_to_prediction(
         move_to(cx, cy)
 
         progress = 1.0 - dist / max(1.0, total_dist)
-        ease = 4.0 * progress * (1.0 - progress)
-        wait = max_wait_ms - (max_wait_ms - min_wait_ms) * ease
-        wait *= 1.0 + move_speed * 1.5
-        wait += rng.gauss(0.0, wait * 0.12)
-        time.sleep(max(0.001, wait) / 1000.0)
+        wait = _step_wait(progress, move_speed, rng, min_wait_ms=min_wait_ms, max_wait_ms=max_wait_ms)
+        time.sleep(wait / 1000.0)
 
     # Lock-on correction: re-predict one last time and land precisely on the
     # freshest estimate, rather than the (possibly now-stale) point the

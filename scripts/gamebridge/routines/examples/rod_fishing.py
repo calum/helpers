@@ -11,6 +11,13 @@ Route inbound:   Rod Fishing Spot → Tree → Fern → Bank booth
 State flow
 ──────────
 
+  resume (entry point — picks up wherever the player/inventory are)
+    → inventory full, raw fish left to cook                       → cooking
+    → inventory full, nothing left to cook                        → banking / walk_to_bank_fern / walk_to_bank_tree
+    → inventory not full, already near the Tree                   → find_spot
+    → inventory not full, within minimap range of the Tree        → walk_to_tree
+    → inventory not full, far from the Tree                       → walk_to_fern
+
   banking           → (inventory clear)                          → walk_to_fern
   banking           → (cooked fish: deposits, closes bank)       → walk_to_fern
 
@@ -118,6 +125,28 @@ class RodFishingRoutine(InteractionRoutine):
     # ------------------------------------------------------------------
 
     @initial_state
+    def resume(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
+        """One-shot entry point — a freshly constructed routine has no memory
+        of which leg of the loop the player was on (script restart, dashboard
+        reload, manual repositioning, etc.), so figure out where to rejoin
+        the cycle from the player's current position and inventory instead
+        of always replaying the post-bank leg from the top.
+
+        Mirrors the same thresholds the rest of the state machine already
+        uses to hand legs off to one another (TREE_NEAR_TILES/MINIMAP_RANGE
+        outbound, TREE_WORLD_Y/FERN_WORLD_Y inbound) so the resumed leg is
+        the same one the normal flow would already be in.
+        """
+        log.info("Resuming from %s with inventory %s", game.player_pos, game.inventory)
+        if game.inventory_full():
+            if self._next_raw_fish(game) is not None:
+                log.info("Raw fish left to cook — resuming toward cooking")
+                return "cooking"
+            log.info("Inventory full — resuming toward bank")
+            return self._resume_toward_bank(game)
+        log.info("Inventory not full — resuming toward fishing spot")
+        return self._resume_toward_spot(game)
+
     def banking(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """Deposit all fish at the bank booth, then head south for the next cycle."""
         has_bankable = any(game.inventory_has_item(i) for i in self.BANKABLE_IDS)
@@ -168,7 +197,7 @@ class RodFishingRoutine(InteractionRoutine):
 
         spot = game.nearest_npc(self.FISHING_SPOT_NAME)
         if spot is None:
-            log.debug("No %s in scene — waiting", self.FISHING_SPOT_NAME)
+            log.info("No %s in scene — waiting", self.FISHING_SPOT_NAME)
             return None
 
         if not self.approach(game, ctrl, spot):
@@ -194,12 +223,12 @@ class RodFishingRoutine(InteractionRoutine):
             None,
         )
         if live_spot is None:
-            log.debug("%s wandered off — re-targeting", self.FISHING_SPOT_NAME)
+            log.info("%s wandered off — re-targeting", self.FISHING_SPOT_NAME)
             return "find_spot"
 
         if game.player_idle():
             if game.tick - self._fish_start_tick >= self.FISHING_IDLE_TIMEOUT_TICKS:
-                log.debug("Stopped fishing — re-clicking spot")
+                log.info("Stopped fishing — re-clicking spot")
                 return "find_spot"
         else:
             self._fish_start_tick = game.tick
@@ -232,7 +261,7 @@ class RodFishingRoutine(InteractionRoutine):
 
         fire = self._nearest_fire_in_range(game)
         if fire is None:
-            log.debug("No %s within %d tiles — waiting", self.FIRE_NAME, self.FIRE_SEARCH_RADIUS)
+            log.info("No %s within %d tiles — waiting", self.FIRE_NAME, self.FIRE_SEARCH_RADIUS)
             return None
 
         if not self.approach(game, ctrl, fire):
@@ -262,7 +291,7 @@ class RodFishingRoutine(InteractionRoutine):
         if py >= self.TREE_WORLD_Y:
             return "walk_to_bank_fern"
 
-        self._walk_toward_world(game, ctrl, self.TREE_WORLD_X, self.TREE_WORLD_Y)
+        self._walk_toward_world(game, ctrl, self.TREE_WORLD_X, self.TREE_WORLD_Y + 5)
         return None
 
     def walk_to_bank_fern(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
@@ -273,12 +302,43 @@ class RodFishingRoutine(InteractionRoutine):
         if py >= self.FERN_WORLD_Y:
             return "banking"
 
-        self._walk_toward_world(game, ctrl, self.FERN_WORLD_X, self.FERN_WORLD_Y)
+        self._walk_toward_world(game, ctrl, self.FERN_WORLD_X, self.FERN_WORLD_Y + 5)
         return None
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _resume_toward_bank(self, game: "GameState") -> str:
+        """Pick the inbound leg matching the player's current position,
+        using the same y-coordinate thresholds walk_to_bank_tree/
+        walk_to_bank_fern already use to hand off to one another."""
+        log.info("Resuming toward bank from %s", game.player_pos)
+        _, py = game.player_pos
+        if py >= self.FERN_WORLD_Y:
+            log.info("Resuming at or north of Fern y=%d → banking", self.FERN_WORLD_Y)
+            return "banking"
+        if py >= self.TREE_WORLD_Y:
+            log.info("Resuming at or north of Tree y=%d → walk_to_bank_fern", self.TREE_WORLD_Y)
+            return "walk_to_bank_fern"
+        log.info("Resuming south of Tree y=%d → walk_to_bank_tree", self.TREE_WORLD_Y)
+        return "walk_to_bank_tree"
+
+    def _resume_toward_spot(self, game: "GameState") -> str:
+        """Pick the outbound leg matching the player's current position,
+        using the same distance thresholds find_spot/walk_to_tree/
+        walk_to_fern already use to hand off to one another."""
+        log.info("Resuming toward fishing spot from %s", game.player_pos)
+        px, py = game.player_pos
+        dist_to_tree = abs(px - self.TREE_WORLD_X) + abs(py - self.TREE_WORLD_Y)
+        if dist_to_tree <= self.TREE_NEAR_TILES:
+            log.info("Resuming within %d tiles of Tree → find_spot", self.TREE_NEAR_TILES)
+            return "find_spot"
+        if dist_to_tree <= self.MINIMAP_RANGE:
+            log.info("Resuming within minimap range → walk_to_tree", self.MINIMAP_RANGE)
+            return "walk_to_tree"
+        log.info("Resuming outside minimap range → walk_to_fern")
+        return "walk_to_fern"
 
     def _nearest_fire_in_range(self, game: "GameState") -> Optional[dict]:
         return min(

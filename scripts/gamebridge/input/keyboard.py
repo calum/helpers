@@ -192,6 +192,30 @@ def _resolve(key: str) -> tuple[int, bool, bool]:
 
 
 # ------------------------------------------------------------------ #
+# Pluggable transport — see GameController.use_bridge_input()
+# ------------------------------------------------------------------ #
+# press_key()/key_down()/key_up() delegate here when set. type_text() is
+# unchanged — it only ever calls press_key(), so swapping the backend here
+# is the only change needed to retarget typing at a different transport.
+_backend = None
+
+
+def set_backend(backend) -> None:
+    """Route press_key/key_down/key_up through `backend` instead of OS-level
+    SendInput. `backend` must implement the same three functions with
+    identical signatures (see input.bridge_input.BridgeInputBackend).
+    """
+    global _backend
+    _backend = backend
+
+
+def clear_backend() -> None:
+    """Revert to OS-level SendInput (the default)."""
+    global _backend
+    _backend = None
+
+
+# ------------------------------------------------------------------ #
 # Public API
 # ------------------------------------------------------------------ #
 
@@ -202,6 +226,9 @@ def press_key(key: str, hold_ms: float = 50.0) -> None:
          or a single character.
     hold_ms: how long to hold the key down in milliseconds.
     """
+    if _backend is not None:
+        _backend.press_key(key, hold_ms=hold_ms)
+        return
     scan, extended, needs_shift = _resolve(key)
     if scan == 0:
         return
@@ -224,6 +251,9 @@ def key_down(key: str) -> None:
     key: a Key constant, a named string ("escape", "enter", "f1", …),
          or a single character.
     """
+    if _backend is not None:
+        _backend.key_down(key)
+        return
     scan, extended, _ = _resolve(key)
     if scan == 0:
         return
@@ -236,6 +266,9 @@ def key_up(key: str) -> None:
     key: a Key constant, a named string, or a single character — must match
          the value passed to `key_down`.
     """
+    if _backend is not None:
+        _backend.key_up(key)
+        return
     scan, extended, _ = _resolve(key)
     if scan == 0:
         return
