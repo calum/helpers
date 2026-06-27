@@ -932,3 +932,38 @@ class TestDepositInventory:
         result = _routine().deposit_inventory(_deposit_game(has_btn=False), ctrl)
         ctrl.click_widget.assert_not_called()
         assert result is False
+
+    def test_skips_banked_item_at_same_child_id_picks_button(self):
+        # G12:48 can hold a banked item slot (itemId >= 0) *and* the deposit button
+        # (itemId == -1). The fix must select the button, not the banked slot.
+        banked_slot = {
+            "groupId": Bankmain.GROUP,
+            "childId": Bankmain.DEPOSITINV[1],
+            "itemId": 995, "quantity": 1000,
+            "bounds": {"x": 347, "y": 301, "width": 29, "height": 22},
+            "text": "",
+        }
+        game = _game_state(tick=100)
+        game.interfaces = [banked_slot, _DEPOSIT_BTN]
+        game.widgets = []
+        ctrl = MagicMock()
+        result = _routine().deposit_inventory(game, ctrl)
+        ctrl.click_widget.assert_called_once_with(_DEPOSIT_BTN)
+        assert result is True
+
+    def test_returns_false_when_only_banked_item_at_child_id(self):
+        # If the only G12:48 widget is a banked item (no button present), return False.
+        banked_slot = {
+            "groupId": Bankmain.GROUP,
+            "childId": Bankmain.DEPOSITINV[1],
+            "itemId": 995, "quantity": 1000,
+            "bounds": {"x": 347, "y": 301, "width": 29, "height": 22},
+            "text": "",
+        }
+        game = _game_state(tick=100)
+        game.interfaces = [banked_slot]
+        game.widgets = []
+        ctrl = MagicMock()
+        result = _routine().deposit_inventory(game, ctrl)
+        ctrl.click_widget.assert_not_called()
+        assert result is False

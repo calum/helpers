@@ -39,6 +39,7 @@ from .routines.examples.melee_fighter import MeleeFighterRoutine
 from .routines.examples.fish_and_cook import FishAndCookRoutine
 from .routines.examples.smelting_bars import SmeltingBarsRoutine
 from .routines.examples.smithing_helms import SmithingHelmsRoutine
+from .routines.examples.rod_fishing import RodFishingRoutine
 
 from .ui.theme import C, STYLESHEET, _qc, _iface_color, _hms, _yaw_dir
 from .ui.components import Card, HDivider, StatBar, ConnectionDot
@@ -63,6 +64,7 @@ ROUTINES: dict[str, Type[Routine]] = {
     "FishAndCook": FishAndCookRoutine,
     "Smelting Bars": SmeltingBarsRoutine,
     "Smithing Helms": SmithingHelmsRoutine,
+    "Rod Fishing": RodFishingRoutine,
 }
 
 # ---------------------------------------------------------------------------

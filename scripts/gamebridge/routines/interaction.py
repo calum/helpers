@@ -499,7 +499,14 @@ class InteractionRoutine(Routine):
         """Click the bank "Deposit inventory" button, throttled to one click
         per `throttle_ticks` so the server has time to process the deposit
         before we retry. Returns True if a click was issued this tick."""
-        deposit_btn = game.find_interface_widget(*Bankmain.DEPOSITINV)
+        group_id, child_id = Bankmain.DEPOSITINV
+        deposit_btn = next(
+            (w for w in game.interfaces
+             if w.get("groupId") == group_id
+             and w.get("childId") == child_id
+             and w.get("itemId", -1) == -1),
+            None,
+        )
         if deposit_btn is None:
             return False
         if game.tick - self._deposit_clicked_tick >= throttle_ticks:

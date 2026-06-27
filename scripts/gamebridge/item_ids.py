@@ -21,6 +21,12 @@ RAW_ANCHOVIES = 321
 ANCHOVIES     = 319
 BURNT_FISH    = 7954  # generic — shared by burnt shrimp AND burnt anchovies
 
+RAW_TROUT     = 335
+COOKED_TROUT  = 333
+RAW_SALMON    = 331
+COOKED_SALMON = 329
+BURNT_FISH_ROD = 343  # burnt trout, salmon, pike, etc. (distinct from BURNT_FISH = 7954)
+
 # ── Mining ─────────────────────────────────────────────────────────────────────
 TIN_ORE    = 438
 COPPER_ORE = 436

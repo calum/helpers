@@ -4,6 +4,75 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-27 — Fix: `RodFishingRoutine.cooking` stuck — missing `approach()` before clicking the Fire
+
+### Goal
+
+Address the `# TODO: Cooking phase is stuck not doing anything` left in
+`scripts/gamebridge/routines/examples/rod_fishing.py` (`cooking()`), and
+review the rest of the routine for other issues.
+
+### Findings / Decisions
+
+- The TODO's literal claim ("just left-click the Fire, don't use raw fish on
+  it") was already true of the code — `cooking()` called
+  `self.click_live(ctrl, fire, "object")` directly, no item-on-object step.
+  The actual bug was that it was the **only** click site in this routine
+  that skipped `self.approach(game, ctrl, entity)` first. Every sibling
+  click site (`find_spot`, `open_bank`, `walk_to_entity`, and the analogous
+  `Smelt`/`Smith` states in `smelting_bars.py`/`smithing_helms.py`) calls
+  `approach()` before `click_live()` — it's what pans the camera/walks via
+  minimap (`bring_entity_on_screen`), dodges UI occlusion, and waits for a
+  one-tick idle settle before a click is safe.
+- Without `approach()`, `click_live` → `ctrl.click_entity` → `
+  _onscreen_canvas_pos` returns `None`/no-op whenever the Fire isn't already
+  on-screen — which is the common case right after walking away from the
+  fishing spot. The old code also ignored `click_live`'s return value and
+  unconditionally stamped `self._cook_started_tick = game.tick`, so a missed
+  click still entered the `COOKING_GESTURE_TICKS` wait, then retried the same
+  no-op click forever. Net effect: the state never errors, never logs
+  anything alarming, and never progresses — "stuck not doing anything."
+- **Fix** (`rod_fishing.py::cooking`): gate the fire click behind
+  `if not self.approach(game, ctrl, fire): return None`, and only stamp
+  `_cook_started_tick` when `click_live(...)` actually returns `True`.
+- Also fixed a stale comment on `COOKING_GESTURE_TICKS` ("min ticks between
+  'use fish on fire' gestures" — leftover phrasing from a never-implemented
+  use-item approach; the code has only ever clicked the Fire object).
+- Reviewed the rest of the state machine (`banking`, `walk_to_fern`,
+  `walk_to_tree`, `find_spot`, `fishing`, `drop_burnt`, `drop_and_return`,
+  `walk_to_bank_tree`, `walk_to_bank_fern`, the minimap-waypoint helpers) —
+  no other bugs found; each already follows the `approach()`-gated click
+  pattern or has no click to gate.
+
+### Tests
+
+- `scripts/gamebridge/tests/test_rod_fishing.py` (`TestCooking`):
+  - Updated `test_clicks_fire_directly_when_raw_fish_present` →
+    `test_clicks_fire_directly_after_approach_settles` to call `cooking()`
+    twice across two ticks (settle, then click), matching the
+    `approach()`-gated pattern used by `TestFindSpot`.
+  - Updated `test_fire_clicked_when_raw_fish_present_and_no_dialog`
+    similarly.
+  - Added `test_fire_off_screen_does_not_click_or_mark_gesture_started` —
+    regression test pinning the actual bug: with
+    `ctrl.bring_entity_on_screen.return_value = False`, `cooking()` must not
+    call `ctrl.click_entity` or set `_cook_started_tick`. This is the
+    scenario that would have caught the original bug (existing fixtures
+    like `FIRE_NEAR` always set `onScreen: True`, which is why the bug
+    shipped without a failing test).
+  - Full suite: `python -m pytest scripts/gamebridge/tests/ -v` → 1143
+    passed, 10 skipped.
+
+### Open / next steps
+
+- None — this was a self-contained bug fix. Worth keeping in mind for any
+  *new* routine: any state that clicks a world entity (object/NPC) should
+  route through `InteractionRoutine.approach()` first unless there's a
+  specific reason not to (e.g. dialog button clicks, which fire in one tick
+  with no approach needed, as seen in `Smelt`/`Smith`).
+
+---
+
 ## Session: 2026-06-15 (6) — Diagnostic: instrument `ctrl.tooltip()` staleness with `tooltip_age()`
 
 ### Goal
