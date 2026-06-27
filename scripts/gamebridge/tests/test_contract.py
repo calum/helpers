@@ -53,7 +53,7 @@ class TestContractSchema:
     _TOP_LEVEL = {"type", "tick", "player", "camera", "npcs", "players", "objects", "groundItems",
                   "widgets", "interfaces", "menu", "inventory", "equipment", "events"}
     _PLAYER    = {"name", "worldX", "worldY", "plane", "animation", "hp", "prayer"}
-    _CAMERA    = {"yaw", "pitch", "x", "y", "z"}
+    _CAMERA    = {"yaw", "yawTarget", "pitch", "x", "y", "z", "baseX", "baseY", "minimapZoom"}
     _NPC       = {"id", "index", "name", "worldX", "worldY", "plane", "animation", "combatLevel",
                   "onScreen", "canvasX", "canvasY", "hull", "minimapX", "minimapY"}
     _PLAYER_ENTITY = {"id", "name", "worldX", "worldY", "plane", "animation", "combatLevel",

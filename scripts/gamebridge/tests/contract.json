@@ -17,10 +17,14 @@
 
   "camera": {
     "yaw": 1024,
+    "yawTarget": 1024,
     "pitch": 256,
     "x": 6582,
     "y": 218,
-    "z": 6532
+    "z": 6532,
+    "baseX": 12800,
+    "baseY": 12800,
+    "minimapZoom": 4.0
   },
 
   "npcs": [

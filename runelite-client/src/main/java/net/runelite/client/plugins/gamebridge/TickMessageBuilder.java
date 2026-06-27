@@ -487,16 +487,27 @@ class TickMessageBuilder
 		return m;
 	}
 
+	// Client.getCameraYaw()/getCameraPitch()/getCameraYawTarget() return JAU14
+	// (14-bit Jagex Angle Units, 0-16383 per revolution) as of the "api: update
+	// 239" engine bump. GAMEBRIDGE.md's wire-format contract predates that and
+	// documents the older 11-bit convention (0-2047 per revolution, matching
+	// e.g. 512=west/1024=south/1536=east) that all existing Python consumers
+	// (fov.py, rod_fishing.py) are calibrated against, so convert back here
+	// rather than changing the contract.
+	private static final int JAU14_TO_JAU11_SHIFT = 3; // 16384 / 2048 = 8
+
 	private Map<String, Object> buildCameraMap()
 	{
 		Map<String, Object> m = new LinkedHashMap<>();
-		m.put("yaw", client.getCameraYaw());
-		m.put("pitch", client.getCameraPitch());
+		m.put("yaw", client.getCameraYaw() >> JAU14_TO_JAU11_SHIFT);
+		m.put("yawTarget", client.getCameraYawTarget() >> JAU14_TO_JAU11_SHIFT);
+		m.put("pitch", client.getCameraPitch() >> JAU14_TO_JAU11_SHIFT);
 		m.put("x", client.getCameraX());
 		m.put("y", client.getCameraY());
 		m.put("z", client.getCameraZ());
 		m.put("baseX", client.getBaseX());
 		m.put("baseY", client.getBaseY());
+		m.put("minimapZoom", client.getMinimapZoom());
 		return m;
 	}
 

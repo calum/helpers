@@ -71,6 +71,48 @@ public class TickMessageBuilderTest
 	}
 
 	// ------------------------------------------------------------------ //
+	// Camera
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void cameraMapConvertsJau14ToLegacyJau11AndIncludesMinimapZoom()
+	{
+		// Client.getCameraYaw()/getCameraYawTarget()/getCameraPitch() return
+		// JAU14 (0-16383/revolution); the wire format documents the older
+		// JAU11 convention (0-2047/revolution) that Python consumers expect,
+		// so the builder must divide raw values by 8 (16384/2048).
+		when(config.exposeCamera()).thenReturn(true);
+		when(client.getCameraYaw()).thenReturn(1500 * 8);
+		when(client.getCameraYawTarget()).thenReturn(1024 * 8);
+		when(client.getCameraPitch()).thenReturn(256 * 8);
+		when(client.getCameraX()).thenReturn(6582);
+		when(client.getCameraY()).thenReturn(218);
+		when(client.getCameraZ()).thenReturn(6532);
+		when(client.getBaseX()).thenReturn(12800);
+		when(client.getBaseY()).thenReturn(12800);
+		when(client.getMinimapZoom()).thenReturn(4.0);
+
+		Map<String, Object> result = builder.build(Collections.emptyList(), Collections.emptyMap());
+
+		@SuppressWarnings("unchecked")
+		Map<String, Object> camera = (Map<String, Object>) result.get("camera");
+		assertEquals(1500, camera.get("yaw"));
+		assertEquals(1024, camera.get("yawTarget"));
+		assertEquals(256, camera.get("pitch"));
+		assertEquals(4.0, camera.get("minimapZoom"));
+	}
+
+	@Test
+	public void cameraMapOmittedWhenExposeCameraDisabled()
+	{
+		when(config.exposeCamera()).thenReturn(false);
+
+		Map<String, Object> result = builder.build(Collections.emptyList(), Collections.emptyMap());
+
+		assertFalse("camera should be omitted when exposeCamera is off", result.containsKey("camera"));
+	}
+
+	// ------------------------------------------------------------------ //
 	// NPCs
 	// ------------------------------------------------------------------ //
 

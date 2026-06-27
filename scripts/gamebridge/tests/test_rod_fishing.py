@@ -75,7 +75,7 @@ def _make_game(
     game.objects = objects if objects is not None else []
     game.widgets = widgets if widgets is not None else []
     game.interfaces = interfaces if interfaces is not None else []
-    game.camera = {"yaw": 0, "pitch": 256}
+    game.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 4.0}
     return game
 
 
@@ -756,6 +756,44 @@ class TestSyntheticMinimapEntity:
         half_extent = min(b["width"], b["height"]) / 2
         dist_x = abs(entity["minimapX"] - cx)
         assert dist_x < half_extent * 0.9  # not pushed to the edge
+
+    def test_returns_none_without_camera(self):
+        game = _make_game(interfaces=[MINIMAP_WIDGET])
+        game.camera = {}
+        assert _routine()._synthetic_minimap_entity(game, 3100, 3460) is None
+
+    def test_rotated_compass_shifts_target_off_the_north_south_axis(self):
+        # Player at (3100, 3440), target due north at (3100, 3450) — with the
+        # compass facing west (yawTarget=512) the minimap is rotated 90°, so
+        # a due-north target lands offset in X, not Y. The old north-up-only
+        # formula would have placed this directly above centre regardless of
+        # compass orientation — exactly the bug this conversion fixes.
+        game = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
+        game.camera = {"yaw": 512, "yawTarget": 512, "pitch": 256, "minimapZoom": 4.0}
+        r = _routine()
+        entity = r._synthetic_minimap_entity(game, 3100, 3450)
+        b = MINIMAP_WIDGET["bounds"]
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        assert entity["minimapX"] - cx == pytest.approx(40.0)
+        assert entity["minimapY"] - cy == pytest.approx(0.0, abs=1e-6)
+
+    def test_minimap_zoom_scales_offset_distance(self):
+        # Same 20-tile-north target at two different zoom levels should
+        # produce proportionally different pixel offsets.
+        game_zoomed_in = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
+        game_zoomed_in.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 2.0}
+        entity_zoomed_in = _routine()._synthetic_minimap_entity(game_zoomed_in, 3100, 3450)
+
+        game_zoomed_out = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
+        game_zoomed_out.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 4.0}
+        entity_zoomed_out = _routine()._synthetic_minimap_entity(game_zoomed_out, 3100, 3450)
+
+        b = MINIMAP_WIDGET["bounds"]
+        cy = b["y"] + b["height"] / 2
+        dist_zoomed_in = abs(entity_zoomed_in["minimapY"] - cy)
+        dist_zoomed_out = abs(entity_zoomed_out["minimapY"] - cy)
+        assert dist_zoomed_out == pytest.approx(dist_zoomed_in * 2)
 
 
 # ---------------------------------------------------------------------------

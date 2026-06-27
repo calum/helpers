@@ -47,7 +47,11 @@ Requirements
 - objectFilter must include "Fern", "Tree", "Fire", "Bank booth"
   OR sendAllNamedObjects=true.
 - exposeNpcs=true (default) — for "Rod Fishing Spot".
-- exposeInterfaces=true (default) — for cooking dialog (G270:38) and bank.
+- exposeInterfaces=true (default) — for cooking dialog (G270:38), bank, and
+  the minimap widget (group 160) used by _synthetic_minimap_entity.
+- exposeCamera=true (default) — for camera.yawTarget/minimapZoom, used by
+  _synthetic_minimap_entity to compute accurate minimap click targets
+  regardless of compass rotation or minimap zoom level.
 - exposeWidgets=true — for inventory drop (shift-click).
 - A fly fishing rod and feathers must be in the inventory or equipped.
 """
@@ -61,6 +65,7 @@ from ..base import initial_state
 from ..interaction import InteractionRoutine
 from ...input.keyboard import Key
 from ... import item_ids
+from ...minimap import world_delta_to_minimap_offset
 
 if TYPE_CHECKING:
     from ...state.game_state import GameState
@@ -107,7 +112,7 @@ class RodFishingRoutine(InteractionRoutine):
     # Tuning constants
     MINIMAP_RANGE              = 20   # tiles — minimap visibility radius; used to decide when to switch waypoints
     TREE_NEAR_TILES           = 12   # arrival threshold near Tree waypoint (outbound)
-    FIRE_SEARCH_RADIUS        = 8    # tiles — look for a Fire within this distance
+    FIRE_SEARCH_RADIUS        = 12    # tiles — look for a Fire within this distance
     FISHING_IDLE_TIMEOUT_TICKS = 6   # idle ticks without XP before re-clicking spot
     COOKING_GESTURE_TICKS     = 3    # min ticks to wait after clicking the fire before re-clicking if no dialog appears
     BANK_OPEN_GRACE_TICKS     = 4
@@ -172,6 +177,10 @@ class RodFishingRoutine(InteractionRoutine):
         """
         px, py = game.player_pos
         if abs(px - self.TREE_WORLD_X) + abs(py - self.TREE_WORLD_Y) <= self.MINIMAP_RANGE:
+            return "walk_to_tree"
+        
+        # Check if player is already near the Fern waypoint; if so, we can transition to walk_to_tree directly
+        if abs(px - self.FERN_WORLD_X) + abs(py - self.FERN_WORLD_Y) <= 4:
             return "walk_to_tree"
 
         self._walk_toward_world(game, ctrl, self.FERN_WORLD_X, self.FERN_WORLD_Y)
@@ -404,13 +413,19 @@ class RodFishingRoutine(InteractionRoutine):
         """Build a fake entity dict with minimapX/minimapY pointing at the
         given world tile.
 
-        Assumes a ~20-tile minimap radius and that canvas Y decreases going
-        north (higher worldY = up = lower canvasY). The result is clamped to
-        90% of the minimap circle's radius so the click stays within the
-        interactive area.
+        Uses camera.yawTarget/minimapZoom (see world_delta_to_minimap_offset)
+        so the result stays correct regardless of compass rotation or
+        minimap zoom level — unlike a fixed pixels-per-tile/north-up
+        assumption, which only happens to be correct when the compass points
+        north. The result is clamped to 90% of the minimap circle's radius
+        so the click stays within the interactive area.
         """
         minimap = game.interfaces_for_group(self.MINIMAP_GROUP)
         if not minimap:
+            return None
+
+        camera = game.camera
+        if not camera:
             return None
 
         widget = max(minimap, key=lambda w: w["bounds"]["width"] * w["bounds"]["height"])
@@ -420,18 +435,17 @@ class RodFishingRoutine(InteractionRoutine):
         half_extent = min(b["width"], b["height"]) / 2
 
         px, py = game.player_pos
-        dx = target_x - px
-        dy = target_y - py
+        dx, dy = world_delta_to_minimap_offset(
+            target_x - px, target_y - py,
+            camera["yawTarget"], camera["minimapZoom"],
+        )
+        mx, my = cx + dx, cy + dy
 
-        pixels_per_tile = half_extent / 20.0
-        mx = cx + dx * pixels_per_tile
-        my = cy - dy * pixels_per_tile  # canvas Y: up = north = decreasing
-
-        dist = math.sqrt((mx - cx) ** 2 + (my - cy) ** 2)
+        dist = math.sqrt(dx * dx + dy * dy)
         cap = half_extent * 0.9
         if dist > cap:
             scale = cap / dist
-            mx = cx + (mx - cx) * scale
-            my = cy + (my - cy) * scale
+            mx = cx + dx * scale
+            my = cy + dy * scale
 
         return {"name": "waypoint", "minimapX": mx, "minimapY": my}

@@ -210,7 +210,7 @@ public class ContractTest
 	@Test
 	public void cameraHasAllFields()
 	{
-		assertHasFields(map("camera"), "camera", "yaw", "pitch", "x", "y", "z");
+		assertHasFields(map("camera"), "camera", "yaw", "yawTarget", "pitch", "x", "y", "z", "baseX", "baseY", "minimapZoom");
 	}
 
 	// ------------------------------------------------------------------ //

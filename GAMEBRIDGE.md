@@ -113,22 +113,26 @@ on the top-level `type` field to tell the two apart.
 
 ```json
 {
-  "yaw":   1024,
-  "pitch": 256,
-  "x":     6582,
-  "y":     218,
-  "z":     6532,
-  "baseX": 12800,
-  "baseY": 12800
+  "yaw":         1024,
+  "yawTarget":   1024,
+  "pitch":       256,
+  "x":           6582,
+  "y":           218,
+  "z":           6532,
+  "baseX":       12800,
+  "baseY":       12800,
+  "minimapZoom": 4.0
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| `yaw` | int | 0–2047 CCW from North; 0 = north, 512 = west, 1024 = south, 1536 = east |
-| `pitch` | int | 0–2047; higher values = more overhead (top-down) view. UP increases pitch; DOWN decreases it (more horizontal, sees further). |
+| `yaw` | int | 0–2047 CCW from North; 0 = north, 512 = west, 1024 = south, 1536 = east. This is the instantaneous camera yaw — it animates (lags) while the camera is actively turning. **Note:** `Client.getCameraYaw()` itself returns a 14-bit angle (0–16383/revolution) as of a 2026-06 engine update; `GameBridgePlugin` divides by 8 before sending so this field keeps the original 11-bit (0–2047) convention documented here — do not apply any further scaling on the Python side. |
+| `yawTarget` | int | Same 0–2047 convention as `yaw`, but the **settled** value the camera is rotating toward. The minimap's own rotation is driven by this value, not `yaw` — use `yawTarget` (not `yaw`) when computing minimap pixel offsets, or the result will be briefly wrong mid-turn. Same JAU14→JAU11 conversion as `yaw` already applied. |
+| `pitch` | int | 0–2047; higher values = more overhead (top-down) view. UP increases pitch; DOWN decreases it (more horizontal, sees further). Same JAU14→JAU11 conversion as `yaw` applied before sending. |
 | `x` / `y` / `z` | int | Camera position in local (scene-relative) coordinates. 1 tile = 128 units. |
 | `baseX` / `baseY` | int | World tile coordinates of the south-west corner of the loaded scene. Use these to convert camera `x`/`y` to world tile coords: `world_tile_x = baseX + camera.x / 128`. |
+| `minimapZoom` | double | Minimap scale in **pixels per tile** (`Client.getMinimapZoom()`), default `4.0`. Changes live as the player scrolls the mouse wheel over the minimap. Required (together with `yawTarget`) to convert a world-tile delta into an accurate minimap pixel offset — see "Minimap coordinate conversion" below. |
 
 ### Pointing the camera at a world tile
 
@@ -146,6 +150,39 @@ def yaw_delta(current_yaw, target_yaw):
     delta = (target_yaw - current_yaw + 2048) % 2048
     return delta - 2048 if delta > 1024 else delta
 ```
+
+### Minimap coordinate conversion
+
+The minimap is **not** north-up and **not** a fixed scale — it rotates with
+`camera.yawTarget` and scales by `camera.minimapZoom` (pixels per tile,
+default `4.0`, changes when the player scrolls over the minimap). A
+synthetic minimap target built from a world-tile delta must replicate the
+client's own transform (`Perspective.localToMinimap` in `runelite-api`) or
+it will be wrong as soon as the compass isn't pointing north or the player
+has zoomed the minimap:
+
+```python
+import math
+
+def world_delta_to_minimap_offset(dx_tiles, dy_tiles, yaw_target, minimap_zoom):
+    """Convert a world-tile delta (dx, dy) to a (canvas_dx, canvas_dy) minimap
+    pixel offset, matching Perspective.localToMinimap's rotation + zoom.
+
+    dx_tiles / dy_tiles: target world tile minus player world tile.
+    yaw_target: camera['yawTarget'] (0-2047 CCW from North) — NOT camera['yaw'].
+    minimap_zoom: camera['minimapZoom'] (pixels per tile).
+    """
+    x = dx_tiles * minimap_zoom
+    y = dy_tiles * minimap_zoom
+    angle = (yaw_target % 2048) / 2048.0 * 2 * math.pi
+    sin, cos = math.sin(angle), math.cos(angle)
+    rx = cos * x + sin * y
+    ry = sin * x - cos * y
+    return rx, ry
+```
+
+Use `rx`/`ry` as the pixel offset from the minimap widget's centre — not a
+fixed `pixels_per_tile` constant or an assumption that north is up.
 
 ---
 
