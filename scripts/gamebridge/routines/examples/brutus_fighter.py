@@ -212,6 +212,9 @@ class BrutusFighterRoutine(InteractionRoutine):
             self._click_dodge_tile(game, ctrl, tile)
             self._dodge_clicked = True
             self._dodge_tick = game.tick
+            # TODO: game client keeps clicking twice and taking ages to re-enage after a dodge — maybe the click is being sent to the minimap instead of the viewport? If so, need to subscribe to the tile and click its canvasX/Y instead of clicking the minimap.
+            # Brutus always does the "snort" special 3 times in a row and currently we spend that entire time
+            # dodging. We need to ensure we aren't hitting this "click_dodge_tile" unnecessarily often.
             return "fighting"
         
         if self._dodge_clicked and (game.tick - self._dodge_tick < self.DODGE_WAIT_TICKS):
