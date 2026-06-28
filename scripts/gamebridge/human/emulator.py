@@ -86,6 +86,52 @@ class HumanEmulator:
         self._error_mult: float = 1.0
         self._fatigue_rate_mult: float = 1.0
         self._break_freq_mult: float = 1.0
+        # Attention layer — see set_attention_level(). Separate from the
+        # interruption multipliers above: interruptions model a *distracted*
+        # player (slower, sloppier), attention models how much focus a
+        # routine demands right now (a fast-paced boss fight vs. idle
+        # skilling) — the two can be active independently.
+        self._attention_reaction_mult: float = 1.0
+        self._attention_speed_mult: float = 1.0
+        self._attention_pause_mult: float = 1.0
+
+    # ------------------------------------------------------------------
+    # Attention level — how much focus the current routine demands
+    # ------------------------------------------------------------------
+
+    # (reaction_mult, move_speed_mult, pause_mult) — all multiply the
+    # corresponding base value; lower = faster. "combat" keeps every
+    # source of randomness (reaction_time's gauss/floor, plan_click's
+    # click-error gauss, WindMouse jitter) — it's a locked-in, fast-twitch
+    # player, not a robot with zero variance.
+    _ATTENTION_PRESETS: dict = {
+        "normal": (1.0, 1.0, 1.0),
+        "combat": (0.4, 0.45, 0.35),
+    }
+
+    def set_attention_level(self, level: str = "normal") -> None:
+        """
+        Adjust reaction/movement multipliers for how much attention the
+        player is paying right now.
+
+        'normal' (the default) models relaxed skilling/banking pacing.
+        'combat' models a player locked onto a dangerous, fast-paced fight
+        (e.g. dodging a boss's telegraphed special) — much quicker reflexes
+        and more direct mouse movement, but still sampled from the same
+        distributions, so it stays human rather than instant/robotic.
+
+        Routines call this once per tick from every state that needs it
+        (cheap, idempotent) via GameController.set_attention_level —
+        there's no separate "end of combat" call required, since the next
+        tick that doesn't call it simply leaves the last-set level in place
+        until something sets it back to 'normal'.
+        """
+        if level not in self._ATTENTION_PRESETS:
+            raise ValueError(f"Unknown attention level: {level!r}")
+        reaction_mult, speed_mult, pause_mult = self._ATTENTION_PRESETS[level]
+        self._attention_reaction_mult = reaction_mult
+        self._attention_speed_mult = speed_mult
+        self._attention_pause_mult = pause_mult
 
     # ------------------------------------------------------------------
     # Mood and interruption multipliers
@@ -140,13 +186,15 @@ class HumanEmulator:
         Sample a reaction time from a log-normal distribution.
         Fatigue inflates the mean; still clamped to a floor of 80 ms.
         """
-        mean = self.reaction_mean * self._reaction_mult * (1.0 + self.fatigue * 0.6)
+        mean = (self.reaction_mean * self._reaction_mult * self._attention_reaction_mult
+                * (1.0 + self.fatigue * 0.6))
         raw = self._rng.gauss(mean, self.reaction_std)
-        return max(0.08, raw)
+        return max(0.08 * self._attention_reaction_mult, raw)
 
     def random_pause(self, lo: float = 0.05, hi: float = 0.25) -> float:
-        """A random pause within [lo, hi], scaled by fatigue."""
-        scale = 1.0 + self.fatigue * 0.4
+        """A random pause within [lo, hi], scaled by fatigue and the current
+        attention level (see set_attention_level)."""
+        scale = (1.0 + self.fatigue * 0.4) * self._attention_pause_mult
         return self._rng.uniform(lo * scale, hi * scale)
 
     # ------------------------------------------------------------------
@@ -187,7 +235,7 @@ class HumanEmulator:
         # place on the final move_to() — see PLAN.md, "Session: 2026-06-07 (6)".
         capped_dist = min(dist, 400.0)
         base_speed = max(0.05, capped_dist / 800.0)
-        move_speed = min(1.0, base_speed * (1.0 + self.fatigue * 0.3))
+        move_speed = min(1.0, base_speed * (1.0 + self.fatigue * 0.3) * self._attention_speed_mult)
 
         post_move_pause = self.random_pause(0.03, 0.14)
 

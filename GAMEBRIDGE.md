@@ -703,14 +703,28 @@ Send a `subscribe` message on the same TCP socket:
 |---|---|---|
 | `type` | string | always `"subscribe"` |
 | `subId` | string | client-chosen identifier; echoed back in `hullUpdate` |
-| `kind` | string | one of `npc`, `object`, `player`, `groundItem` |
-| `name` | string or `null` | case-insensitive name match |
-| `id` | int or `null` | exact ID match |
+| `kind` | string | one of `npc`, `object`, `player`, `groundItem`, `tile` |
+| `name` | string or `null` | case-insensitive name match; unused for `tile` |
+| `id` | int or `null` | exact ID match; unused for `tile` |
+| `worldX` / `worldY` | int | **required for `kind: "tile"`** — the fixed world-tile coordinate to track. Unused for other kinds. |
+| `plane` | int or `null` | **`tile` only** — defaults to the local player's current plane (`Client.getPlane()`) when omitted |
 | `ttlTicks` | int | subscription auto-expires after this many **game ticks** without renewal (default 10, ~6 s) |
 
-At least one of `name`/`id` must be given. If both are given, both must match
-(AND). If multiple entities match, the **nearest to the local player**
-(Manhattan distance on `worldX`/`worldY`) is selected.
+At least one of `name`/`id` must be given for `npc`/`object`/`player`/
+`groundItem` subscriptions. If both are given, both must match (AND). If
+multiple entities match, the **nearest to the local player** (Manhattan
+distance on `worldX`/`worldY`) is selected.
+
+For `kind: "tile"`, `worldX`/`worldY` are required instead — there's no
+search, just the real plugin-computed canvas clickbox
+(`Perspective.getCanvasTilePoly`) for that exact coordinate, the same
+mechanism used internally for ground-item tile hulls. This is the reliable
+way to get a clickable point for an arbitrary empty tile (e.g. a dodge tile
+next to a boss, a kiting destination) — there is no entity to search for.
+
+```json
+{"type": "subscribe", "subId": "dodge_tile", "kind": "tile", "worldX": 3210, "worldY": 3214, "plane": 0, "ttlTicks": 10}
+```
 
 Re-sending `subscribe` with the same `subId` renews/overwrites the
 subscription (including its `kind`/`name`/`id`/`ttlTicks`). There is no
@@ -766,6 +780,33 @@ serialisation as the `npcs`/`players`/`objects`/`groundItems` arrays in the
 tick message — it may contain extra fields (e.g. `combatLevel`, `category`,
 `minimapX`/`minimapY`) beyond the ones shown above. Ignore unknown fields.
 
+For a `kind: "tile"` subscription, the entity has no `id`/`name`/`animation`/
+`combatLevel` (there's no entity, just a fixed coordinate), and `hull` is
+**always** populated when `onScreen` — not gated by the hull filter, unlike
+npc/object/player/groundItem entries (a tile subscription only exists because
+the caller wants its clickbox):
+
+```json
+{
+  "subId": "dodge_tile",
+  "found": true,
+  "worldX": 3210,
+  "worldY": 3214,
+  "plane": 0,
+  "onScreen": true,
+  "canvasX": 480,
+  "canvasY": 410,
+  "hull": [[465, 400], [495, 400], [495, 420], [465, 420]],
+  "minimapX": 620,
+  "minimapY": 88
+}
+```
+
+`found: false` for a tile subscription means the tile is on a different
+plane than currently loaded, or simply outside the loaded scene region (out
+of render distance) — same general meaning as `findNearest`'s `found: false`,
+just for a fixed coordinate instead of a search.
+
 ### Python usage
 
 ```python
@@ -777,6 +818,16 @@ if update and update["found"] and update["onScreen"]:
     ctrl.click_at(update["canvasX"], update["canvasY"])
 
 ctrl.unsubscribe("fish_spot")
+```
+
+### Clicking an arbitrary world tile
+
+```python
+ctrl.subscribe_to_tile("dodge_tile", world_x=3210, world_y=3214)
+
+update = ctrl.hull_update("dodge_tile")
+if update and update["found"] and update["onScreen"]:
+    ctrl.click_at(update["canvasX"], update["canvasY"])
 ```
 
 ### Checking the left-click action before clicking

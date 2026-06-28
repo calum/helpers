@@ -1525,6 +1525,36 @@ class TestSubscriptions:
             "fish_spot", "object", name="Fishing spot", id=1497, ttl_ticks=5
         )
 
+    def test_subscribe_to_tile_without_connection_logs_warning_and_noops(self, caplog):
+        ctrl = _ctrl()
+        with caplog.at_level(logging.WARNING):
+            ctrl.subscribe_to_tile("dodge_tile", 3210, 3214)
+        assert "dodge_tile" in caplog.text
+
+    def test_subscribe_to_tile_delegates_to_connection(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+        conn.subscribe.reset_mock()  # discard set_connection's own keepalive subscribe
+
+        ctrl.subscribe_to_tile("dodge_tile", 3210, 3214, plane=0, ttl_ticks=5)
+
+        conn.subscribe.assert_called_once_with(
+            "dodge_tile", "tile", world_x=3210, world_y=3214, plane=0, ttl_ticks=5
+        )
+
+    def test_subscribe_to_tile_defaults_plane_to_none(self):
+        ctrl = _ctrl()
+        conn = MagicMock(spec=BridgeConnection)
+        ctrl.set_connection(conn)
+        conn.subscribe.reset_mock()
+
+        ctrl.subscribe_to_tile("dodge_tile", 3210, 3214)
+
+        conn.subscribe.assert_called_once_with(
+            "dodge_tile", "tile", world_x=3210, world_y=3214, plane=None, ttl_ticks=10
+        )
+
     def test_unsubscribe_delegates_to_connection(self):
         ctrl = _ctrl()
         conn = MagicMock(spec=BridgeConnection)
@@ -1932,3 +1962,22 @@ class TestClickStatsRecording:
         ctrl = _ctrl()
         ctrl.right_click_entity(_entity(500, 300, on_screen=False))
         assert ctrl.stats.samples() == []
+
+
+# ---------------------------------------------------------------------------
+# set_attention_level — forwards to the controller's HumanEmulator without
+# routines needing to reach into the private `_human` attribute directly
+# ---------------------------------------------------------------------------
+
+class TestSetAttentionLevel:
+    def test_forwards_to_human_emulator(self):
+        human = _human()
+        ctrl = GameController(human=human)
+        ctrl.set_attention_level("combat")
+        human.set_attention_level.assert_called_once_with("combat")
+
+    def test_defaults_to_normal(self):
+        human = _human()
+        ctrl = GameController(human=human)
+        ctrl.set_attention_level()
+        human.set_attention_level.assert_called_once_with("normal")

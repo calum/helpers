@@ -37,6 +37,7 @@ import net.runelite.api.Player;
 import net.runelite.api.Scene;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
+import net.runelite.api.WorldView;
 import net.runelite.api.coords.WorldPoint;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -44,6 +45,7 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import static org.mockito.Mockito.when;
 import org.mockito.junit.MockitoJUnitRunner;
@@ -272,6 +274,73 @@ public class TickMessageBuilderTest
 		when(scene.getTiles()).thenReturn(tiles);
 		when(client.getScene()).thenReturn(scene);
 		when(client.getPlane()).thenReturn(0);
+	}
+
+	// ------------------------------------------------------------------ //
+	// findTile
+	// ------------------------------------------------------------------ //
+
+	@Test
+	public void findTileReturnsFoundFalseWhenOutOfScene()
+	{
+		// WorldView's scene covers x in [3200, 3264); 3500 is outside it.
+		WorldView wv = mockWorldView(0, 3200, 3200, 64, 64);
+		when(client.findWorldViewFromWorldPoint(org.mockito.Mockito.any())).thenReturn(wv);
+
+		Map<String, Object> result = builder.findTile("dodge", 3500, 3500, 0);
+
+		assertEquals("dodge", result.get("subId"));
+		assertEquals(false, result.get("found"));
+		assertFalse("not-found result should not include tile fields", result.containsKey("worldX"));
+	}
+
+	@Test
+	public void findTileReturnsFoundFalseWhenPlaneMismatch()
+	{
+		// LocalPoint.fromWorld returns null when wv.getPlane() != the requested plane,
+		// even if the tile would otherwise be in-scene.
+		WorldView wv = mockWorldView(1, 3200, 3200, 64, 64);
+		when(client.findWorldViewFromWorldPoint(org.mockito.Mockito.any())).thenReturn(wv);
+
+		Map<String, Object> result = builder.findTile("dodge", 3210, 3210, 0);
+
+		assertEquals(false, result.get("found"));
+	}
+
+	@Test
+	public void findTileDefaultsToClientPlaneWhenPlaneOmitted()
+	{
+		when(client.getPlane()).thenReturn(2);
+		WorldView wv = mockWorldView(0, 3200, 3200, 64, 64);
+		ArgumentCaptor<WorldPoint> captor = ArgumentCaptor.forClass(WorldPoint.class);
+		when(client.findWorldViewFromWorldPoint(captor.capture())).thenReturn(wv);
+
+		builder.findTile("dodge", 3210, 3210, null);
+
+		assertEquals(2, captor.getValue().getPlane());
+	}
+
+	@Test
+	public void findTileUsesExplicitPlaneOverClientPlane()
+	{
+		WorldView wv = mockWorldView(3, 3200, 3200, 64, 64);
+		ArgumentCaptor<WorldPoint> captor = ArgumentCaptor.forClass(WorldPoint.class);
+		when(client.findWorldViewFromWorldPoint(captor.capture())).thenReturn(wv);
+
+		builder.findTile("dodge", 3210, 3210, 3);
+
+		assertEquals(3, captor.getValue().getPlane());
+	}
+
+	private WorldView mockWorldView(int plane, int baseX, int baseY, int sizeX, int sizeY)
+	{
+		WorldView wv = org.mockito.Mockito.mock(WorldView.class);
+		when(wv.getPlane()).thenReturn(plane);
+		when(wv.getBaseX()).thenReturn(baseX);
+		when(wv.getBaseY()).thenReturn(baseY);
+		when(wv.getSizeX()).thenReturn(sizeX);
+		when(wv.getSizeY()).thenReturn(sizeY);
+		return wv;
 	}
 
 	// ------------------------------------------------------------------ //

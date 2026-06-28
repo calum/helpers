@@ -266,3 +266,57 @@ class TestPlanClickMoveSpeed:
 		at_cap = human_a.plan_click(400, 0, 0, 0)
 		beyond_cap = human_b.plan_click(2000, 0, 0, 0)
 		assert beyond_cap.move_speed == pytest.approx(at_cap.move_speed)
+
+
+# ------------------------------------------------------------------ #
+# set_attention_level — "combat" preset speeds up reaction/movement
+# without becoming unconditionally instant (still sampled, still human)
+# ------------------------------------------------------------------ #
+
+class TestSetAttentionLevel:
+	def test_combat_reduces_mean_reaction_time(self):
+		human_normal = HumanEmulator(reaction_mean=0.25, reaction_std=0.0, rng_seed=0)
+		human_combat = HumanEmulator(reaction_mean=0.25, reaction_std=0.0, rng_seed=0)
+		human_combat.set_attention_level("combat")
+
+		normal_samples = [human_normal.reaction_time() for _ in range(20)]
+		combat_samples = [human_combat.reaction_time() for _ in range(20)]
+
+		assert sum(combat_samples) < sum(normal_samples)
+
+	def test_combat_reduces_move_speed(self):
+		human_normal = HumanEmulator(rng_seed=1)
+		human_combat = HumanEmulator(rng_seed=1)
+		human_combat.set_attention_level("combat")
+
+		assert human_combat.plan_click(400, 0, 0, 0).move_speed < human_normal.plan_click(400, 0, 0, 0).move_speed
+
+	def test_combat_reduces_random_pause(self):
+		human_normal = HumanEmulator(rng_seed=2)
+		human_combat = HumanEmulator(rng_seed=2)
+		human_combat.set_attention_level("combat")
+
+		normal_samples = [human_normal.random_pause(0.05, 0.25) for _ in range(20)]
+		combat_samples = [human_combat.random_pause(0.05, 0.25) for _ in range(20)]
+
+		assert sum(combat_samples) < sum(normal_samples)
+
+	def test_normal_is_the_default_and_a_no_op(self):
+		human_a = HumanEmulator(reaction_mean=0.25, rng_seed=5)
+		human_b = HumanEmulator(reaction_mean=0.25, rng_seed=5)
+		human_b.set_attention_level("normal")
+
+		assert human_a.reaction_time() == human_b.reaction_time()
+
+	def test_unknown_level_raises(self):
+		human = HumanEmulator(rng_seed=0)
+		with pytest.raises(ValueError):
+			human.set_attention_level("frantic")
+
+	def test_reaction_time_still_varies_under_combat_attention(self):
+		"""Combat attention must speed reflexes up, not collapse them to a
+		single deterministic value — the player should still feel human."""
+		human = HumanEmulator(reaction_mean=0.25, reaction_std=0.07, rng_seed=7)
+		human.set_attention_level("combat")
+		samples = {human.reaction_time() for _ in range(20)}
+		assert len(samples) > 1

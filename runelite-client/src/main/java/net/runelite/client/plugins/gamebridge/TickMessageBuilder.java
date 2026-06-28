@@ -436,6 +436,41 @@ class TickMessageBuilder
 		return serializeGroundItem(bestTile, bestItem);
 	}
 
+	/**
+	 * Reports the real, plugin-computed canvas clickbox for a fixed world tile —
+	 * not a search for an entity, just {@code Perspective.getCanvasTilePoly} for
+	 * the given coordinate. {@code plane} defaults to the client's current plane
+	 * when {@code null}, so Python callers don't need to always pass it.
+	 *
+	 * @return {@code {"subId": subId, "found": true, ...tile fields}} or
+	 *         {@code {"subId": subId, "found": false}} if the tile is on the
+	 *         wrong plane or outside the loaded scene region.
+	 */
+	Map<String, Object> findTile(String subId, Integer worldX, Integer worldY, Integer plane)
+	{
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put("subId", subId);
+
+		int resolvedPlane = plane != null ? plane : client.getPlane();
+		WorldPoint wp = new WorldPoint(worldX, worldY, resolvedPlane);
+		LocalPoint lp = LocalPoint.fromWorld(client, wp);
+		if (lp == null)
+		{
+			result.put("found", false);
+			return result;
+		}
+
+		result.put("found", true);
+		result.put("worldX", worldX);
+		result.put("worldY", worldY);
+		result.put("plane", resolvedPlane);
+		applyTileHullFields(result, Perspective.getCanvasTilePoly(client, lp));
+		int[] mp = minimapPoint(lp);
+		result.put("minimapX", mp != null ? mp[0] : null);
+		result.put("minimapY", mp != null ? mp[1] : null);
+		return result;
+	}
+
 	private WorldPoint playerLocation()
 	{
 		Player local = client.getLocalPlayer();
@@ -852,21 +887,49 @@ class TickMessageBuilder
 
 	private void applyHullFields(Map<String, Object> m, Shape hull, int id, String name)
 	{
+		Projection p = projectHull(hull);
+		m.put("onScreen", p.onScreen);
+		m.put("canvasX", p.onScreen ? p.canvasX : null);
+		m.put("canvasY", p.onScreen ? p.canvasY : null);
+		m.put("hull", p.onScreen && hullFilter.matches(id, name) ? hullPoints(hull) : null);
+	}
+
+	/**
+	 * Same as {@link #applyHullFields} but for a fixed-tile subscription, which
+	 * has no id/name to filter on and where the hull is the entire point of the
+	 * subscription — never gated by {@link #hullFilter}.
+	 */
+	private void applyTileHullFields(Map<String, Object> m, Shape hull)
+	{
+		Projection p = projectHull(hull);
+		m.put("onScreen", p.onScreen);
+		m.put("canvasX", p.onScreen ? p.canvasX : null);
+		m.put("canvasY", p.onScreen ? p.canvasY : null);
+		m.put("hull", p.onScreen ? hullPoints(hull) : null);
+	}
+
+	private static final class Projection
+	{
+		boolean onScreen;
+		int canvasX;
+		int canvasY;
+	}
+
+	private Projection projectHull(Shape hull)
+	{
+		Projection p = new Projection();
 		// hull != null is not sufficient: getConvexHull() returns a non-null Shape for
 		// objects that are in the loaded scene tile array but projected outside the visible
 		// canvas area (negative or > canvas dimensions). We must intersect with the
 		// actual canvas viewport before declaring an entity "on screen".
-		boolean onScreen = false;
-		Rectangle b = null;
-		if (hull != null)
+		if (hull == null)
 		{
-			b = hull.getBounds();
-			Rectangle viewport = new Rectangle(0, 0,
-				client.getCanvas().getWidth(), client.getCanvas().getHeight());
-			onScreen = viewport.intersects(b);
+			return p;
 		}
-		m.put("onScreen", onScreen);
-		if (onScreen)
+		Rectangle b = hull.getBounds();
+		Rectangle viewport = new Rectangle(0, 0, client.getCanvas().getWidth(), client.getCanvas().getHeight());
+		p.onScreen = viewport.intersects(b);
+		if (p.onScreen)
 		{
 			// The hull's bounding-box centre can land outside the polygon
 			// itself — convex hulls viewed at an angle are skewed
@@ -877,16 +940,10 @@ class TickMessageBuilder
 			// combination of the polygon's own points — so it's both a
 			// reliable click target and a faithful point for occlusion checks.
 			int[] centroid = hullCentroid(hull, b);
-			m.put("canvasX", centroid[0]);
-			m.put("canvasY", centroid[1]);
-			m.put("hull", hullFilter.matches(id, name) ? hullPoints(hull) : null);
+			p.canvasX = centroid[0];
+			p.canvasY = centroid[1];
 		}
-		else
-		{
-			m.put("canvasX", null);
-			m.put("canvasY", null);
-			m.put("hull", null);
-		}
+		return p;
 	}
 
 	private String resolveName(int id)

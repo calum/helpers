@@ -4,6 +4,103 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-28 — Real tile clickboxes (`"tile"` subscription kind) for Brutus dodge
+
+### Goal
+
+`BrutusFighterRoutine`'s dodge-click didn't move the player. Two prior fixes
+(FOV/viewport-widget projection, then a Python-side geometric pixel estimate
+anchored on Brutus's own hull) both failed in live play. User directed
+switching to a real, plugin-computed tile clickbox: a new `"tile"` kind on
+the existing GameBridge live-subscription protocol, reusing
+`Perspective.getCanvasTilePoly` (already used internally by
+`TickMessageBuilder.serializeGroundItem`). Full design rationale and the
+rejected alternatives are recorded in
+[`BRUTUS_TILE_CLICKBOX_PLAN.md`](BRUTUS_TILE_CLICKBOX_PLAN.md) at the repo
+root (handoff doc from the session that hit the context-compaction boundary;
+left in place for the historical record).
+
+### Findings / Decisions
+
+- **Java side** (`GameBridgePlugin.java` / `TickMessageBuilder.java`):
+  - `Subscription` gained `worldX`/`worldY`/`plane` (nullable `Integer`)
+    fields and an 8-arg constructor; `handleSubscribe` now branches on
+    `kind == "tile"` to require `worldX`/`worldY` instead of `id`/`name`.
+  - `TickMessageBuilder.findTile(subId, worldX, worldY, plane)` resolves
+    `plane` to `client.getPlane()` when omitted, builds a `WorldPoint`,
+    calls `LocalPoint.fromWorld(client, wp)` — `null` (wrong plane or out of
+    loaded scene) collapses to `found: false`, same semantics as
+    `findNearest`. On success it calls `Perspective.getCanvasTilePoly` and
+    reuses the on-screen/centroid projection logic.
+  - Extracted `applyHullFields`'s onScreen/centroid logic into a shared
+    `projectHull` helper, used by both `applyHullFields` (npc/object/player/
+    groundItem — still gated by `hullFilter`) and a new `applyTileHullFields`
+    (tile — hull always populated when on-screen, since the hull is the
+    entire point of a tile subscription).
+  - `BridgeServer.ClientEntry` had its class-level `final` removed — purely
+    for testability (Mockito 3.1.0 in this repo has no `mockito-inline`, so
+    it cannot mock final classes; removing `final` has no behavioural
+    effect, since equality/lookup was already default `Object` identity).
+- **Python side**:
+  - `BridgeConnection.subscribe()` gained optional `world_x`/`world_y`/
+    `plane` kwargs, only included in the outgoing JSON when not `None` (kept
+    the exact existing dict shape for the other kinds, verified against
+    `test_client.py`'s pre-existing shape assertions).
+  - `GameController.subscribe_to_tile(sub_id, world_x, world_y, plane=None,
+    ttl_ticks=10)` added alongside `subscribe_to`.
+  - `BrutusFighterRoutine._click_dodge_tile` rewritten: subscribes to
+    `DODGE_TILE_SUB_ID` (a fixed, reused subId — re-subscribing each dodge
+    just renews it) at the computed dodge-tile coordinates, reads back
+    `ctrl.hull_update(...)`, and clicks `canvasX`/`canvasY` via
+    `click_walk_target` only when `found`/`onScreen`. No minimap fallback —
+    matches the prior round's already-agreed decision. Removed the rejected
+    pixel-estimation helpers (`_pixels_per_tile_from_hull`,
+    `_dodge_canvas_position`, `_live_brutus_canvas`); `_live_brutus_pos` was
+    kept since `_compute_dodge_tile` (the tile-selection geometry, unrelated
+    to canvas projection) still needs it.
+- `GAMEBRIDGE.md` updated per the Game Bridge maintenance rule: subscribe
+  message table, a `"tile"`-specific note + example, the `hullUpdate` tile
+  entity shape (no `id`/`name`/`animation`/`combatLevel`, hull always
+  populated when on-screen), and a Python usage snippet.
+
+### Tests
+
+- Java: added `findTile`-focused tests to `TickMessageBuilderTest`
+  (out-of-scene, plane-mismatch, and plane-defaulting/explicit-plane via
+  `ArgumentCaptor` on `client.findWorldViewFromWorldPoint`) — deliberately
+  scoped to the mockable surface, consistent with `serializeGroundItem`
+  having no dedicated unit test for its own hull-projection path. Added a
+  new `GameBridgePluginTest` (first test file for this class) covering the
+  subscribe/unsubscribe → `onClientTick` → `hullUpdate` wiring for `kind:
+  "tile"`, via reflection-swapped `server`/`tickBuilder` mocks rather than a
+  real socket. `./gradlew.bat :client:test` — full suite green (the
+  project's actual Gradle path is `:client`, not `:runelite-client` as
+  CLAUDE.md's example command says — worth fixing that doc).
+- Python: added tests to `test_client.py` (`subscribe` tile kwargs),
+  `test_controller.py` (`subscribe_to_tile` delegation/no-connection-warning/
+  plane-default), and rewrote the dodge-click section of
+  `test_brutus_fighter.py` (subscribe-with-computed-tile, click-on-found-
+  onscreen, skip-on-not-found/not-onscreen/no-push-yet — replacing the three
+  tests for the rejected canvas-estimation approach). `python -m pytest
+  scripts/gamebridge/tests/ -v` — 1417 passed, 10 skipped (pre-existing
+  skips, unrelated).
+
+### Open / next steps
+
+- Live smoke test against Brutus still outstanding — confirm the dodge click
+  actually moves the player in real gameplay, which was the original
+  unresolved symptom driving all three redesign attempts. Everything above
+  is verified at the unit-test level only.
+- Not implemented: the "pre-subscribe a speculative dodge tile before the
+  telegraph is seen" latency optimization floated in the handoff doc — left
+  for later, only worth it if the synchronous subscribe→poll→click flow
+  proves too slow in live play.
+- `BRUTUS_TILE_CLICKBOX_PLAN.md` can be deleted once the live smoke test
+  above passes; it was a single-session handoff doc, not meant to be a
+  permanent fixture.
+
+---
+
 ## Session: 2026-06-27 — Fix: `RodFishingRoutine.cooking` stuck — missing `approach()` before clicking the Fire
 
 ### Goal

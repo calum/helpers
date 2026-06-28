@@ -242,6 +242,32 @@ class TestBridgeConnectionSend:
         }
         sock.sendall.assert_called_once_with((json.dumps(expected) + "\n").encode("utf-8"))
 
+    def test_subscribe_tile_includes_world_coords_and_plane(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.subscribe("dodge_tile", "tile", world_x=3210, world_y=3214, plane=0, ttl_ticks=5)
+        expected = {
+            "type": "subscribe",
+            "subId": "dodge_tile",
+            "kind": "tile",
+            "name": None,
+            "id": None,
+            "ttlTicks": 5,
+            "worldX": 3210,
+            "worldY": 3214,
+            "plane": 0,
+        }
+        sock.sendall.assert_called_once_with((json.dumps(expected) + "\n").encode("utf-8"))
+
+    def test_subscribe_tile_omits_plane_when_none(self):
+        sock = MagicMock()
+        conn = BridgeConnection(sock)
+        conn.subscribe("dodge_tile", "tile", world_x=3210, world_y=3214)
+        sent = json.loads(sock.sendall.call_args[0][0].decode("utf-8"))
+        assert sent["worldX"] == 3210
+        assert sent["worldY"] == 3214
+        assert "plane" not in sent
+
     def test_unsubscribe_sends_expected_shape(self):
         sock = MagicMock()
         conn = BridgeConnection(sock)

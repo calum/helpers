@@ -159,6 +159,13 @@ class GameController:
     # which one is active.
     # ------------------------------------------------------------------
 
+    def set_attention_level(self, level: str = "normal") -> None:
+        """Forward to HumanEmulator.set_attention_level — see its docstring.
+        Lets a routine declare itself "high-attention" (e.g. a boss fight
+        that demands fast reflexes) without reaching into the controller's
+        private `_human` instance directly."""
+        self._human.set_attention_level(level)
+
     def use_bridge_input(self) -> None:
         """Route mouse/keyboard input through synthetic AWT events
         dispatched directly onto the game's Canvas (Game Bridge
@@ -1164,6 +1171,25 @@ class GameController:
             log.warning("subscribe_to(%s) called with no active connection", sub_id)
             return
         self._connection.subscribe(sub_id, kind, name=name, id=id, ttl_ticks=ttl_ticks)
+
+    def subscribe_to_tile(
+        self,
+        sub_id: str,
+        world_x: int,
+        world_y: int,
+        plane: Optional[int] = None,
+        ttl_ticks: int = 10,
+    ) -> None:
+        """Register interest in the real, plugin-computed canvas clickbox for
+        a fixed world tile (no entity to search for — unlike subscribe_to).
+
+        Re-sending with the same sub_id renews/overwrites the subscription.
+        No-ops with a warning if no connection is set.
+        """
+        if self._connection is None:
+            log.warning("subscribe_to_tile(%s) called with no active connection", sub_id)
+            return
+        self._connection.subscribe(sub_id, "tile", world_x=world_x, world_y=world_y, plane=plane, ttl_ticks=ttl_ticks)
 
     def unsubscribe(self, sub_id: str) -> None:
         """Cancel a previously registered subscription.

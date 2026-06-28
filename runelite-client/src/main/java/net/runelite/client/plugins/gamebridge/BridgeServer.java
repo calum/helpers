@@ -47,7 +47,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 class BridgeServer
 {
-	static final class ClientEntry
+	static class ClientEntry
 	{
 		final Socket socket;
 		final PrintWriter writer;

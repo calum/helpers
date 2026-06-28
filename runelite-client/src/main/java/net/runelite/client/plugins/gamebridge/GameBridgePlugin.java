@@ -91,9 +91,10 @@ public class GameBridgePlugin extends Plugin
 	private InputEventDispatcher inputDispatcher;
 
 	/**
-	 * A Python-registered interest in the nearest entity matching {@code kind}/{@code id}/{@code name}.
-	 * Renewed by re-sending {@code subscribe} with the same {@code subId}; expires after
-	 * {@code ttlTicks} game ticks without renewal.
+	 * A Python-registered interest in the nearest entity matching {@code kind}/{@code id}/{@code name},
+	 * or — for {@code kind = "tile"} — a fixed {@code worldX}/{@code worldY}/{@code plane} instead of a
+	 * matched entity at all. Renewed by re-sending {@code subscribe} with the same {@code subId}; expires
+	 * after {@code ttlTicks} game ticks without renewal.
 	 */
 	private static final class Subscription
 	{
@@ -101,14 +102,21 @@ public class GameBridgePlugin extends Plugin
 		final String kind;
 		final String name;
 		final Integer id;
+		final Integer worldX;
+		final Integer worldY;
+		final Integer plane;
 		int ttlTicks;
 
-		Subscription(String subId, String kind, String name, Integer id, int ttlTicks)
+		Subscription(String subId, String kind, String name, Integer id,
+			Integer worldX, Integer worldY, Integer plane, int ttlTicks)
 		{
 			this.subId = subId;
 			this.kind = kind;
 			this.name = name;
 			this.id = id;
+			this.worldX = worldX;
+			this.worldY = worldY;
+			this.plane = plane;
 			this.ttlTicks = ttlTicks;
 		}
 	}
@@ -285,7 +293,14 @@ public class GameBridgePlugin extends Plugin
 			List<Map<String, Object>> entities = new ArrayList<>(subs.size());
 			for (Subscription sub : subs.values())
 			{
-				entities.add(tickBuilder.findNearest(sub.subId, sub.kind, sub.id, sub.name));
+				if ("tile".equals(sub.kind))
+				{
+					entities.add(tickBuilder.findTile(sub.subId, sub.worldX, sub.worldY, sub.plane));
+				}
+				else
+				{
+					entities.add(tickBuilder.findNearest(sub.subId, sub.kind, sub.id, sub.name));
+				}
 			}
 
 			Map<String, Object> msg = new LinkedHashMap<>();
@@ -348,7 +363,19 @@ public class GameBridgePlugin extends Plugin
 
 		String name = (String) msg.get("name");
 		Integer id = toInteger(msg.get("id"));
-		if (id == null && name == null)
+		Integer worldX = toInteger(msg.get("worldX"));
+		Integer worldY = toInteger(msg.get("worldY"));
+		Integer plane = toInteger(msg.get("plane"));
+
+		if ("tile".equals(kind))
+		{
+			if (worldX == null || worldY == null)
+			{
+				log.warn("Game Bridge: tile subscribe requires worldX/worldY: {}", msg);
+				return;
+			}
+		}
+		else if (id == null && name == null)
 		{
 			log.warn("Game Bridge: subscribe requires at least one of id/name: {}", msg);
 			return;
@@ -365,7 +392,7 @@ public class GameBridgePlugin extends Plugin
 			return;
 		}
 
-		subs.put((String) subId, new Subscription((String) subId, (String) kind, name, id, ttlTicks));
+		subs.put((String) subId, new Subscription((String) subId, (String) kind, name, id, worldX, worldY, plane, ttlTicks));
 	}
 
 	private void handleUnsubscribe(BridgeServer.ClientEntry entry, Map<String, Object> msg)

@@ -45,15 +45,32 @@ class BridgeConnection:
     def send(self, msg: dict) -> None:
         self._sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
 
-    def subscribe(self, sub_id: str, kind: str, name: str = None, id: int = None, ttl_ticks: int = 10) -> None:
-        self.send({
+    def subscribe(
+        self,
+        sub_id: str,
+        kind: str,
+        name: str = None,
+        id: int = None,
+        world_x: int = None,
+        world_y: int = None,
+        plane: int = None,
+        ttl_ticks: int = 10,
+    ) -> None:
+        msg = {
             "type": "subscribe",
             "subId": sub_id,
             "kind": kind,
             "name": name,
             "id": id,
             "ttlTicks": ttl_ticks,
-        })
+        }
+        if world_x is not None:
+            msg["worldX"] = world_x
+        if world_y is not None:
+            msg["worldY"] = world_y
+        if plane is not None:
+            msg["plane"] = plane
+        self.send(msg)
 
     def unsubscribe(self, sub_id: str) -> None:
         self.send({"type": "unsubscribe", "subId": sub_id})
