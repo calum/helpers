@@ -144,6 +144,8 @@ class HumanEmulator:
         Called once at session startup after the mood is seeded. Permanently
         adjusts reaction_mean and click_error_px so all subsequent sampling
         reflects the player's emotional state for the day.
+
+        TODO: Add mood to the dashboard and allow the user to tweak it manually (e.g. "I'm tired today, make me slower").
         """
         self.reaction_mean *= profile.reaction_multiplier
         self.click_error_px *= profile.click_error_multiplier

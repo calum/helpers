@@ -1,6 +1,9 @@
 """
 Brutus Fighter routine.
 
+TODO: "dodging" state has been removed in favour of keeping logic in "fighting".
+    We need to update the docstring, state diagram, any references, and the tests to reflect this change.
+
 Brutus is a 3x3 aggressive melee NPC (ids 15626/15627) that, after every
 4-5 basic attacks, telegraphs one of two special attacks with a distinct
 animation a few ticks before it actually lands:
