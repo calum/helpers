@@ -2,33 +2,37 @@
 Tests for RodFishingRoutine.
 
 Covers:
-  - resume: full + raw fish → cooking; full + no raw fish → banking/
-    walk_to_bank_fern/walk_to_bank_tree depending on position; not full →
-    find_spot/walk_to_tree/walk_to_fern depending on distance to Tree
-  - banking: no bankable items → walk_to_fern; cooked fish → opens bank; full
-    deposit cycle; bank open after deposit → Escape; _batches_cooked reset
-  - walk_to_fern: Tree on minimap → walk_to_tree; real Fern entity used when in range; synthetic fallback when out of range
-  - walk_to_tree: player near Tree → find_spot; real Tree entity used when in range; synthetic fallback when out of range
+  - resume: full + raw fish → cooking; full + no raw fish → travelling
+    toward BANK_REGION/banking; not full → travelling toward
+    FISHING_REGION/find_spot
+  - tick / outside CONTAINER_REGION: jumps to the terminal `stopped` state,
+    releases held keys, logs once; `stopped` takes no further action;
+    normal dispatch is unaffected while inside the container
+  - travelling: delegates to travel_path along BANK_FISHING_PATH, transitions
+    to the stored arrival state once arrived
+  - banking: no bankable items → travelling toward the fishing spot; cooked
+    fish: opens bank; full deposit cycle; bank open after deposit → Escape;
+    _batches_cooked reset
   - find_spot: inventory full → cooking; no NPC → None; approach + click → fishing
   - fishing: inventory full → cooking; spot gone → find_spot; idle timeout → find_spot
   - cooking: batch 1 → drop_burnt; batch 2 → drop_and_return; dialog → Space;
     left-click fire directly; gesture guard prevents reclick; no fire → wait
   - drop_burnt: nothing to drop → find_spot
-  - drop_and_return: nothing to drop → walk_to_bank_tree
-  - walk_to_bank_tree: player y >= TREE_WORLD_Y → walk_to_bank_fern; real Tree entity used when in range; synthetic fallback
-  - walk_to_bank_fern: player y >= FERN_WORLD_Y → banking; real Fern entity used when in range; synthetic fallback
-  - _real_minimap_entity: exact tile match, no minimap coords, wrong tile, empty scene
-  - _synthetic_minimap_entity: geometry and clamping
+  - drop_and_return: nothing to drop → travelling toward the bank
 """
 from __future__ import annotations
 
-import math
-from unittest.mock import MagicMock, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from scripts.gamebridge.input.keyboard import Key
-from scripts.gamebridge.routines.examples.rod_fishing import RodFishingRoutine
+from scripts.gamebridge.routines.examples.rod_fishing import (
+    BANK_REGION,
+    CONTAINER_REGION,
+    FISHING_REGION,
+    LOWER_EDGEVILLE,
+    UPPER_BARBARIAN_VILLAGE,
+    RodFishingRoutine,
+)
 from scripts.gamebridge.routines.interaction import InteractionRoutine
 from scripts.gamebridge.state.game_state import GameState
 
@@ -38,6 +42,13 @@ from scripts.gamebridge.state.game_state import GameState
 
 EMPTY_INVENTORY = [{"slot": i, "itemId": -1, "qty": 0} for i in range(28)]
 JUNK = 1931  # arbitrary real item id used to pad a full inventory
+
+# A point well inside each region, verified against the actual polygons.
+BANK_POS = (3095, 3490)
+LOWER_EDGEVILLE_POS = (3092, 3465)
+UPPER_BARBARIAN_VILLAGE_POS = (3095, 3440)
+FISHING_POS = (3104, 3430)
+OUTSIDE_CONTAINER_POS = (3000, 3000)
 
 
 def _inv(*item_ids: int) -> list:
@@ -59,8 +70,8 @@ def _inv_widget(item_id: int, child_id: int = 0, x: int = 550, y: int = 210) -> 
 
 def _make_game(
     tick: int = 100,
-    player_x: int = 3100,
-    player_y: int = 3425,
+    player_x: int = FISHING_POS[0],
+    player_y: int = FISHING_POS[1],
     inventory: list | None = None,
     npcs: list | None = None,
     objects: list | None = None,
@@ -114,35 +125,17 @@ ROD_SPOT = {
 
 FIRE_NEAR = {
     "id": 26185, "name": "Fire",
-    "worldX": 3101, "worldY": 3426, "plane": 0,  # 4 tiles away — within search radius
+    "worldX": FISHING_POS[0] - 3, "worldY": FISHING_POS[1] - 1, "plane": 0,
     "onScreen": True, "canvasX": 450, "canvasY": 300,
     "hull": [[440, 290], [460, 290], [460, 310], [440, 310]],
     "minimapX": 605, "minimapY": 92,
 }
 
-FIRE_FAR = {**FIRE_NEAR, "worldX": 3200, "worldY": 3400}  # > 8 tiles
-
-FERN_OBJ_INRANGE = {
-    "id": 1234, "name": "Fern",
-    "worldX": 3098, "worldY": 3458, "plane": 0,
-    "onScreen": False, "canvasX": None, "canvasY": None,
-    "minimapX": 601, "minimapY": 68,
-}
-
-FERN_OBJ_OUTOFRANGE = {**FERN_OBJ_INRANGE, "minimapX": None, "minimapY": None}
-
-TREE_OBJ_INRANGE = {
-    "id": 1276, "name": "Tree",
-    "worldX": 3100, "worldY": 3436, "plane": 0,
-    "onScreen": False, "canvasX": None, "canvasY": None,
-    "minimapX": 603, "minimapY": 75,
-}
-
-TREE_OBJ_OUTOFRANGE = {**TREE_OBJ_INRANGE, "minimapX": None, "minimapY": None}
+FIRE_FAR = {**FIRE_NEAR, "worldX": 3200, "worldY": 3400}  # > 12 tiles
 
 BANK_BOOTH = {
     "id": 10355, "name": "Bank booth",
-    "worldX": 3094, "worldY": 3494, "plane": 0,
+    "worldX": BANK_POS[0], "worldY": BANK_POS[1], "plane": 0,
     "onScreen": False, "canvasX": None, "canvasY": None,
     "minimapX": None, "minimapY": None,
 }
@@ -151,6 +144,31 @@ COOK_DIALOG = {
     "groupId": 270, "childId": 38, "itemId": -1, "quantity": 0,
     "bounds": {"x": 400, "y": 250, "width": 200, "height": 30}, "text": "Cook 27 Raw Trout",
 }
+
+
+# ---------------------------------------------------------------------------
+# Regions module data sanity
+# ---------------------------------------------------------------------------
+
+class TestRegionDefinitions:
+    def test_bank_pos_in_bank_region(self):
+        assert BANK_REGION.contains(*BANK_POS)
+
+    def test_lower_edgeville_pos_in_region(self):
+        assert LOWER_EDGEVILLE.contains(*LOWER_EDGEVILLE_POS)
+
+    def test_upper_barbarian_village_pos_in_region(self):
+        assert UPPER_BARBARIAN_VILLAGE.contains(*UPPER_BARBARIAN_VILLAGE_POS)
+
+    def test_fishing_pos_in_fishing_region(self):
+        assert FISHING_REGION.contains(*FISHING_POS)
+
+    def test_all_route_positions_inside_container(self):
+        for pos in (BANK_POS, LOWER_EDGEVILLE_POS, UPPER_BARBARIAN_VILLAGE_POS, FISHING_POS):
+            assert CONTAINER_REGION.contains(*pos)
+
+    def test_outside_pos_not_in_container(self):
+        assert not CONTAINER_REGION.contains(*OUTSIDE_CONTAINER_POS)
 
 
 # ---------------------------------------------------------------------------
@@ -169,75 +187,102 @@ class TestResume:
         game = _make_game(inventory=_full_inv(R.RAW_SALMON_ID))
         assert _routine().resume(game, _ctrl()) == "cooking"
 
-    def test_full_inventory_no_raw_fish_near_bank_goes_to_banking(self):
-        # player_y >= FERN_WORLD_Y (3458)
-        game = _make_game(player_y=3460, inventory=_full_inv(R.COOKED_TROUT_ID))
-        assert _routine().resume(game, _ctrl()) == "banking"
+    def test_full_inventory_no_raw_fish_travels_toward_bank(self):
+        game = _make_game(inventory=_full_inv(R.COOKED_TROUT_ID))
+        r = _routine()
+        result = r.resume(game, _ctrl())
+        assert result == "travelling"
+        assert r._travel_reverse is True
+        assert r._arrival_state == "banking"
 
-    def test_full_inventory_no_raw_fish_between_tree_and_fern_goes_to_walk_to_bank_fern(self):
-        # TREE_WORLD_Y (3436) <= player_y < FERN_WORLD_Y (3458)
-        game = _make_game(player_y=3440, inventory=_full_inv(R.COOKED_TROUT_ID))
-        assert _routine().resume(game, _ctrl()) == "walk_to_bank_fern"
-
-    def test_full_inventory_no_raw_fish_south_of_tree_goes_to_walk_to_bank_tree(self):
-        # player_y < TREE_WORLD_Y (3436)
-        game = _make_game(player_y=3420, inventory=_full_inv(R.COOKED_TROUT_ID))
-        assert _routine().resume(game, _ctrl()) == "walk_to_bank_tree"
-
-    def test_not_full_already_near_tree_goes_to_find_spot(self):
-        # player at the Tree itself — within TREE_NEAR_TILES (12)
-        game = _make_game(player_x=3100, player_y=3436)
-        assert _routine().resume(game, _ctrl()) == "find_spot"
-
-    def test_not_full_within_minimap_range_of_tree_goes_to_walk_to_tree(self):
-        # 18 tiles from Tree (3100, 3436) — beyond TREE_NEAR_TILES, within MINIMAP_RANGE (20)
-        game = _make_game(player_x=3100, player_y=3454)
-        assert _routine().resume(game, _ctrl()) == "walk_to_tree"
-
-    def test_not_full_far_from_tree_goes_to_walk_to_fern(self):
-        # 34 tiles from Tree (3100, 3436) — beyond MINIMAP_RANGE
-        game = _make_game(player_x=3100, player_y=3470)
-        assert _routine().resume(game, _ctrl()) == "walk_to_fern"
+    def test_not_full_travels_toward_fishing_spot(self):
+        game = _make_game(inventory=list(EMPTY_INVENTORY))
+        r = _routine()
+        result = r.resume(game, _ctrl())
+        assert result == "travelling"
+        assert r._travel_reverse is False
+        assert r._arrival_state == "find_spot"
 
 
 # ---------------------------------------------------------------------------
-# _resume_toward_bank / _resume_toward_spot
+# tick / safety exit outside CONTAINER_REGION
 # ---------------------------------------------------------------------------
 
-class TestResumeTowardBank:
-    def test_at_fern_y_returns_banking(self):
-        game = _make_game(player_y=3458)
-        assert _routine()._resume_toward_bank(game) == "banking"
+class TestSafetyExit:
+    def test_stays_in_normal_dispatch_while_inside_container(self):
+        game = _make_game(player_x=FISHING_POS[0], player_y=FISHING_POS[1],
+                          inventory=_full_inv(R.RAW_TROUT_ID))
+        r = _routine()
+        r.tick(game, _ctrl())
+        assert r.current_state == "cooking"
 
-    def test_at_tree_y_returns_walk_to_bank_fern(self):
-        game = _make_game(player_y=3436)
-        assert _routine()._resume_toward_bank(game) == "walk_to_bank_fern"
+    def test_jumps_to_stopped_when_outside_container(self):
+        game = _make_game(player_x=OUTSIDE_CONTAINER_POS[0], player_y=OUTSIDE_CONTAINER_POS[1])
+        r = _routine()
+        ctrl = _ctrl()
+        r.tick(game, ctrl)
+        assert r.current_state == "stopped"
+        ctrl.release_all_keys.assert_called_once()
 
-    def test_south_of_tree_returns_walk_to_bank_tree(self):
-        game = _make_game(player_y=3000)
-        assert _routine()._resume_toward_bank(game) == "walk_to_bank_tree"
+    def test_logs_critical_once_on_transition(self, caplog):
+        game = _make_game(player_x=OUTSIDE_CONTAINER_POS[0], player_y=OUTSIDE_CONTAINER_POS[1])
+        r = _routine()
+        with caplog.at_level("CRITICAL"):
+            r.tick(game, _ctrl())
+        assert "CONTAINER_REGION" in caplog.text
+
+    def test_stopped_state_takes_no_further_action_and_stays_stopped(self):
+        game = _make_game(player_x=OUTSIDE_CONTAINER_POS[0], player_y=OUTSIDE_CONTAINER_POS[1])
+        r = _routine()
+        ctrl = _ctrl()
+        r.tick(game, ctrl)  # transitions to stopped
+        ctrl.reset_mock()
+        r.tick(game, ctrl)  # second tick: already stopped
+        assert r.current_state == "stopped"
+        ctrl.click_entity.assert_not_called()
+        ctrl.click_minimap_entity.assert_not_called()
+
+    def test_does_not_trip_before_login(self):
+        """game.player empty (no login yet) must not be treated as outside
+        the container — (0, 0) is nowhere near CONTAINER_REGION."""
+        game = _make_game()
+        game.player = {}
+        r = _routine()
+        r.tick(game, _ctrl())
+        assert r.current_state != "stopped"
 
 
-class TestResumeTowardSpot:
-    def test_at_tree_near_threshold_returns_find_spot(self):
-        # exactly TREE_NEAR_TILES (12) away
-        game = _make_game(player_x=3100, player_y=3448)
-        assert _routine()._resume_toward_spot(game) == "find_spot"
+# ---------------------------------------------------------------------------
+# travelling
+# ---------------------------------------------------------------------------
 
-    def test_just_beyond_near_threshold_returns_walk_to_tree(self):
-        # 13 tiles away — beyond TREE_NEAR_TILES, within MINIMAP_RANGE
-        game = _make_game(player_x=3100, player_y=3449)
-        assert _routine()._resume_toward_spot(game) == "walk_to_tree"
+class TestTravelling:
+    def test_transitions_to_arrival_state_once_in_destination(self):
+        end_x, end_y = R.BANK_FISHING_PATH.points[-1]
+        game = _make_game(player_x=int(end_x), player_y=int(end_y))
+        r = _routine()
+        r._travel_reverse = False
+        r._arrival_state = "find_spot"
+        assert r.travelling(game, _ctrl()) == "find_spot"
 
-    def test_at_minimap_range_threshold_returns_walk_to_tree(self):
-        # exactly MINIMAP_RANGE (20) away
-        game = _make_game(player_x=3100, player_y=3456)
-        assert _routine()._resume_toward_spot(game) == "walk_to_tree"
+    def test_stays_travelling_and_clicks_minimap_while_en_route(self):
+        game = _make_game(player_x=BANK_POS[0], player_y=BANK_POS[1],
+                          interfaces=[MINIMAP_WIDGET])
+        r = _routine()
+        r._travel_reverse = False
+        r._arrival_state = "find_spot"
+        ctrl = _ctrl()
+        result = r.travelling(game, ctrl)
+        assert result is None
+        ctrl.click_minimap_entity.assert_called_once()
 
-    def test_just_beyond_minimap_range_returns_walk_to_fern(self):
-        # 21 tiles away — beyond MINIMAP_RANGE
-        game = _make_game(player_x=3100, player_y=3457)
-        assert _routine()._resume_toward_spot(game) == "walk_to_fern"
+    def test_transitions_to_banking_when_reversed_and_at_bank_end(self):
+        start_x, start_y = R.BANK_FISHING_PATH.points[0]
+        game = _make_game(player_x=int(start_x), player_y=int(start_y))
+        r = _routine()
+        r._travel_reverse = True
+        r._arrival_state = "banking"
+        assert r.travelling(game, _ctrl()) == "banking"
 
 
 # ---------------------------------------------------------------------------
@@ -245,10 +290,13 @@ class TestResumeTowardSpot:
 # ---------------------------------------------------------------------------
 
 class TestBanking:
-    def test_no_bankable_items_goes_to_walk_to_fern(self):
+    def test_no_bankable_items_travels_toward_fishing_spot(self):
         game = _make_game(inventory=_inv(590))  # only tinderbox — not bankable
         r = _routine()
-        assert r.banking(game, _ctrl()) == "walk_to_fern"
+        result = r.banking(game, _ctrl())
+        assert result == "travelling"
+        assert r._travel_reverse is False
+        assert r._arrival_state == "find_spot"
 
     def test_no_bankable_items_resets_batches_cooked(self):
         game = _make_game()
@@ -267,7 +315,8 @@ class TestBanking:
         assert result is None
 
     def test_cooked_fish_in_inventory_opens_bank(self):
-        game = _make_game(inventory=_inv(R.COOKED_TROUT_ID), objects=[BANK_BOOTH])
+        game = _make_game(player_x=BANK_POS[0], player_y=BANK_POS[1],
+                          inventory=_inv(R.COOKED_TROUT_ID), objects=[BANK_BOOTH])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = False
         r = _routine()
@@ -275,7 +324,8 @@ class TestBanking:
         assert result is None
 
     def test_raw_fish_in_inventory_triggers_banking(self):
-        game = _make_game(inventory=_inv(R.RAW_TROUT_ID), objects=[BANK_BOOTH])
+        game = _make_game(player_x=BANK_POS[0], player_y=BANK_POS[1],
+                          inventory=_inv(R.RAW_TROUT_ID), objects=[BANK_BOOTH])
         ctrl = _ctrl()
         ctrl.bring_entity_on_screen.return_value = False
         assert _routine().banking(game, ctrl) is None
@@ -291,99 +341,6 @@ class TestBanking:
         r = _routine()
         r.banking(game, ctrl)
         ctrl.click_widget.assert_called()
-
-
-# ---------------------------------------------------------------------------
-# walk_to_fern
-# ---------------------------------------------------------------------------
-
-class TestWalkToFern:
-    def test_within_minimap_range_of_tree_goes_to_walk_to_tree(self):
-        # player at (3100, 3425): 11 tiles from Tree (3100, 3436) — within MINIMAP_RANGE=20
-        game = _make_game(player_x=3100, player_y=3425)
-        assert _routine().walk_to_fern(game, _ctrl()) == "walk_to_tree"
-
-    def test_beyond_minimap_range_of_tree_issues_minimap_click(self):
-        # player at (3100, 3470): 34 tiles from Tree (3100, 3436) — beyond
-        # MINIMAP_RANGE=20 — and 14 tiles from Fern (3098, 3458) — beyond the
-        # near-Fern shortcut's 4-tile threshold, so this should still walk.
-        game = _make_game(player_x=3100, player_y=3470, interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        result = _routine().walk_to_fern(game, ctrl)
-        ctrl.click_minimap_entity.assert_called_once()
-        assert result is None
-
-    def test_uses_real_fern_minimap_when_in_range(self):
-        game = _make_game(player_x=3100, player_y=3470, objects=[FERN_OBJ_INRANGE])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_fern(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is FERN_OBJ_INRANGE
-
-    def test_falls_back_to_synthetic_when_fern_out_of_range(self):
-        game = _make_game(player_x=3100, player_y=3470, objects=[FERN_OBJ_OUTOFRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_fern(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target["name"] == "waypoint"
-
-    def test_no_minimap_widget_does_not_crash(self):
-        game = _make_game(player_x=3100, player_y=3470, interfaces=[])
-        _routine().walk_to_fern(game, _ctrl())  # should not raise
-
-    def test_near_fern_but_far_from_tree_transitions_without_reclicking(self):
-        # player at (3100, 3460): 4 tiles from Fern (3098, 3458) but 24 tiles
-        # from Tree — beyond Fern alone would never satisfy the
-        # within-MINIMAP_RANGE-of-Tree check, so this must transition to
-        # walk_to_tree directly instead of re-clicking the same Fern tile.
-        game = _make_game(player_x=3100, player_y=3460, interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        result = _routine().walk_to_fern(game, ctrl)
-        ctrl.click_minimap_entity.assert_not_called()
-        assert result == "walk_to_tree"
-
-
-# ---------------------------------------------------------------------------
-# walk_to_tree
-# ---------------------------------------------------------------------------
-
-class TestWalkToTree:
-    def test_player_near_tree_goes_to_find_spot(self):
-        # Player within 12 tiles of TREE (3100, 3436): player at (3102, 3438) = 4 tiles
-        game = _make_game(player_x=3102, player_y=3438, objects=[TREE_OBJ_INRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        assert _routine().walk_to_tree(game, _ctrl()) == "find_spot"
-
-    def test_player_far_issues_minimap_click(self):
-        # Player at (3098, 3458) = 24 tiles from tree
-        game = _make_game(player_x=3098, player_y=3458, objects=[TREE_OBJ_INRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        result = _routine().walk_to_tree(game, ctrl)
-        ctrl.click_minimap_entity.assert_called_once()
-        assert result is None
-
-    def test_uses_real_tree_minimap_when_in_range(self):
-        game = _make_game(player_x=3098, player_y=3458, objects=[TREE_OBJ_INRANGE])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_tree(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is TREE_OBJ_INRANGE
-
-    def test_falls_back_to_synthetic_when_tree_out_of_range(self):
-        game = _make_game(player_x=3098, player_y=3458, objects=[TREE_OBJ_OUTOFRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_tree(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target["name"] == "waypoint"
 
 
 # ---------------------------------------------------------------------------
@@ -613,9 +570,13 @@ class TestDropBurnt:
 
 
 class TestDropAndReturn:
-    def test_nothing_to_drop_goes_to_walk_to_bank_tree(self):
+    def test_nothing_to_drop_travels_toward_bank(self):
         game = _make_game(widgets=[_inv_widget(R.COOKED_TROUT_ID)])
-        assert _routine().drop_and_return(game, _ctrl()) == "walk_to_bank_tree"
+        r = _routine()
+        result = r.drop_and_return(game, _ctrl())
+        assert result == "travelling"
+        assert r._travel_reverse is True
+        assert r._arrival_state == "banking"
 
     def test_drops_raw_trout(self):
         raw = _inv_widget(R.RAW_TROUT_ID, child_id=1)
@@ -646,204 +607,4 @@ class TestDropAndReturn:
         ctrl = _ctrl()
         result = _routine().drop_and_return(game, ctrl)
         ctrl.click_widget.assert_not_called()
-        assert result == "walk_to_bank_tree"
-
-
-# ---------------------------------------------------------------------------
-# walk_to_bank_tree / walk_to_bank_fern
-# ---------------------------------------------------------------------------
-
-class TestWalkToBankTree:
-    def test_player_north_of_tree_goes_to_walk_to_bank_fern(self):
-        # player_y >= TREE_WORLD_Y (3436)
-        game = _make_game(player_y=3436)
-        assert _routine().walk_to_bank_tree(game, _ctrl()) == "walk_to_bank_fern"
-
-    def test_player_south_of_tree_issues_minimap_click(self):
-        # player_y < 3436
-        game = _make_game(player_y=3420, objects=[TREE_OBJ_INRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        result = _routine().walk_to_bank_tree(game, ctrl)
-        ctrl.click_minimap_entity.assert_called_once()
-        assert result is None
-
-    def test_uses_real_tree_minimap_when_in_range(self):
-        # walk_to_bank_tree aims 5 tiles past the Tree (TREE_WORLD_Y + 5) to
-        # avoid oscillating right at the boundary, so the matching real
-        # entity must sit at that tile, not the Tree's own coordinates.
-        waypoint_obj = {**TREE_OBJ_INRANGE, "worldY": R.TREE_WORLD_Y + 5}
-        game = _make_game(player_y=3420, objects=[waypoint_obj])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_bank_tree(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is waypoint_obj
-
-    def test_falls_back_to_synthetic_when_tree_out_of_range(self):
-        game = _make_game(player_y=3420, objects=[TREE_OBJ_OUTOFRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_bank_tree(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target["name"] == "waypoint"
-
-
-class TestWalkToBankFern:
-    def test_player_north_of_fern_goes_to_banking(self):
-        game = _make_game(player_y=3458)
-        assert _routine().walk_to_bank_fern(game, _ctrl()) == "banking"
-
-    def test_player_south_of_fern_issues_minimap_click(self):
-        game = _make_game(player_y=3438, objects=[FERN_OBJ_INRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        result = _routine().walk_to_bank_fern(game, ctrl)
-        ctrl.click_minimap_entity.assert_called_once()
-        assert result is None
-
-    def test_uses_real_fern_minimap_when_in_range(self):
-        # walk_to_bank_fern aims 5 tiles past the Fern (FERN_WORLD_Y + 5) to
-        # avoid oscillating right at the boundary, so the matching real
-        # entity must sit at that tile, not the Fern's own coordinates.
-        waypoint_obj = {**FERN_OBJ_INRANGE, "worldY": R.FERN_WORLD_Y + 5}
-        game = _make_game(player_y=3438, objects=[waypoint_obj])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_bank_fern(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target is waypoint_obj
-
-    def test_falls_back_to_synthetic_when_fern_out_of_range(self):
-        game = _make_game(player_y=3438, objects=[FERN_OBJ_OUTOFRANGE],
-                          interfaces=[MINIMAP_WIDGET])
-        ctrl = _ctrl()
-        ctrl.click_minimap_entity.return_value = True
-        _routine().walk_to_bank_fern(game, ctrl)
-        target, _ = ctrl.click_minimap_entity.call_args.args
-        assert target["name"] == "waypoint"
-
-
-# ---------------------------------------------------------------------------
-# _synthetic_minimap_entity — geometry
-# ---------------------------------------------------------------------------
-
-class TestSyntheticMinimapEntity:
-    def test_returns_none_without_minimap_widget(self):
-        game = _make_game(interfaces=[])
-        assert _routine()._synthetic_minimap_entity(game, 3100, 3450) is None
-
-    def test_target_directly_north_has_lower_canvas_y(self):
-        # player at (3100, 3440), target at (3100, 3460) — 20 tiles north
-        game = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
-        r = _routine()
-        entity = r._synthetic_minimap_entity(game, 3100, 3460)
-        assert entity is not None
-        b = MINIMAP_WIDGET["bounds"]
-        cy = b["y"] + b["height"] / 2
-        assert entity["minimapY"] < cy  # north = up = lower canvas Y
-
-    def test_target_directly_south_has_higher_canvas_y(self):
-        game = _make_game(player_x=3100, player_y=3460, interfaces=[MINIMAP_WIDGET])
-        r = _routine()
-        entity = r._synthetic_minimap_entity(game, 3100, 3440)
-        b = MINIMAP_WIDGET["bounds"]
-        cy = b["y"] + b["height"] / 2
-        assert entity["minimapY"] > cy
-
-    def test_very_distant_target_is_clamped_within_radius(self):
-        # 1000 tiles away — should be clamped to ~90% of half_extent
-        game = _make_game(player_x=3100, player_y=3200, interfaces=[MINIMAP_WIDGET])
-        r = _routine()
-        entity = r._synthetic_minimap_entity(game, 3100, 4200)
-        assert entity is not None
-        b = MINIMAP_WIDGET["bounds"]
-        cx = b["x"] + b["width"] / 2
-        cy = b["y"] + b["height"] / 2
-        half_extent = min(b["width"], b["height"]) / 2
-        dist = math.sqrt((entity["minimapX"] - cx) ** 2 + (entity["minimapY"] - cy) ** 2)
-        assert dist <= half_extent + 1e-6
-
-    def test_nearby_target_not_clamped(self):
-        # 5 tiles north — well inside the 20-tile minimap radius
-        game = _make_game(player_x=3100, player_y=3435, interfaces=[MINIMAP_WIDGET])
-        r = _routine()
-        entity = r._synthetic_minimap_entity(game, 3100, 3440)
-        b = MINIMAP_WIDGET["bounds"]
-        cx = b["x"] + b["width"] / 2
-        half_extent = min(b["width"], b["height"]) / 2
-        dist_x = abs(entity["minimapX"] - cx)
-        assert dist_x < half_extent * 0.9  # not pushed to the edge
-
-    def test_returns_none_without_camera(self):
-        game = _make_game(interfaces=[MINIMAP_WIDGET])
-        game.camera = {}
-        assert _routine()._synthetic_minimap_entity(game, 3100, 3460) is None
-
-    def test_rotated_compass_shifts_target_off_the_north_south_axis(self):
-        # Player at (3100, 3440), target due north at (3100, 3450) — with the
-        # compass facing west (yawTarget=512) the minimap is rotated 90°, so
-        # a due-north target lands offset in X, not Y. The old north-up-only
-        # formula would have placed this directly above centre regardless of
-        # compass orientation — exactly the bug this conversion fixes.
-        game = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
-        game.camera = {"yaw": 512, "yawTarget": 512, "pitch": 256, "minimapZoom": 4.0}
-        r = _routine()
-        entity = r._synthetic_minimap_entity(game, 3100, 3450)
-        b = MINIMAP_WIDGET["bounds"]
-        cx = b["x"] + b["width"] / 2
-        cy = b["y"] + b["height"] / 2
-        assert entity["minimapX"] - cx == pytest.approx(40.0)
-        assert entity["minimapY"] - cy == pytest.approx(0.0, abs=1e-6)
-
-    def test_minimap_zoom_scales_offset_distance(self):
-        # Same 20-tile-north target at two different zoom levels should
-        # produce proportionally different pixel offsets.
-        game_zoomed_in = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
-        game_zoomed_in.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 2.0}
-        entity_zoomed_in = _routine()._synthetic_minimap_entity(game_zoomed_in, 3100, 3450)
-
-        game_zoomed_out = _make_game(player_x=3100, player_y=3440, interfaces=[MINIMAP_WIDGET])
-        game_zoomed_out.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 4.0}
-        entity_zoomed_out = _routine()._synthetic_minimap_entity(game_zoomed_out, 3100, 3450)
-
-        b = MINIMAP_WIDGET["bounds"]
-        cy = b["y"] + b["height"] / 2
-        dist_zoomed_in = abs(entity_zoomed_in["minimapY"] - cy)
-        dist_zoomed_out = abs(entity_zoomed_out["minimapY"] - cy)
-        assert dist_zoomed_out == pytest.approx(dist_zoomed_in * 2)
-
-
-# ---------------------------------------------------------------------------
-# _real_minimap_entity
-# ---------------------------------------------------------------------------
-
-class TestRealMinimapEntity:
-    def test_returns_object_at_exact_tile_with_minimap_coords(self):
-        game = _make_game(objects=[FERN_OBJ_INRANGE])
-        assert _routine()._real_minimap_entity(game, 3098, 3458) is FERN_OBJ_INRANGE
-
-    def test_returns_none_when_object_has_no_minimap_coords(self):
-        game = _make_game(objects=[FERN_OBJ_OUTOFRANGE])
-        assert _routine()._real_minimap_entity(game, 3098, 3458) is None
-
-    def test_returns_none_when_no_object_at_tile(self):
-        game = _make_game(objects=[FERN_OBJ_INRANGE])
-        assert _routine()._real_minimap_entity(game, 3100, 3436) is None  # different tile
-
-    def test_returns_none_when_objects_empty(self):
-        game = _make_game(objects=[])
-        assert _routine()._real_minimap_entity(game, 3098, 3458) is None
-
-    def test_ignores_objects_at_different_y(self):
-        obj = {**FERN_OBJ_INRANGE, "worldY": 3459}
-        game = _make_game(objects=[obj])
-        assert _routine()._real_minimap_entity(game, 3098, 3458) is None
-
-    def test_ignores_objects_at_different_x(self):
-        obj = {**FERN_OBJ_INRANGE, "worldX": 3099}
-        game = _make_game(objects=[obj])
-        assert _routine()._real_minimap_entity(game, 3098, 3458) is None
+        assert result == "travelling"

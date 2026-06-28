@@ -2060,3 +2060,318 @@ mirrors `plan_click`/`plan_typing`), and `GameController.rotate_camera_to`
 a duration derived from `CAMERA_YAW_SPEED`, blocking — acceptable since holds
 are short, < 2s). This was the seed that the 2026-06-04 audit above and the FOV
 trapezoid model (`fov.py`, `decide_camera_action`) were later built on top of.
+
+### 2026-06-28 — Region-based pathing (RodFishingRoutine)
+
+Replaced RodFishingRoutine's hand-coded Fern/Tree waypoint walking
+(`walk_to_fern`/`walk_to_tree`/`walk_to_bank_tree`/`walk_to_bank_fern` +
+`_resume_toward_bank`/`_resume_toward_spot`, each with its own
+Manhattan-distance threshold) with generic region-chain travel:
+
+1. **`scripts/gamebridge/regions.py`** (new) — `Region` (named polygon,
+   `contains()` via ray-casting `point_in_polygon`, `centroid`, `bounds`,
+   and `sample_point()` which rejection-samples points inside the polygon
+   and picks a weighted-random one biased toward the centroid and,
+   optionally, toward a `direction` vector) and `RegionRoute` (an ordered
+   tuple of regions a routine commutes back and forth along — `locate()`,
+   `next_region(current, toward_end)`).
+2. **`InteractionRoutine.travel_route(game, ctrl, route, destination)`**
+   (interaction.py) — generic "step one tick closer to `destination` along
+   `route`" helper. Locates the player's current region, finds the adjacent
+   region one step closer, and clicks a `Region.sample_point()` waypoint
+   inside it (biased toward the region *beyond* that one, so a transit
+   heads for the far side of a region rather than stalling at the first
+   tile across its border). The sampled point is cached
+   (`_travel_step_name`/`_travel_target_point`) until the player actually
+   crosses into that next region, so one leg clicks one consistent
+   waypoint instead of a new random tile every tick.
+3. **`InteractionRoutine.synthetic_minimap_entity`** — the old
+   `RodFishingRoutine._synthetic_minimap_entity` geometry (camera
+   yawTarget/minimapZoom → minimap pixel offset, clamped to 90% of the
+   minimap radius), generalised and moved here so `travel_route` can build
+   a minimap click target for an arbitrary sampled world tile rather than
+   only a named landmark. `widget_ids.Minimap.GROUP = 160` added alongside
+   it. `RodFishingRoutine`'s old `_real_minimap_entity`/landmark-lookup path
+   was dropped — region waypoints are arbitrary sampled tiles, not named
+   entities, so there's no "real entity at this exact tile" case to prefer.
+4. **`InteractionRoutine.outside_container(game, container)`** — safety-exit
+   check (False before login, i.e. while `game.player` is still empty, so
+   the (0,0) default position can't trip it).
+5. **RodFishingRoutine** now defines `BANK_REGION`, `LOWER_EDGEVILLE` (Fern),
+   `UPPER_BARBARIAN_VILLAGE` (Tree), `FISHING_REGION`, and `CONTAINER_REGION`
+   as module-level `Region` polygons (coordinates supplied by the user) and
+   `ROUTE = RegionRoute((BANK_REGION, LOWER_EDGEVILLE,
+   UPPER_BARBARIAN_VILLAGE, FISHING_REGION))`. `resume`/`banking`/
+   `drop_and_return` now call a `_travel_to(destination, arrival_state)`
+   helper that sets `self._destination`/`self._arrival_state` and returns
+   `"travelling"`; the single `travelling` state calls `travel_route` and
+   transitions to the stored arrival state once arrived. `tick()` is
+   overridden to check `outside_container(game, CONTAINER_REGION)` before
+   each dispatch and jump to a terminal `stopped` state (releases held
+   keys, logs CRITICAL once) if the player is ever found outside it — a
+   Routine state method has no handle back to `DecisionEngine.set_routine`,
+   so this terminal-state idiom is the only way a routine can stop itself
+   from the inside; it does not unset itself as the engine's active
+   routine.
+
+Open: the region polygons are specific to this one bank↔fishing-spot
+commute. If another routine wants the same region-chain approach, the
+generic pieces (`regions.py`, `synthetic_minimap_entity`,
+`outside_container`) are already reusable — only the route-specific
+`Region`/`RegionRoute` instances would need defining per routine.
+(Superseded for RodFishingRoutine's own travel by the 2026-06-28 (2)
+session below — `travel_route` itself was removed since nothing else
+ever called it.)
+
+### 2026-06-28 (2) — Recorded-path travel (`Path`/`travel_path`), replacing `travel_route`'s random in-polygon sampling
+
+#### Goal
+
+`travel_route` (above) clicked a random, centre-biased point inside
+whichever hand-drawn `Region` polygon was next along the chain. That's
+fine for a region that's mostly open ground, but a polygon's straight-line
+interior doesn't know about fences/buildings/water — nothing stops it from
+sampling a point the player can't actually walk straight to. Replace the
+click-target logic with a recorded, walkable `Path` (an actual manual walk
+from bank to fishing spot, captured as world-tile coordinates), while
+keeping `Region`/`RegionRoute`/`CONTAINER_REGION` for what they're already
+good at — coarse landmarks and the safety exit.
+
+#### Findings / Decisions
+
+- **`scripts/gamebridge/regions.py`** — new `Path` dataclass (frozen, same
+  style as `Region`/`RegionRoute`): `name: str`, `points: Tuple[Point, ...]`.
+  - `Path.from_recording(name, raw_points, stride=1)` — classmethod that
+    takes raw `(x, y, ...)` tuples (extra columns like `plane` are ignored),
+    collapses consecutive-duplicate points (player stood still), then keeps
+    every `stride`-th point — always force-keeping the final point even if
+    it doesn't land on the stride, so the recorded endpoint is never lost.
+  - `Path.nearest_index(x, y)` — index of the closest waypoint by Euclidean
+    distance; always resolves to *some* index, unlike
+    `RegionRoute.locate()` which can return `None` for "not on the route".
+  - `Path.click_target(current_pos, rng, lookahead_range=(8,15),
+    lateral_jitter=1.0, reverse=False)` — locate the nearest waypoint, step
+    a randomised number of waypoints further along (forward by default,
+    backward if `reverse`), clamping at whichever end is reached, then add
+    a small jitter perpendicular to the local path direction (computed from
+    the points either side of the target index) so it doesn't click the
+    exact same tile every lap.
+  - `Path.is_at_end(x, y, reverse=False, tolerance_tiles=3.0)` — arrival
+    check against whichever end is the destination (the start if
+    `reverse`, else the end).
+- **`InteractionRoutine.travel_path(game, ctrl, path, reverse=False,
+  arrival_tolerance=3)`** (`routines/interaction.py`) replaces
+  `travel_route` — same `True`-on-arrival / `False`-while-travelling
+  contract. Caches the clicked target keyed off `nearest_index`, only
+  re-picking once the index has moved `PATH_RESAMPLE_WAYPOINTS` (3)
+  waypoints — same anti-jitter pattern `travel_route` used (cache until the
+  player crosses into the next region), just keyed off a waypoint index
+  instead of a region name. Builds the click via the existing
+  `synthetic_minimap_entity` (unchanged, still reused as-is).
+- **Removed `travel_route` entirely** rather than keeping it as a generic
+  fallback — grepped `routines/examples/` first and confirmed no routine
+  other than `RodFishingRoutine` (the one being migrated) ever called it,
+  so there was no actual fallback use case to preserve. `RegionRoute` the
+  *class* stays in `regions.py` (still backs `ROUTE`/`CONTAINER_REGION`
+  patterns generically), only the `travel_route` method and its
+  `_travel_step_name`/`_travel_target_point` cache fields were dropped from
+  `InteractionRoutine` (replaced by `_path_cached_index`/
+  `_path_cached_target`).
+- **`RodFishingRoutine`** (`routines/examples/rod_fishing.py`):
+  - `BANK_FISHING_PATH = Path.from_recording("BANK_FISHING_PATH",
+    _BANK_FISHING_RAW_POINTS)` — built from a real ~78-point manual walk
+    (bank booth → fishing spot, plane 0 throughout, supplied by the user),
+    deduped but not decimated (`stride=1`, the default) since 78 points is
+    already a reasonable density.
+  - `BANK_REGION`/`LOWER_EDGEVILLE`/`UPPER_BARBARIAN_VILLAGE`/
+    `FISHING_REGION`/`ROUTE` are **kept but no longer drive travel** — they
+    now exist only as coarse landmarks for `TestRegionDefinitions`'s sanity
+    checks (e.g. "is BANK_POS inside BANK_REGION"). `CONTAINER_REGION` and
+    the `tick()` safety-exit override are unchanged.
+  - `_travel_to(reverse: bool, arrival_state: str)` replaces the old
+    `_travel_to(destination: Region, arrival_state: str)` — `self
+    ._destination: Optional[Region]` became `self._travel_reverse: bool`.
+    `resume()`/`banking()`/`drop_and_return()` now pass `reverse=True` when
+    heading back to the bank (the *start* of the recorded path) and
+    `reverse=False` when heading out to the fishing spot (the *end*).
+  - `travelling()` now calls `self.travel_path(game, ctrl,
+    self.BANK_FISHING_PATH, reverse=self._travel_reverse)`.
+
+#### Tests
+
+- `test_regions.py`: new `TestPathFromRecording` (dedup, stride decimation,
+  force-keeping the final point off-stride, extra-column tolerance, empty
+  input), `TestPathNearestIndex` (exact match, off-path nearest, clamping
+  beyond either end), `TestPathClickTarget` (lookahead respected
+  forward/reverse, jitter bounded and perpendicular-only, clamping at both
+  ends, integer return type), `TestPathIsAtEnd` (both ends, in/out of
+  tolerance).
+- `test_interaction.py`: `TestTravelRoute` removed (along with its
+  `RA`/`RB`/`RC`/`TRAVEL_ROUTE` fixtures); new `TestTravelPath` mirrors its
+  shape — arrival short-circuit (both directions), click-while-travelling,
+  waypoint-index caching across calls, resampling once the index moves far
+  enough, cache reset on arrival, reverse direction, custom
+  `arrival_tolerance`, a player far off the path still gets a normal click
+  (no "not on route" special case — this is the behavioural difference
+  from `travel_route` that motivated keeping a dedicated test for it), and
+  a no-minimap-widget tick skips the click without raising.
+- `test_rod_fishing.py`: `TestResume`/`TestBanking`/`TestDropAndReturn`
+  updated to assert `r._travel_reverse` instead of `r._destination is
+  <Region>`; `TestTravelling` updated to drive `travel_path` against
+  `BANK_FISHING_PATH`'s actual start/end points, plus a new
+  reverse-arrival case. `TestRegionDefinitions` (polygon sanity) and
+  `TestSafetyExit` (`CONTAINER_REGION`/`tick()` override) are untouched.
+- Full suite: `python -m pytest scripts/gamebridge/tests/ -v` → **1335
+  passed, 10 skipped** (up from the prior session's 1312 passed).
+
+#### Open / next steps
+
+- The lookahead range (8–15 waypoints) and lateral jitter (±1 tile) are
+  starting guesses, not yet tuned against a live run — watch in-game
+  whether the clicks look natural or overshoot/undershoot corners on the
+  recorded path, and adjust `Path.click_target`'s defaults (or pass
+  explicit `lookahead_range`/`lateral_jitter` from `travel_path` if a
+  per-routine override turns out to be needed).
+- `BANK_FISHING_PATH` was built with the default `stride=1` (no
+  decimation) since the recording was already only ~78 points: if a future
+  recording is much denser (e.g. captured at full tick rate over a long
+  walk), `from_recording`'s `stride` param is there to thin it out.
+- If another routine wants this same recorded-path approach, `Path`/
+  `travel_path` are already generic — only a routine-specific
+  `Path.from_recording(...)` call (and a manually recorded walk) would be
+  needed, no further `interaction.py` changes.
+
+### 2026-06-28 (3) — Click as far as the minimap allows, with a game-view click for short hops
+
+#### Goal
+
+Feedback on the recorded-path travel above: it barely moved before
+re-clicking (the old fixed 8–15 *waypoint* lookahead, not a tile distance,
+under-shot badly on a dense recording) and always clicked the minimap even
+for a couple of tiles, which looks robotic. Wanted: click as far along the
+path as the minimap's current zoom actually allows (with randomness so it's
+not always the literal max), and for moves under ~10 tiles, click directly
+in the game viewport instead of opening the minimap.
+
+#### Findings
+
+- The minimap can be projected exactly from a world-tile delta
+  (`world_delta_to_minimap_offset`) because it's an **orthographic** top-down
+  view — a fixed pixels-per-tile scale (`camera.minimapZoom`) regardless of
+  pitch/distance. The 3D game viewport is a true **perspective** projection;
+  the GameBridge Java plugin only computes canvas/hull coordinates for
+  actual entities/objects (`Perspective.localToCanvas`/`getCanvasTilePoly`
+  on a real `LocalPoint`), never for an arbitrary empty tile. There is no
+  bridge capability to ask "what canvas pixel is world tile (x, y) at"
+  directly.
+- Asked the user how to handle this (Java-side tile-projection endpoint vs.
+  a Python-only approximation vs. skipping the game-view click). They
+  preferred reusing what's already there rather than touching the Java
+  plugin.
+- `fov.py` already has exactly the calibration needed for a Python-only
+  approximation: `_fov_params(pitch)` gives the camera's near/far forward
+  extents and half-widths (a trapezoid in camera-relative tile space),
+  already used by `entity_in_fov`/`decide_camera_action` to decide
+  rotate-vs-walk. That trapezoid *is* a perspective-foreshortening
+  calibration — inverting it (world point → normalized position within the
+  trapezoid → pixel position within the viewport's rectangle) gives an
+  approximate canvas projection without any new Java code. Good enough for
+  this use case: clicking a few pixels off on open ground still issues a
+  "Walk here" toward roughly the right tile.
+
+#### Decisions / changes
+
+- `regions.py`: `Path.click_target` reworked from a fixed waypoint-count
+  `lookahead_range` to a tile-distance-based `max_distance` — it walks
+  forward/backward accumulating real tile distance from the nearest
+  waypoint until `max_distance` is reached (or the path end is hit), then
+  picks a *randomised fraction* (`min_fraction` to 1.0, default 0.4–1.0) of
+  that reachable distance as the actual target, so it doesn't click the
+  exact farthest point every single time. Always advances at least one
+  waypoint even if `max_distance` doesn't reach the next one.
+- `fov.py`: new `world_point_to_viewport_canvas(game, target_x, target_y,
+  viewport_bounds)` — projects a world tile to an approximate viewport
+  canvas pixel by inverting `_fov_params`'s trapezoid (camera-relative
+  (right, forward) offset → normalized trapezoid position → pixel within
+  `viewport_bounds`). Returns `None` if the target falls outside the
+  calibrated trapezoid (too far/behind/to the side) — callers must fall
+  back to a minimap click in that case. Explicitly documented as an
+  approximation, not a true projection.
+- `widget_ids.py`: new `Viewport` class (`GROUP_RESIZABLE = 161`,
+  `GROUP_FIXED = 548`) — the game viewport's root container groups (see
+  `state/interfaces.py`'s existing mapping), used to find the viewport's
+  on-screen bounds the same way `Minimap.GROUP` is used for the minimap.
+- `controller.py`: extracted `click_walk_target(canvas_x, canvas_y,
+  game_state)` out of `click_minimap_entity` — the actual click + walk-settle
+  tracking (`_minimap_walk`/`_minimap_walk_in_progress`) is identical
+  whether the click landed on the minimap or directly in the game viewport,
+  so both now share one non-blocking "don't spam-click mid-walk" tracker.
+  `click_minimap_entity` is now a thin wrapper that resolves
+  `minimapX`/`minimapY` and defers to `click_walk_target`.
+- `interaction.py`:
+  - `_largest_widget(game, group_ids)` — shared helper for "the biggest
+    loaded interface widget across these group IDs", used by both the
+    minimap and viewport lookups.
+  - `_minimap_cap_tiles(game)` — converts the minimap's existing 90%-of-
+    radius pixel cap (`synthetic_minimap_entity`) into a tile distance via
+    the current `camera.minimapZoom`, used as `Path.click_target`'s
+    `max_distance` so the click reaches as far as the *current* zoom level
+    allows. Falls back to `PATH_DEFAULT_LOOKAHEAD_TILES = 12.0` without a
+    minimap/camera yet.
+  - `_viewport_click_canvas(game, target_x, target_y)` — finds the loaded
+    viewport widget (`Viewport.GROUP_RESIZABLE`/`GROUP_FIXED`) and defers to
+    `fov.world_point_to_viewport_canvas`; `None` without a viewport widget
+    or outside the FOV.
+  - `travel_path`: after resolving the cached click target, if it's closer
+    than `GAME_VIEW_CLICK_MAX_TILES = 10.0` tiles, tries
+    `_viewport_click_canvas` + `ctrl.click_walk_target` first; only falls
+    back to the existing `synthetic_minimap_entity` + `ctrl
+    .click_minimap_entity` flow if that returns `None` (no viewport widget,
+    or the point is outside the calibrated FOV) or the target is farther
+    than the threshold.
+
+#### Tests
+
+- `test_regions.py`: `TestPathClickTarget` rewritten for the
+  distance-based API — reaches the full `max_distance` with
+  `min_fraction=1.0` (forward/reverse), randomness sometimes picks less
+  than the max, always advances at least one waypoint even when
+  `max_distance` is tiny, jitter still bounded/perpendicular-only, clamping
+  at both ends, integer return type.
+- `test_fov.py`: new `TestWorldPointToViewportCanvas` — no camera, inside
+  FOV returns a point within `viewport_bounds`, too far ahead/behind/to the
+  side all return `None`, canvas x is centered for a point dead ahead and
+  larger for a point to the right, farther-ahead points render higher on
+  screen (smaller canvas y) than nearer ones.
+- `test_interaction.py`: new `TestTravelPathGameViewClick` (game-view click
+  used when close and facing the target; falls back to minimap when the
+  close target is outside the FOV, when no viewport widget is loaded, and
+  when the target is farther than the threshold even with a viewport
+  widget present) and `TestMinimapCapTiles` (tile radius from zoom, smaller
+  zoom value → larger radius, `None` without a widget/camera-zoom).
+  Existing `TestTravelPath` cases needed no changes — they have no
+  viewport widget in their fixtures, so `_viewport_click_canvas` always
+  returns `None` there and every call falls through to the pre-existing
+  minimap-click path unchanged.
+- `test_controller.py`: new `TestClickWalkTarget` — clicks at given canvas
+  coords and returns `True`, a second call while the walk is still settling
+  doesn't re-click, and `click_minimap_entity`/`click_walk_target` share the
+  same in-flight walk tracking (one doesn't double-click on top of the
+  other's walk).
+- Full suite: `python -m pytest scripts/gamebridge/tests/ -v` → **1356
+  passed, 10 skipped** (up from this session's starting 1335 passed).
+
+#### Open / next steps
+
+- `world_point_to_viewport_canvas`'s trapezoid-inversion is an
+  approximation, not a real perspective projection — it hasn't been
+  verified against the actual client. Watch in-game whether game-view
+  clicks land sensibly (especially near the FOV's edges) and reconsider a
+  proper Java-side tile-projection endpoint if it's consistently
+  inaccurate.
+- `GAME_VIEW_CLICK_MAX_TILES` (10) and `min_fraction` (0.4) are starting
+  guesses, same caveat as the lookahead/jitter constants from the previous
+  session — tune after watching a live run.
+- `PATH_DEFAULT_LOOKAHEAD_TILES` (12.0) only matters on the rare tick where
+  no minimap widget/camera data is available yet; not expected to be hit in
+  normal play.

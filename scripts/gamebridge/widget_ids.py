@@ -80,6 +80,32 @@ class Inventory:
     ITEMS = (149, 0x00)  # 0x0095_0000 — inventory container (dynamic children = item slots)
 
 
+class Minimap:
+    """
+    The minimap widget (used to derive its on-screen bounds for synthetic
+    waypoint clicks — see `InteractionRoutine.synthetic_minimap_entity`).
+
+    Java source: ``InterfaceID.Orbs``  (group 160 = 0x00a0)
+    Exposed by GameBridge via ``exposeInterfaces`` (default on).
+    """
+    GROUP = 160
+
+
+class Viewport:
+    """
+    The 3D game viewport root container — used to derive its on-screen
+    bounds for approximate short-distance "click in the game view" travel
+    (see `InteractionRoutine.travel_path` / `fov.world_point_to_viewport_canvas`).
+
+    Java source: the `resizable_viewport`/`fixed_viewport` root containers
+    (see `state/interfaces.py`). Only one is loaded at a time, depending on
+    the client's fixed/resizable layout mode.
+    Exposed by GameBridge via `exposeInterfaces` (default on).
+    """
+    GROUP_RESIZABLE = 161
+    GROUP_FIXED = 548
+
+
 class Smithing:
     """
     The smithing production dialog ("What would you like to make?"), shown when clicking

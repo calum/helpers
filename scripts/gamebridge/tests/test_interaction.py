@@ -14,7 +14,10 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock
 
+import pytest
+
 from scripts.gamebridge.input.keyboard import Key
+from scripts.gamebridge.regions import Path, Region
 from scripts.gamebridge.routines.base import initial_state
 from scripts.gamebridge.routines.interaction import DropMode, InteractionRoutine, MenuClick, OCCLUSION_NUDGE_YAW
 from scripts.gamebridge.state.game_state import GameState
@@ -967,3 +970,277 @@ class TestDepositInventory:
         result = _routine().deposit_inventory(game, ctrl)
         ctrl.click_widget.assert_not_called()
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# synthetic_minimap_entity — minimap waypoint geometry
+# ---------------------------------------------------------------------------
+
+MINIMAP_WIDGET = {
+    "groupId": 160, "childId": 0, "itemId": -1, "quantity": 0,
+    "bounds": {"x": 550, "y": 30, "width": 150, "height": 150}, "text": "",
+}
+
+
+def _minimap_game(player_x: int = 3100, player_y: int = 3440, with_widget: bool = True) -> GameState:
+    game = _game_state(player_x=player_x, player_y=player_y)
+    game.interfaces = [MINIMAP_WIDGET] if with_widget else []
+    game.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 4.0}
+    return game
+
+
+class TestSyntheticMinimapEntity:
+    def test_returns_none_without_minimap_widget(self):
+        game = _minimap_game(with_widget=False)
+        assert _routine().synthetic_minimap_entity(game, 3100, 3460) is None
+
+    def test_returns_none_without_camera(self):
+        game = _minimap_game()
+        game.camera = {}
+        assert _routine().synthetic_minimap_entity(game, 3100, 3460) is None
+
+    def test_target_directly_north_has_lower_canvas_y(self):
+        game = _minimap_game(player_x=3100, player_y=3440)
+        entity = _routine().synthetic_minimap_entity(game, 3100, 3460)
+        b = MINIMAP_WIDGET["bounds"]
+        cy = b["y"] + b["height"] / 2
+        assert entity is not None
+        assert entity["minimapY"] < cy
+
+    def test_very_distant_target_is_clamped_within_radius(self):
+        game = _minimap_game(player_x=3100, player_y=3200)
+        entity = _routine().synthetic_minimap_entity(game, 3100, 4200)
+        b = MINIMAP_WIDGET["bounds"]
+        cx, cy = b["x"] + b["width"] / 2, b["y"] + b["height"] / 2
+        half_extent = min(b["width"], b["height"]) / 2
+        dist = ((entity["minimapX"] - cx) ** 2 + (entity["minimapY"] - cy) ** 2) ** 0.5
+        assert dist <= half_extent + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# travel_path — step toward one end of a recorded Path
+# ---------------------------------------------------------------------------
+
+# A straight-line path along x at y=0, waypoints 0..30 — long enough that a
+# single PATH_RESAMPLE_WAYPOINTS-sized step doesn't immediately reach the end.
+STRAIGHT_PATH = Path("straight", tuple((float(i), 0.0) for i in range(31)))
+
+# A game viewport widget — without one in a test's `game.interfaces`,
+# `_viewport_click_canvas` always returns None, so travel_path falls back to
+# a minimap click regardless of distance (see TestTravelPathGameViewClick
+# below for the game-view branch itself).
+RESIZABLE_VIEWPORT_WIDGET = {
+    "groupId": 161, "childId": 0, "itemId": -1, "quantity": 0,
+    "bounds": {"x": 0, "y": 0, "width": 700, "height": 500}, "text": "",
+}
+
+
+def _travel_game(player_x: float, player_y: float, tick: int = 10) -> GameState:
+    game = _game_state(player_x=int(player_x), player_y=int(player_y), tick=tick)
+    game.player["worldX"], game.player["worldY"] = player_x, player_y
+    game.interfaces = [MINIMAP_WIDGET]
+    game.camera = {"yaw": 0, "yawTarget": 0, "pitch": 256, "minimapZoom": 4.0}
+    return game
+
+
+class TestTravelPath:
+    def test_returns_true_immediately_when_already_at_destination(self):
+        game = _travel_game(30, 0)
+        ctrl = MagicMock()
+        assert _routine().travel_path(game, ctrl, STRAIGHT_PATH) is True
+        ctrl.click_minimap_entity.assert_not_called()
+
+    def test_clicks_toward_destination_when_not_yet_arrived(self):
+        game = _travel_game(0, 0)
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, STRAIGHT_PATH)
+        assert result is False
+        ctrl.click_minimap_entity.assert_called_once()
+
+    def test_caches_target_across_calls_without_enough_movement(self):
+        """While the player's nearest waypoint hasn't moved far enough,
+        repeated calls must target the same cached point rather than
+        resampling a new random waypoint every tick."""
+        game = _travel_game(0, 0)
+        ctrl = MagicMock()
+        r = _routine()
+        r.travel_path(game, ctrl, STRAIGHT_PATH)
+        first_target = ctrl.click_minimap_entity.call_args.args[0]
+        r.travel_path(game, ctrl, STRAIGHT_PATH)
+        second_target = ctrl.click_minimap_entity.call_args.args[0]
+        assert first_target == second_target
+
+    def test_resamples_after_nearest_waypoint_moves_far_enough(self):
+        ctrl = MagicMock()
+        r = _routine()
+        r.travel_path(_travel_game(0, 0), ctrl, STRAIGHT_PATH)
+        cached_index_near_start = r._path_cached_index
+
+        r.travel_path(_travel_game(20, 0), ctrl, STRAIGHT_PATH)
+        cached_index_after_move = r._path_cached_index
+
+        assert cached_index_near_start != cached_index_after_move
+
+    def test_resets_cache_on_arrival(self):
+        game = _travel_game(0, 0)
+        ctrl = MagicMock()
+        r = _routine()
+        r.travel_path(game, ctrl, STRAIGHT_PATH)
+        assert r._path_cached_index is not None
+
+        game_arrived = _travel_game(30, 0)
+        r.travel_path(game_arrived, ctrl, STRAIGHT_PATH)
+        assert r._path_cached_index is None
+
+    def test_travels_in_reverse_direction(self):
+        game = _travel_game(30, 0)  # at the forward end, heading back to the start
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, STRAIGHT_PATH, reverse=True)
+        assert result is False
+        ctrl.click_minimap_entity.assert_called_once()
+
+    def test_arrival_uses_reverse_end(self):
+        """With reverse=True, arrival is checked against the *start* of the
+        path, not the end."""
+        game = _travel_game(0, 0)
+        ctrl = MagicMock()
+        assert _routine().travel_path(game, ctrl, STRAIGHT_PATH, reverse=True) is True
+        ctrl.click_minimap_entity.assert_not_called()
+
+    def test_respects_custom_arrival_tolerance(self):
+        game = _travel_game(28, 0)
+        ctrl = MagicMock()
+        assert _routine().travel_path(game, ctrl, STRAIGHT_PATH, arrival_tolerance=5) is True
+
+    def test_player_far_off_path_still_clicks_toward_nearest_waypoint(self):
+        """Unlike travel_route's RegionRoute.locate, Path.nearest_index always
+        resolves to *some* waypoint — a player far from the path is handled
+        like any other in-progress leg, not a special "off route" case."""
+        game = _travel_game(0, 1000)
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, STRAIGHT_PATH)
+        assert result is False
+        ctrl.click_minimap_entity.assert_called_once()
+
+    def test_no_click_when_no_minimap_widget_available(self):
+        """synthetic_minimap_entity returns None without a minimap widget —
+        travel_path must not crash and must skip the click."""
+        game = _travel_game(0, 0)
+        game.interfaces = []
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, STRAIGHT_PATH)
+        assert result is False
+        ctrl.click_minimap_entity.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# travel_path — game-view click for short (<GAME_VIEW_CLICK_MAX_TILES) hops
+# ---------------------------------------------------------------------------
+
+# Short enough that click_target's randomised distance (40%-100% of however
+# far the minimap could reach) always lands under GAME_VIEW_CLICK_MAX_TILES
+# (10), and — facing East (yaw=1536, forward=+X) — always within the
+# pitch=256 FOV's ≈5.1 tile forward extent too.
+NEAR_PATH = Path("near", tuple((float(i), 0.0) for i in range(5)))  # 0..4
+
+# Long enough that the minimum randomised step (round(0.4*9)=4 tiles) still
+# keeps the whole reachable range under GAME_VIEW_CLICK_MAX_TILES, while
+# every point in that range sits behind a West-facing camera (forward=-X),
+# i.e. always outside the FOV trapezoid.
+FAR_SIDE_PATH = Path("far_side", tuple((float(i), 0.0) for i in range(10)))  # 0..9
+
+
+def _game_view_game(player_x: float, player_y: float, yaw: int, tick: int = 10) -> GameState:
+    game = _game_state(player_x=int(player_x), player_y=int(player_y), tick=tick)
+    game.player["worldX"], game.player["worldY"] = player_x, player_y
+    game.interfaces = [MINIMAP_WIDGET, RESIZABLE_VIEWPORT_WIDGET]
+    game.camera = {"yaw": yaw, "yawTarget": yaw, "pitch": 256, "minimapZoom": 4.0}
+    return game
+
+
+class TestTravelPathGameViewClick:
+    def test_clicks_in_viewport_instead_of_minimap_when_close_and_in_fov(self):
+        # yaw=1536 (East) faces directly down the path (+X) — well within FOV.
+        game = _game_view_game(0, 0, yaw=1536)
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, NEAR_PATH)
+        assert result is False
+        ctrl.click_walk_target.assert_called_once()
+        ctrl.click_minimap_entity.assert_not_called()
+
+    def test_falls_back_to_minimap_when_close_target_is_outside_fov(self):
+        # yaw=512 (West) faces away from the path — every reachable waypoint
+        # sits behind the camera, outside the calibrated FOV trapezoid.
+        game = _game_view_game(0, 0, yaw=512)
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, FAR_SIDE_PATH)
+        assert result is False
+        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_minimap_entity.assert_called_once()
+
+    def test_falls_back_to_minimap_without_viewport_widget(self):
+        game = _game_view_game(0, 0, yaw=1536)
+        game.interfaces = [MINIMAP_WIDGET]
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, NEAR_PATH)
+        assert result is False
+        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_minimap_entity.assert_called_once()
+
+    def test_far_target_uses_minimap_even_with_viewport_widget_present(self):
+        # STRAIGHT_PATH (0..30) easily clicks beyond GAME_VIEW_CLICK_MAX_TILES.
+        game = _game_view_game(0, 0, yaw=1536)
+        ctrl = MagicMock()
+        result = _routine().travel_path(game, ctrl, STRAIGHT_PATH)
+        assert result is False
+        ctrl.click_minimap_entity.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _minimap_cap_tiles — reachable tile radius for a single minimap click
+# ---------------------------------------------------------------------------
+
+class TestMinimapCapTiles:
+    def test_computes_tile_radius_from_zoom(self):
+        game = _minimap_game()
+        # bounds 150x150 -> half_extent=75, cap=0.9*75=67.5px; zoom=4.0 -> 16.875 tiles
+        assert _routine()._minimap_cap_tiles(game) == pytest.approx(16.875)
+
+    def test_smaller_zoom_value_means_larger_tile_radius(self):
+        game = _minimap_game()
+        game.camera["minimapZoom"] = 2.0
+        assert _routine()._minimap_cap_tiles(game) == pytest.approx(33.75)
+
+    def test_none_without_minimap_widget(self):
+        game = _minimap_game(with_widget=False)
+        assert _routine()._minimap_cap_tiles(game) is None
+
+    def test_none_without_camera_zoom(self):
+        game = _minimap_game()
+        game.camera = {}
+        assert _routine()._minimap_cap_tiles(game) is None
+
+
+# ---------------------------------------------------------------------------
+# outside_container — safety-exit check used by routines with a CONTAINER_REGION
+# ---------------------------------------------------------------------------
+
+CONTAINER = Region("CONTAINER", ((0, 0), (100, 0), (100, 100), (0, 100)))
+
+
+class TestOutsideContainer:
+    def test_false_when_inside(self):
+        game = _game_state(player_x=50, player_y=50)
+        assert _routine().outside_container(game, CONTAINER) is False
+
+    def test_true_when_outside(self):
+        game = _game_state(player_x=1000, player_y=1000)
+        assert _routine().outside_container(game, CONTAINER) is True
+
+    def test_false_before_login(self):
+        """game.player is empty before the first tick message arrives —
+        player_pos defaults to (0, 0), which must not trip the safety exit
+        before a real position is known."""
+        game = _game_state()
+        game.player = {}
+        assert _routine().outside_container(game, CONTAINER) is False

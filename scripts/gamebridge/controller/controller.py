@@ -795,11 +795,25 @@ class GameController:
                 entity.get("name", "?"),
             )
             return False
-        self.click_at(mx, my)
         log.debug(
             "Clicked minimap for '%s' at canvas (%d, %d)",
             entity.get("name", "?"), mx, my,
         )
+        return self.click_walk_target(mx, my, game_state)
+
+    def click_walk_target(self, canvas_x: float, canvas_y: float, game_state) -> bool:
+        """Click an absolute canvas position to start a "walk here" — either
+        on the minimap or directly in the game viewport. Shares the same
+        non-blocking walk-settle tracking as `click_minimap_entity` (see its
+        docstring) so a viewport click and a minimap click never spam-click
+        on top of each other's in-flight walk.
+
+        Returns True (a click was issued, or a walk is already being
+        tracked — caller should wait for a future tick).
+        """
+        if self._minimap_walk_in_progress(game_state):
+            return True
+        self.click_at(canvas_x, canvas_y)
         self._minimap_walk = {"clicked_tick": game_state.tick, "idle_since_tick": None}
         return True
 

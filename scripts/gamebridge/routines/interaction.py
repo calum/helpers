@@ -26,12 +26,17 @@ for the game to be ready. Subclass it instead of `Routine` to use them.
 from __future__ import annotations
 
 import logging
+import math
+import random
 from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
 
 from .base import Routine
+from ..fov import world_point_to_viewport_canvas
 from ..input.keyboard import Key
-from ..widget_ids import Bankmain, Inventory
+from ..minimap import world_delta_to_minimap_offset
+from ..regions import Path, Region
+from ..widget_ids import Bankmain, Inventory, Minimap, Viewport
 
 if TYPE_CHECKING:
     from ..state.game_state import GameState
@@ -81,6 +86,10 @@ class InteractionRoutine(Routine):
         # Banking helpers — see open_bank / deposit_inventory
         self._bank_clicked_tick: int = -99
         self._deposit_clicked_tick: int = -99
+        # Recorded-path travel — see travel_path
+        self._region_rng = random.Random()
+        self._path_cached_index: Optional[int] = None
+        self._path_cached_target: Optional[tuple] = None
 
     # ------------------------------------------------------------------
     # Approach
@@ -514,3 +523,182 @@ class InteractionRoutine(Routine):
             self._deposit_clicked_tick = game.tick
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Recorded-path travel
+    # ------------------------------------------------------------------
+
+    def _largest_widget(self, game: "GameState", group_ids: tuple) -> Optional[dict]:
+        """The largest-area interface widget across `group_ids`, or None if
+        none of them are currently loaded. Used to find the minimap's and
+        the game viewport's on-screen bounds."""
+        candidates = [w for gid in group_ids for w in game.interfaces_for_group(gid)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda w: w["bounds"]["width"] * w["bounds"]["height"])
+
+    def synthetic_minimap_entity(
+        self,
+        game: "GameState",
+        target_x: float,
+        target_y: float,
+    ) -> Optional[dict]:
+        """Build a fake entity dict with minimapX/minimapY pointing at the
+        given world tile.
+
+        Uses camera.yawTarget/minimapZoom (see world_delta_to_minimap_offset)
+        so the result stays correct regardless of compass rotation or
+        minimap zoom level — unlike a fixed pixels-per-tile/north-up
+        assumption, which only happens to be correct when the compass points
+        north. The result is clamped to 90% of the minimap circle's radius
+        so the click stays within the interactive area. Returns None if
+        there's no minimap widget or camera data to work from.
+        """
+        widget = self._largest_widget(game, (Minimap.GROUP,))
+        if widget is None:
+            return None
+
+        camera = game.camera
+        if not camera:
+            return None
+
+        b = widget["bounds"]
+        cx = b["x"] + b["width"] / 2
+        cy = b["y"] + b["height"] / 2
+        half_extent = min(b["width"], b["height"]) / 2
+
+        px, py = game.player_pos
+        dx, dy = world_delta_to_minimap_offset(
+            target_x - px, target_y - py,
+            camera["yawTarget"], camera["minimapZoom"],
+        )
+        mx, my = cx + dx, cy + dy
+
+        dist = math.sqrt(dx * dx + dy * dy)
+        cap = half_extent * 0.9
+        if dist > cap:
+            scale = cap / dist
+            mx = cx + dx * scale
+            my = cy + dy * scale
+
+        return {"name": "waypoint", "minimapX": mx, "minimapY": my}
+
+    def _minimap_cap_tiles(self, game: "GameState") -> Optional[float]:
+        """How far (in tiles) a single minimap click can currently reach —
+        the same 90%-of-radius cap `synthetic_minimap_entity` clamps to,
+        converted from canvas pixels to tiles via the current minimap zoom.
+        Returns None without a minimap widget/camera to compute it from."""
+        widget = self._largest_widget(game, (Minimap.GROUP,))
+        camera = game.camera
+        if widget is None or not camera or not camera.get("minimapZoom"):
+            return None
+        b = widget["bounds"]
+        half_extent = min(b["width"], b["height"]) / 2
+        return (half_extent * 0.9) / camera["minimapZoom"]
+
+    def _viewport_click_canvas(
+        self,
+        game: "GameState",
+        target_x: float,
+        target_y: float,
+    ) -> Optional[tuple]:
+        """Canvas (x, y) for clicking `target_x`/`target_y` directly in the
+        3D game viewport, or None if there's no viewport widget or the point
+        falls outside the approximated FOV trapezoid — see
+        `fov.world_point_to_viewport_canvas`. Callers should fall back to a
+        minimap click when this returns None."""
+        widget = self._largest_widget(game, (Viewport.GROUP_RESIZABLE, Viewport.GROUP_FIXED))
+        if widget is None:
+            return None
+        return world_point_to_viewport_canvas(game, target_x, target_y, widget["bounds"])
+
+    # Re-pick the cached click target once the player's nearest waypoint
+    # index has moved this many waypoints, instead of every tick.
+    PATH_RESAMPLE_WAYPOINTS = 3
+
+    # Fallback reach (tiles) for Path.click_target when the minimap's actual
+    # reach can't be computed (no minimap widget/camera yet this tick).
+    PATH_DEFAULT_LOOKAHEAD_TILES = 12.0
+
+    # Below this distance, click the destination tile directly in the game
+    # viewport instead of opening a minimap walk — a real player wouldn't
+    # reach for the minimap for a couple of steps. See
+    # `fov.world_point_to_viewport_canvas`.
+    GAME_VIEW_CLICK_MAX_TILES = 10.0
+
+    def travel_path(
+        self,
+        game: "GameState",
+        ctrl: "GameController",
+        path: Path,
+        reverse: bool = False,
+        arrival_tolerance: int = 3,
+    ) -> bool:
+        """
+        Step the player one tick closer to one end of `path` — the start if
+        `reverse`, otherwise the end.
+
+        Returns True once the player is within `arrival_tolerance` tiles of
+        that end (the caller should transition out of the travelling
+        state). Returns False while still travelling — call again next tick.
+
+        Each call locates the path waypoint nearest the player's current
+        position and clicks a randomised point as far along the path toward
+        the destination end as a single minimap click can currently reach
+        (see `Path.click_target`/`_minimap_cap_tiles`) — clicking as far as
+        the zoom level allows, rather than a fixed number of waypoints, so
+        the route is covered in as few, most-natural-looking clicks as
+        possible. The clicked target is cached and only re-picked once the
+        nearest-waypoint index has moved by `PATH_RESAMPLE_WAYPOINTS`, so a
+        single leg clicks one consistent point rather than jittering to a
+        new random waypoint every tick.
+
+        If the cached target ends up less than `GAME_VIEW_CLICK_MAX_TILES`
+        away, the click is made directly in the game viewport instead of on
+        the minimap — a real player wouldn't open the minimap to take a
+        couple of steps — falling back to the minimap if the viewport
+        projection isn't available (see `_viewport_click_canvas`).
+
+        Unlike the old region-chain `travel_route`, `path.nearest_index`
+        always resolves to *some* waypoint — there's no "not on the route"
+        case to special-case here; callers that need a safety exit for a
+        player wandering far off the recorded path should pair this with
+        `outside_container`, same as before.
+        """
+        px, py = game.player_pos
+        if path.is_at_end(px, py, reverse=reverse, tolerance_tiles=arrival_tolerance):
+            self._path_cached_index = None
+            self._path_cached_target = None
+            return True
+
+        idx = path.nearest_index(px, py)
+        if (self._path_cached_index is None
+                or abs(idx - self._path_cached_index) >= self.PATH_RESAMPLE_WAYPOINTS):
+            max_distance = self._minimap_cap_tiles(game) or self.PATH_DEFAULT_LOOKAHEAD_TILES
+            self._path_cached_target = path.click_target(
+                (px, py), self._region_rng, max_distance=max_distance, reverse=reverse,
+            )
+            self._path_cached_index = idx
+
+        tx, ty = self._path_cached_target
+
+        if math.hypot(tx - px, ty - py) < self.GAME_VIEW_CLICK_MAX_TILES:
+            canvas = self._viewport_click_canvas(game, tx, ty)
+            if canvas is not None:
+                ctrl.click_walk_target(canvas[0], canvas[1], game)
+                return False
+
+        target = self.synthetic_minimap_entity(game, tx, ty)
+        if target is not None:
+            ctrl.click_minimap_entity(target, game)
+        return False
+
+    def outside_container(self, game: "GameState", container: Region) -> bool:
+        """True if the player's current world position is outside
+        `container`. Returns False before the first real position arrives
+        (i.e. `game.player` is still empty) so a routine's safety exit
+        doesn't trip on the (0, 0) default before login."""
+        if not game.player:
+            return False
+        px, py = game.player_pos
+        return not container.contains(px, py)

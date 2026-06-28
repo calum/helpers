@@ -126,6 +126,72 @@ def entity_in_fov(entity: dict, game: "GameState") -> bool:
     return _point_in_polygon(entity["worldX"], entity["worldY"], polygon)
 
 
+def world_point_to_viewport_canvas(
+    game: "GameState",
+    target_x: float,
+    target_y: float,
+    viewport_bounds: dict,
+) -> "tuple[float, float] | None":
+    """
+    Approximate the canvas pixel a world tile would render at inside the 3D
+    game viewport, by inverting the same calibrated FOV trapezoid used by
+    `entity_in_fov`/`decide_camera_action`.
+
+    The minimap can be projected exactly (`world_delta_to_minimap_offset`)
+    because it's an orthographic top-down view — a fixed pixels-per-tile
+    scale. The game viewport is a true 3D perspective projection (distance
+    foreshortens both width and apparent forward position), which the
+    GameBridge plugin only computes for actual entities/objects via
+    `Perspective.localToCanvas`, not for arbitrary empty tiles. This maps the
+    target's camera-relative (right, forward) tile offset onto the viewport
+    rectangle using the same near/far trapezoid extents `fov_polygon_world`
+    is calibrated with — i.e. it bilinearly interpolates "where in the FOV
+    trapezoid is this point" onto "where in the viewport rectangle is that".
+
+    This is an approximation, not a true perspective projection, but for the
+    short (<10 tile), mostly-flat-ground clicks it's intended for, landing a
+    few pixels off the exact tile is harmless — clicking open ground anywhere
+    near the intended tile still issues a "Walk here" toward roughly the
+    right spot.
+
+    Returns `None` if there's no camera, or the target falls outside the
+    calibrated trapezoid (too far/behind/to the side to estimate reliably) —
+    callers should fall back to a minimap click in that case.
+    """
+    camera = game.camera
+    if not camera:
+        return None
+
+    pitch = camera.get("pitch", 300)
+    yaw = camera.get("yaw", 0)
+    px, py = game.player_pos
+
+    θ = yaw / 2048.0 * 2 * math.pi
+    fwd_x, fwd_y = -math.sin(θ), math.cos(θ)
+    rgt_x, rgt_y = math.cos(θ), math.sin(θ)
+    dx, dy = target_x - px, target_y - py
+    r = dx * rgt_x + dy * rgt_y
+    f = dx * fwd_x + dy * fwd_y
+
+    back_fwd, front_fwd, back_half_w, front_half_w = _fov_params(pitch)
+    if f < back_fwd or f > front_fwd or front_fwd == back_fwd:
+        return None
+
+    t = (f - back_fwd) / (front_fwd - back_fwd)
+    half_w = back_half_w + t * (front_half_w - back_half_w)
+    if half_w <= 0:
+        return None
+
+    s = r / half_w
+    if abs(s) > 1.0:
+        return None
+
+    b = viewport_bounds
+    canvas_x = b["x"] + (s * 0.5 + 0.5) * b["width"]
+    canvas_y = b["y"] + (1.0 - t) * b["height"]
+    return canvas_x, canvas_y
+
+
 def decide_camera_action(entity: dict, game: "GameState") -> str:
     """
     Return 'on_screen', 'rotate', or 'walk'.

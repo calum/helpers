@@ -17,6 +17,7 @@ from scripts.gamebridge.fov import (
     entity_in_fov,
     fov_polygon_world,
     decide_camera_action,
+    world_point_to_viewport_canvas,
     _CAL_PITCH_LOW,
     _CAL_PITCH_HIGH,
     _CAL_BACK_FWD,
@@ -27,6 +28,8 @@ from scripts.gamebridge.fov import (
     _CAL_FRONT_W_LOW,
     _CAL_FRONT_W_HIGH,
 )
+
+VIEWPORT_BOUNDS = {"x": 0, "y": 0, "width": 700, "height": 500}
 
 PLAYER_X, PLAYER_Y = 3200, 3200
 
@@ -218,6 +221,66 @@ class TestEntityInFov:
         g = _game(yaw=1536, pitch=300)
         entity = {"worldX": PLAYER_X - 4, "worldY": PLAYER_Y}
         assert entity_in_fov(entity, g) is False
+
+
+# ---------------------------------------------------------------------------
+# world_point_to_viewport_canvas — approximate game-view click projection
+#
+# Same pitch=300 calibration as TestEntityInFov: front≈3.66 tiles,
+# back=-3 tiles, back_half_w≈4.78, front_half_w≈6.78.
+# ---------------------------------------------------------------------------
+
+class TestWorldPointToViewportCanvas:
+    def test_no_camera_returns_none(self):
+        g = GameState()
+        g.update(_base_msg(player=_player()))
+        result = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 2, VIEWPORT_BOUNDS)
+        assert result is None
+
+    def test_target_directly_ahead_and_inside_fov_returns_canvas_point(self):
+        g = _game(yaw=0, pitch=300)
+        result = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 2, VIEWPORT_BOUNDS)
+        assert result is not None
+        cx, cy = result
+        assert VIEWPORT_BOUNDS["x"] <= cx <= VIEWPORT_BOUNDS["x"] + VIEWPORT_BOUNDS["width"]
+        assert VIEWPORT_BOUNDS["y"] <= cy <= VIEWPORT_BOUNDS["y"] + VIEWPORT_BOUNDS["height"]
+
+    def test_target_too_far_ahead_returns_none(self):
+        # 10 tiles North — beyond the ≈3.66 tile front boundary at pitch=300
+        g = _game(yaw=0, pitch=300)
+        result = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 10, VIEWPORT_BOUNDS)
+        assert result is None
+
+    def test_target_behind_returns_none(self):
+        # 4 tiles South — beyond the -3 tile back boundary
+        g = _game(yaw=0, pitch=300)
+        result = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y - 4, VIEWPORT_BOUNDS)
+        assert result is None
+
+    def test_target_far_to_side_returns_none(self):
+        g = _game(yaw=0, pitch=300)
+        result = world_point_to_viewport_canvas(g, PLAYER_X + 10, PLAYER_Y, VIEWPORT_BOUNDS)
+        assert result is None
+
+    def test_target_directly_ahead_centers_canvas_x(self):
+        g = _game(yaw=0, pitch=300)
+        cx, _ = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 2, VIEWPORT_BOUNDS)
+        center_x = VIEWPORT_BOUNDS["x"] + VIEWPORT_BOUNDS["width"] / 2
+        assert math.isclose(cx, center_x, abs_tol=1e-6)
+
+    def test_target_to_the_right_has_larger_canvas_x(self):
+        # Facing North: right = +X
+        g = _game(yaw=0, pitch=300)
+        cx_center, _ = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 2, VIEWPORT_BOUNDS)
+        cx_right, _ = world_point_to_viewport_canvas(g, PLAYER_X + 2, PLAYER_Y + 2, VIEWPORT_BOUNDS)
+        assert cx_right > cx_center
+
+    def test_farther_ahead_target_has_smaller_canvas_y(self):
+        """Farther-away points render higher on screen (smaller canvas y)."""
+        g = _game(yaw=0, pitch=300)
+        _, cy_near = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 1, VIEWPORT_BOUNDS)
+        _, cy_far = world_point_to_viewport_canvas(g, PLAYER_X, PLAYER_Y + 3, VIEWPORT_BOUNDS)
+        assert cy_far < cy_near
 
 
 # ---------------------------------------------------------------------------

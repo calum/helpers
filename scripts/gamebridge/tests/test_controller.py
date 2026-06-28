@@ -1296,6 +1296,52 @@ class TestClickMinimapEntity:
 
 
 # ---------------------------------------------------------------------------
+# click_walk_target — generic walk-click primitive shared by
+# click_minimap_entity and game-viewport "click in the game view" travel.
+# ---------------------------------------------------------------------------
+
+@patch("scripts.gamebridge.controller.controller._settings")
+@patch("scripts.gamebridge.controller.controller.mouse_input")
+class TestClickWalkTarget:
+    def _ctrl(self, mock_settings, window=WINDOW) -> GameController:
+        mock_settings.get.side_effect = lambda k: 0 if k == "hull_y_offset" else "RuneLite"
+        ctrl = GameController(human=_human())
+        ctrl._window = window
+        return ctrl
+
+    def test_clicks_at_given_canvas_coords_and_returns_true(self, mock_mouse, mock_settings):
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        ctrl = self._ctrl(mock_settings)
+        result = ctrl.click_walk_target(350, 250, _WalkGameState(tick=10))
+        assert result is True
+        mock_mouse.click_left.assert_called_once()
+
+    def test_tracks_walk_so_a_second_call_does_not_reclick(self, mock_mouse, mock_settings):
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        ctrl = self._ctrl(mock_settings)
+        game = _WalkGameState(tick=10)
+        ctrl.click_walk_target(350, 250, game)
+        mock_mouse.click_left.reset_mock()
+        result = ctrl.click_walk_target(360, 260, game)
+        assert result is True
+        mock_mouse.click_left.assert_not_called()
+
+    def test_click_minimap_entity_and_click_walk_target_share_walk_tracking(self, mock_mouse, mock_settings):
+        """A minimap click followed by a viewport click (or vice versa) must
+        not double-click — both go through the same in-flight walk tracking,
+        since both start the same kind of multi-tick walk."""
+        mock_mouse.get_position.return_value = (500.0, 400.0)
+        ctrl = self._ctrl(mock_settings)
+        game = _WalkGameState(tick=10)
+        entity = {"name": "Iron rocks", "minimapX": 650, "minimapY": 90}
+        ctrl.click_minimap_entity(entity, game)
+        mock_mouse.click_left.reset_mock()
+        result = ctrl.click_walk_target(350, 250, game)
+        assert result is True
+        mock_mouse.click_left.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # click_minimap_entity — non-blocking walk tracking (prevents spam-clicking)
 # ---------------------------------------------------------------------------
 
