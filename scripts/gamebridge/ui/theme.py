@@ -1,9 +1,12 @@
 """Color palette, global stylesheet, and small display helpers."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from PyQt6.QtGui import QColor
+
+if TYPE_CHECKING:
+    from ..human.mood import MoodProfile
 
 
 class C:
@@ -248,6 +251,16 @@ def _fatigue_rate_label(rate_per_min: Optional[float]) -> str:
         return "Fatigue trend: steady"
     sign = "+" if rate_per_min > 0 else ""
     return f"Fatigue trend: {sign}{rate_per_min:.1f}%/min"
+
+
+def _mood_label(profile: Optional["MoodProfile"]) -> str:
+    """Format a MoodProfile for display in the routine card."""
+    if profile is None:
+        return "Mood: —"
+    label = f"Mood: {profile.mood.value.title()}"
+    if profile.cold_hands:
+        label += " (cold hands)"
+    return label
 
 
 def _yaw_dir(yaw: int) -> str:

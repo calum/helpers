@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from scripts.gamebridge.human.mood import MOOD_PROFILES, MoodProfile, MoodType
 from scripts.gamebridge.ui.theme import (
-    _break_label, _fatigue_rate_label, _fatigue_rate_per_min,
+    _break_label, _fatigue_rate_label, _fatigue_rate_per_min, _mood_label,
 )
 
 
@@ -80,3 +81,28 @@ def test_fatigue_rate_label_positive_has_plus_sign():
 
 def test_fatigue_rate_label_negative_has_minus_sign():
     assert _fatigue_rate_label(-1.25) == "Fatigue trend: -1.2%/min"
+
+
+# ------------------------------------------------------------------ #
+# _mood_label
+# ------------------------------------------------------------------ #
+
+def test_mood_label_none_profile():
+    assert _mood_label(None) == "Mood: —"
+
+
+def test_mood_label_formats_mood_name():
+    assert _mood_label(MOOD_PROFILES[MoodType.HAPPY]) == "Mood: Happy"
+
+
+def test_mood_label_appends_cold_hands_suffix():
+    profile = MoodProfile(
+        mood=MoodType.SAD,
+        reaction_multiplier=1.25,
+        click_error_multiplier=1.15,
+        fatigue_rate_multiplier=1.30,
+        break_frequency_multiplier=1.50,
+        cold_hands=True,
+        cold_hands_duration_s=900.0,
+    )
+    assert _mood_label(profile) == "Mood: Sad (cold hands)"

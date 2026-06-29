@@ -145,7 +145,7 @@ class HumanEmulator:
         adjusts reaction_mean and click_error_px so all subsequent sampling
         reflects the player's emotional state for the day.
 
-        TODO: Add mood to the dashboard and allow the user to tweak it manually (e.g. "I'm tired today, make me slower").
+        TODO: Add mood to the dashboard
         """
         self.reaction_mean *= profile.reaction_multiplier
         self.click_error_px *= profile.click_error_multiplier

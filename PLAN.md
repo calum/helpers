@@ -4,6 +4,101 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-29 (2) — Fix: Brutus dodge-tile `KeyError` crash mid-telegraph; recenter when arena corners drop out; tighten healing
+
+### Goal
+
+User supplied logs from a live session: 2 kills, then a death on the 3rd.
+The log showed two `KeyError: 'sw'`/`KeyError: 'se'` exceptions inside
+`fighting()` at the exact moment a special-attack telegraph was detected.
+Asked to analyse the logs and improve survivability; also discussed (and
+redirected away from) a "preemptively walk to the safe corner while still
+attacking" idea.
+
+### Findings / Decisions
+
+- **Root cause of the crash, confirmed**: `self._dodge_tile_key` is locked
+  once per telegraph episode, but `_safe_tiles()` recomputes the 4 geometric
+  corners every tick from Brutus's *live* hull position and re-filters them
+  against the arena rectangle locked at fight start. If the live position
+  drifts enough between ticks that a corner valid when the key was first
+  locked falls out of the locked rectangle on a later tick, `safe_tiles` no
+  longer contains that key, and the old
+  `target_tile = safe_tiles[self._dodge_tile_key]` raised `KeyError`. Per
+  `base.py`'s `Routine.tick()`, that exception is caught and logged but the
+  rest of the tick's logic (the dodge click, the re-engage check, the heal
+  check) never runs — so each crash was a tick where a telegraphed special
+  went completely unanswered. This exact risk was already flagged as an open
+  item in the 2026-06-29 (first) session above ("If Brutus ever moves
+  significantly mid-fight... worth confirming against another recorded
+  fight") — this log confirmed it actually happens.
+- **Fix**: the telegraph branch in `fighting()` now treats a locked key that
+  is no longer present in this tick's `safe_tiles` the same as "not yet
+  locked" — it repicks via `_nearest_safe_tile_key` instead of indexing
+  blindly, with a distinguishing debug log line.
+- **User-directed complementary fix**: rather than only surviving a missing
+  corner, reduce how often it happens — added `_needs_recenter` (true when
+  `_safe_tiles` returns fewer than 4 keys, i.e. at least one corner, or all
+  of them in the `"fallback"` case, were excluded by the locked arena) and
+  `_click_recenter_tile`, which walks the player toward the arena
+  rectangle's centre tile instead of attacking for that tick. Gated by
+  `RECENTER_MIN_DISTANCE_TILES` (skip if already close to centre) so a room
+  that can never fit all 4 corners doesn't loop recentering forever — the
+  crash-safety fix above remains the backstop for that case. The centre
+  tile's clickbox subscription (`RECENTER_SUB_ID`) is kept warm every tick
+  of `fighting()` regardless of whether recentering is currently needed,
+  mirroring `_renew_dodge_tile_subscriptions`'s reasoning from the
+  "cold-start miss" session — subscribing and reading `hull_update` in the
+  same call would have zero lead time for the first push.
+- **Original "preemptive dodge" idea, redirected**: the actual safe tiles
+  are 3 tiles out from Brutus's centre — outside melee range — so literally
+  pre-walking there every attack cycle would cost real DPS rather than save
+  a tick. The user redirected to the recentering approach above instead; no
+  melee-corner-drift positioning feature was added.
+- **Healing tightened**: `HEAL_HP_THRESHOLD` raised `6` → `10` (more buffer
+  against a hit landing right after a delayed dodge). Added
+  `CRITICAL_HP_THRESHOLD = 3`: at or below this, `_maybe_eat` now ignores
+  `EAT_COOLDOWN_TICKS` entirely and eats immediately — the log showed 4
+  separate eat events across the 3rd fight, consistent with chip damage
+  outpacing a low, cooldown-gated-only threshold.
+- No Java file under `runelite-client/.../plugins/gamebridge/` was touched,
+  so `GAMEBRIDGE.md` did not need updating.
+
+### Tests
+
+`scripts/gamebridge/tests/test_brutus_fighter.py`:
+- `TestArenaBoundaryFiltering::test_repicks_when_the_locked_dodge_tile_drifts_out_of_bounds_mid_episode`
+  — regression test reproducing the exact crash (lock a corner on tick 1,
+  drift Brutus to exclude it on tick 2, assert `fighting()` returns
+  `"fighting"` without raising and repicks from the remaining corners).
+- New `TestRecenter` class (3 tests): no recenter with all 4 corners
+  available even far from centre; recenter click fires (and attack is
+  skipped) when corners are short and the player is far from centre; no
+  recenter (falls through to normal combat) when corners are short but the
+  player is already within `RECENTER_MIN_DISTANCE_TILES`.
+- `TestMaybeEat`: updated the two threshold tests to reference
+  `HEAL_HP_THRESHOLD` instead of the old hardcoded `6`/`10`; added
+  `test_critical_hp_ignores_cooldown` and
+  `test_above_critical_hp_still_respects_cooldown`.
+
+`python -m pytest scripts/gamebridge/tests/test_brutus_fighter.py -v` → 67
+passed. Full suite: `python -m pytest scripts/gamebridge/tests/ -q` → 1436
+passed, 10 skipped (was 1422 passed before this session — net +14 new tests,
+no regressions).
+
+### Open / next steps
+
+- Live re-test against Brutus to confirm: no more `KeyError` in the logs
+  during specials, the recenter click (if it ever fires in practice) doesn't
+  visibly interrupt combat in a way that costs a kill, and the raised heal
+  threshold leaves a safer HP buffer without over-eating food.
+- `RECENTER_MIN_DISTANCE_TILES`/the centre-tile choice are first-pass
+  values, not derived from a recorded fight — worth revisiting if recenter
+  clicks turn out to fire more (or less) often than intended once live data
+  is available.
+
+---
+
 ## Session: 2026-06-29 — Inline healing into Brutus's combat states (remove the dedicated "healing" state)
 
 ### Goal

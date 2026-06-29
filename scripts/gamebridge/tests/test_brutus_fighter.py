@@ -31,8 +31,8 @@ from scripts.gamebridge.state.game_state import GameState
 
 def _make_game(
     tick: int = 1,
-    player_x: int = 13278,
-    player_y: int = 7227,
+    player_x: int = 11927,
+    player_y: int = 4151,
     npcs: list | None = None,
     ground_items: list | None = None,
     inventory: list | None = None,
@@ -75,8 +75,13 @@ def _routine() -> BrutusFighterRoutine:
     return BrutusFighterRoutine()
 
 
-# Brutus's worldX/worldY is his south-west tile (he is 3x3).
-BRUTUS_SW = (13278, 7228)
+# Brutus's worldX/worldY is his south-west tile (he is 3x3). The arena
+# rectangle is computed dynamically from this spawn position (see
+# BrutusFighterRoutine._compute_arena_bounds) — 4 east, 4 north, 10 west, 4
+# south of it — which comfortably contains the four geometric dodge corners
+# (centre +/- 3) for the "normal" geometry tests below. See
+# TestArenaBoundaryFiltering for tests of the filtering/fallback itself.
+BRUTUS_SW = (11927, 4152)
 
 BRUTUS = {
     "id": 15626, "index": 99, "name": "Brutus",
@@ -360,39 +365,299 @@ class TestFightingTelegraphDetection:
 
 class TestComputeDodgeTile:
     def test_computes_tile_away_from_brutus_centre(self):
-        # Brutus centre is (13279, 7229) — player one tile south-west of it.
+        # Brutus centre is (11928, 4153) — player one tile south-west of it.
         # The four candidate safe tiles are the corners 3 tiles out from
-        # centre; nearest to the player (Manhattan distance) is the
-        # north-west corner, (13276, 7226).
-        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        # centre (all inside the arena rectangle computed from his spawn
+        # position, BRUTUS_SW); nearest to the player (Manhattan distance)
+        # is the north-west corner, (11925, 4150).
+        game = _make_game(tick=5, player_x=11927, player_y=4151, npcs=[BRUTUS_TELEGRAPH_GROWL])
         tile = _routine()._compute_dodge_tile(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
-        assert tile == (13276, 7226)
+        assert tile == (11925, 4150)
 
     def test_safe_tiles_returns_all_four_corners(self):
-        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        game = _make_game(tick=5, player_x=11927, player_y=4151, npcs=[BRUTUS_TELEGRAPH_GROWL])
         safe_tiles = _routine()._safe_tiles(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
         assert safe_tiles == {
-            "nw": (13276, 7226),
-            "ne": (13282, 7226),
-            "sw": (13276, 7232),
-            "se": (13282, 7232),
+            "nw": (11925, 4150),
+            "ne": (11931, 4150),
+            "sw": (11925, 4156),
+            "se": (11931, 4156),
         }
 
     def test_nearest_safe_tile_key_picks_nw_for_fixture_player_position(self):
-        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        game = _make_game(tick=5, player_x=11927, player_y=4151, npcs=[BRUTUS_TELEGRAPH_GROWL])
         r = _routine()
         safe_tiles = r._safe_tiles(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
         assert r._nearest_safe_tile_key(game, safe_tiles) == "nw"
 
     def test_prefers_live_hull_position_over_stale_tick_position(self):
-        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        game = _make_game(tick=5, player_x=11927, player_y=4151, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
-        ctrl.hull_update.return_value = {"found": True, "worldX": 13300, "worldY": 7300}
+        ctrl.hull_update.return_value = {"found": True, "worldX": 11932, "worldY": 4153}
         tile = _routine()._compute_dodge_tile(game, ctrl, BRUTUS_TELEGRAPH_GROWL)
-        # Centre now far north-east at (13301, 7301) — of the four corners
-        # 3 tiles out from it, the nearest to the (unchanged) player position
-        # is still the north-west one, (13298, 7298).
-        assert tile == (13298, 7298)
+        # Centre now north-east at (11933, 4154) — of the four corners 3
+        # tiles out from it, the nearest to the (unchanged) player position
+        # is still the north-west one, (11930, 4151).
+        assert tile == (11930, 4151)
+
+
+# ---------------------------------------------------------------------------
+# _safe_tiles — filtering geometric corners against the dynamically computed
+# arena rectangle, and the random in-bounds fallback when every corner is
+# excluded.
+#
+# The arena rectangle is locked to Brutus's spawn position the first time
+# he's found (see _get_arena_bounds) and never recomputed mid-fight — these
+# tests simulate "he's drifted away from where the arena was anchored" by
+# pre-seeding `_arena_bounds` from BRUTUS_SW and then calling `_safe_tiles`/
+# `fighting` with an NPC position that has moved relative to that locked
+# rectangle, rather than relying on the lazy auto-derivation every other
+# test in this file leans on.
+# ---------------------------------------------------------------------------
+
+class TestArenaBoundaryFiltering:
+    def test_excludes_corners_outside_the_locked_arena_after_brutus_drifts(self):
+        """The arena rectangle is anchored to BRUTUS_SW (east edge at
+        worldX 11931 — 4 tiles east of spawn, per ARENA_EAST_TILES). If
+        Brutus is now found 5 tiles further east than that anchor, the
+        ne/se dodge corners (centre + 3) land past the locked east edge and
+        must be dropped, leaving only nw/sw."""
+        drifted = {**BRUTUS, "worldX": BRUTUS_SW[0] + 5, "worldY": BRUTUS_SW[1]}
+        game = _make_game(tick=5, player_x=drifted["worldX"], player_y=drifted["worldY"] - 1, npcs=[drifted])
+        r = _routine()
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+
+        safe_tiles = r._safe_tiles(game, _ctrl(), drifted)
+
+        assert safe_tiles == {
+            "nw": (11930, 4150),
+            "sw": (11930, 4156),
+        }
+        min_x, min_y, max_x, max_y = r._arena_bounds.bounds
+        for tx, ty in safe_tiles.values():
+            assert min_x <= tx <= max_x and min_y <= ty <= max_y
+
+    def test_falls_back_to_a_random_in_bounds_tile_when_every_corner_is_outside(self):
+        """If Brutus is found somewhere with none of the 4 geometric corners
+        inside the locked arena (e.g. far from where it was anchored
+        entirely), _safe_tiles must still return exactly one usable tile,
+        keyed "fallback", that is itself inside the arena."""
+        far_outside = {**BRUTUS, "worldX": 13278, "worldY": 7228}
+        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[far_outside])
+        r = _routine()
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+
+        safe_tiles = r._safe_tiles(game, _ctrl(), far_outside)
+
+        assert list(safe_tiles.keys()) == ["fallback"]
+        min_x, min_y, max_x, max_y = r._arena_bounds.bounds
+        tx, ty = safe_tiles["fallback"]
+        assert min_x <= tx <= max_x and min_y <= ty <= max_y
+
+    def test_fighting_dodges_to_the_fallback_tile_when_no_corner_is_safe(self):
+        """The telegraph-dodge gesture in fighting() must work generically
+        off whatever key _safe_tiles returns — including "fallback" — and
+        subscribe to/click that tile the same way it would a normal corner."""
+        far_outside_growl = {**BRUTUS, "worldX": 13278, "worldY": 7228, "animation": 13785}
+        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[far_outside_growl])
+        ctrl = _ctrl()
+        ctrl.hull_update.return_value = {
+            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_IDS["fallback"], "found": True,
+            "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
+        }
+
+        r = _routine()
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+        r._target_index = BRUTUS["index"]
+        r._target = far_outside_growl
+        r._fight_start_tick = 0
+        result = r.fighting(game, ctrl)
+
+        ctrl.subscribe_to_tile.assert_any_call(
+            BrutusFighterRoutine.DODGE_TILE_SUB_IDS["fallback"], ANY, ANY,
+            game.plane, ttl_ticks=BrutusFighterRoutine.DODGE_TILE_SUB_TTL_TICKS,
+        )
+        ctrl.click_at.assert_called_once_with(386.0, 320.0)
+        assert r._dodge_tile_key == "fallback"
+        assert result == "fighting"
+
+    def test_repicks_when_the_locked_dodge_tile_drifts_out_of_bounds_mid_episode(self):
+        """Regression test for the production crash: `_dodge_tile_key` is
+        locked once per telegraph episode, but `_safe_tiles` recomputes the
+        4 corners every tick from Brutus's *live* position. If he drifts
+        enough between ticks that the locked corner falls out of the arena
+        rectangle, the old code did `safe_tiles[self._dodge_tile_key]`
+        unconditionally and raised KeyError, aborting the whole tick (no
+        dodge click) per base.py's exception handling. fighting() must
+        instead treat a vanished key like "not yet locked" and repick from
+        whatever corners are still available."""
+        ctrl = _ctrl()
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._fight_start_tick = 0
+
+        # Tick 1: normal (undrifted) position — all 4 corners available.
+        # Player near the SE corner so it's the one that gets locked in.
+        telegraphing = BRUTUS_TELEGRAPH_GROWL
+        game1 = _make_game(tick=5, player_x=11930, player_y=4155, npcs=[telegraphing])
+        r.fighting(game1, ctrl)
+        assert r._dodge_tile_key == "se"
+
+        # Tick 2: Brutus has drifted 5 tiles east relative to the now-locked
+        # arena rectangle (same drift as
+        # test_excludes_corners_outside_the_locked_arena_after_brutus_drifts)
+        # — "ne"/"se" fall outside, leaving only "nw"/"sw".
+        drifted_telegraph = {**BRUTUS, "worldX": BRUTUS_SW[0] + 5, "worldY": BRUTUS_SW[1], "animation": 13785}
+        game2 = _make_game(tick=6, player_x=11930, player_y=4155, npcs=[drifted_telegraph])
+        result = r.fighting(game2, ctrl)
+
+        assert result == "fighting"  # must not raise, must keep dodging
+        assert r._dodge_tile_key in {"nw", "sw"}
+
+
+# ---------------------------------------------------------------------------
+# fighting() — recentering when corners start dropping out, to head off the
+# above KeyError-repick scenario before it happens as often (user-directed
+# mitigation, separate from the crash-safety fix above)
+# ---------------------------------------------------------------------------
+
+class TestRecenter:
+    def _engaged_routine(self) -> BrutusFighterRoutine:
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._fight_start_tick = 0
+        return r
+
+    def test_no_recenter_when_all_four_corners_available(self):
+        """Even far from the arena centre, a full set of 4 corners means no
+        recenter click — normal combat proceeds untouched."""
+        # Arena centre for BRUTUS_SW is (11924, 4152); place the player at
+        # Brutus's (undrifted) position, several tiles from centre.
+        game = _make_game(tick=5, player_x=BRUTUS["worldX"], player_y=BRUTUS["worldY"],
+                           npcs=[BRUTUS_BASIC_SWING])
+        ctrl = _ctrl()
+        game.last_xp_tick["STRENGTH"] = 5
+
+        result = self._engaged_routine().fighting(game, ctrl)
+
+        ctrl.click_at.assert_not_called()
+        assert result is None
+
+    def test_recenters_when_corners_are_short_and_far_from_centre(self):
+        """Drifted Brutus -> only nw/sw safe -> _needs_recenter is True.
+        Player far from the arena centre (11924, 4152) -> walk there instead
+        of attacking this tick."""
+        drifted_swing = {**BRUTUS, "worldX": BRUTUS_SW[0] + 5, "worldY": BRUTUS_SW[1]}
+        game = _make_game(tick=5, player_x=drifted_swing["worldX"], player_y=drifted_swing["worldY"],
+                           npcs=[drifted_swing])
+        ctrl = _ctrl()
+        ctrl.hull_update.return_value = {
+            "found": True, "onScreen": True, "canvasX": 300.0, "canvasY": 250.0,
+        }
+        r = self._engaged_routine()
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+
+        result = r.fighting(game, ctrl)
+
+        ctrl.subscribe_to_tile.assert_any_call(
+            BrutusFighterRoutine.RECENTER_SUB_ID, 11924, 4152, game.plane,
+            ttl_ticks=BrutusFighterRoutine.RECENTER_SUB_TTL_TICKS,
+        )
+        ctrl.click_at.assert_called_once_with(300.0, 250.0)
+        ctrl.click_entity.assert_not_called()
+        assert result == "fighting"
+
+    def test_does_not_recenter_once_already_near_centre(self):
+        """Same corner shortage as above, but the player is already within
+        RECENTER_MIN_DISTANCE_TILES of the arena centre — must not loop
+        recentering forever; falls through to normal combat instead."""
+        drifted_swing = {**BRUTUS, "worldX": BRUTUS_SW[0] + 5, "worldY": BRUTUS_SW[1]}
+        game = _make_game(tick=5, player_x=11924, player_y=4152, npcs=[drifted_swing])
+        ctrl = _ctrl()
+        game.last_xp_tick["STRENGTH"] = 5
+        r = self._engaged_routine()
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+
+        result = r.fighting(game, ctrl)
+
+        ctrl.click_at.assert_not_called()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Arena rectangle — computed dynamically from Brutus's spawn position,
+# cached for the fight, and reset once he's detected dead
+# ---------------------------------------------------------------------------
+
+class TestArenaBoundsLifecycle:
+    def test_compute_arena_bounds_uses_the_configured_offsets(self):
+        r = _routine()
+        bounds = r._compute_arena_bounds(11927, 4152)
+        assert bounds.bounds == (
+            11927 - BrutusFighterRoutine.ARENA_WEST_TILES,
+            4152 - BrutusFighterRoutine.ARENA_SOUTH_TILES,
+            11927 + BrutusFighterRoutine.ARENA_EAST_TILES,
+            4152 + BrutusFighterRoutine.ARENA_NORTH_TILES,
+        )
+
+    def test_find_target_locks_arena_bounds_to_brutus_spawn_position(self):
+        game = _make_game(tick=3, npcs=[BRUTUS])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        assert r._arena_bounds is None
+        r.find_target(game, ctrl)
+
+        assert r._arena_bounds is not None
+        assert r._arena_bounds.bounds == r._compute_arena_bounds(*BRUTUS_SW).bounds
+
+    def test_find_target_does_not_recompute_arena_bounds_once_locked(self):
+        """Re-entering find_target (e.g. after a misclick timeout, not a
+        real death) must not move the arena — only a confirmed death does
+        that, in fighting()."""
+        game = _make_game(tick=3, npcs=[BRUTUS])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        sentinel = r._compute_arena_bounds(99999, 99999)
+        r._arena_bounds = sentinel
+
+        r.find_target(game, ctrl)
+
+        assert r._arena_bounds is sentinel
+
+    def test_fighting_clears_arena_bounds_when_brutus_is_assumed_dead(self):
+        game = _make_game(tick=5, npcs=[])
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._target = BRUTUS
+        r._fight_start_tick = 4
+        r._arena_bounds = r._compute_arena_bounds(*BRUTUS_SW)
+
+        result = r.fighting(game, _ctrl())
+
+        assert result == "looting"
+        assert r._arena_bounds is None
+
+    def test_next_find_target_after_death_recomputes_from_the_new_spawn_position(self):
+        """After a kill, the next find_target call (Brutus respawned
+        elsewhere) must derive a fresh rectangle from the new spawn tile,
+        not reuse the one from the previous fight."""
+        respawned = {**BRUTUS, "worldX": BRUTUS_SW[0] + 50, "worldY": BRUTUS_SW[1] + 50}
+        game = _make_game(tick=20, npcs=[respawned])
+        ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
+        r = _routine()
+        r._arena_bounds = None  # cleared by fighting() on the previous kill (see that test)
+
+        r.find_target(game, ctrl)
+
+        assert r._arena_bounds.bounds == r._compute_arena_bounds(
+            respawned["worldX"], respawned["worldY"],
+        ).bounds
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +684,8 @@ class TestDodgeTileWarmup:
         self._engaged_routine().fighting(game, ctrl)
 
         for key, coords in {
-            "nw": (13276, 7226), "ne": (13282, 7226),
-            "sw": (13276, 7232), "se": (13282, 7232),
+            "nw": (11925, 4150), "ne": (11931, 4150),
+            "sw": (11925, 4156), "se": (11931, 4156),
         }.items():
             ctrl.subscribe_to_tile.assert_any_call(
                 BrutusFighterRoutine.DODGE_TILE_SUB_IDS[key], *coords,
@@ -444,7 +709,7 @@ class TestDodgeTileWarmup:
         }
         result = r.fighting(_make_game(tick=10, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
 
-        ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, ANY)
+        ctrl.click_at.assert_called_once_with(386.0, 320.0)
         assert result == "fighting"
 
 
@@ -473,7 +738,7 @@ class TestDodgeTileClickPlumbing:
         self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
-        ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, game)
+        ctrl.click_at.assert_called_once_with(386.0, 320.0)
 
     def test_skips_click_without_minimap_fallback_when_tile_not_found(self):
         """No hullUpdate yet (or found: false) -> skip the click entirely.
@@ -485,7 +750,7 @@ class TestDodgeTileClickPlumbing:
         self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
-        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_at.assert_not_called()
 
     def test_skips_click_without_minimap_fallback_when_tile_not_onscreen(self):
         """found: true but onScreen: false -> still skip, no minimap fallback."""
@@ -499,7 +764,7 @@ class TestDodgeTileClickPlumbing:
         self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
-        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_at.assert_not_called()
 
     def test_skips_click_when_no_hull_update_has_arrived_yet(self):
         """hull_update() returning None (subscription just registered, no
@@ -510,7 +775,7 @@ class TestDodgeTileClickPlumbing:
 
         self._telegraphed_routine().fighting(game, ctrl)
 
-        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_at.assert_not_called()
 
     def test_retries_dodge_click_next_tick_if_first_attempt_missed(self):
         """A dodge click that misses because the tile's hullUpdate isn't
@@ -522,14 +787,14 @@ class TestDodgeTileClickPlumbing:
         ctrl.hull_update.return_value = {"found": False}
 
         r.fighting(_make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
-        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_at.assert_not_called()
 
         ctrl.hull_update.return_value = {
             "found": True, "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
         }
         result = r.fighting(_make_game(tick=6, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
 
-        ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, ANY)
+        ctrl.click_at.assert_called_once_with(386.0, 320.0)
         assert result == "fighting"
 
     def test_stops_clicking_once_player_has_reached_the_dodge_tile(self):
@@ -544,15 +809,15 @@ class TestDodgeTileClickPlumbing:
 
         game1 = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         r.fighting(game1, ctrl)
-        ctrl.click_walk_target.assert_called_once()
+        ctrl.click_at.assert_called_once()
 
-        ctrl.click_walk_target.reset_mock()
+        ctrl.click_at.reset_mock()
         nw_tile = r._safe_tiles(game1, ctrl, BRUTUS_TELEGRAPH_GROWL)[r._dodge_tile_key]
         game2 = _make_game(tick=6, player_x=nw_tile[0], player_y=nw_tile[1],
                             npcs=[BRUTUS_TELEGRAPH_GROWL])
         result = r.fighting(game2, ctrl)
 
-        ctrl.click_walk_target.assert_not_called()
+        ctrl.click_at.assert_not_called()
         assert result == "fighting"
 
 
@@ -613,7 +878,8 @@ class TestReengageAfterDodge:
 
 class TestMaybeEat:
     def test_needs_heal_false_above_threshold(self):
-        game = _make_game(hp=10, inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+        game = _make_game(hp=BrutusFighterRoutine.HEAL_HP_THRESHOLD + 1,
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
         assert _routine()._needs_heal(game) is False
 
     def test_needs_heal_false_without_food(self):
@@ -621,7 +887,8 @@ class TestMaybeEat:
         assert _routine()._needs_heal(game) is False
 
     def test_needs_heal_true_at_threshold_with_food(self):
-        game = _make_game(hp=6, inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+        game = _make_game(hp=BrutusFighterRoutine.HEAL_HP_THRESHOLD,
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
         assert _routine()._needs_heal(game) is True
 
     def test_fighting_eats_inline_without_costing_a_tick(self):
@@ -693,6 +960,37 @@ class TestMaybeEat:
                            inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
         ctrl = _ctrl()
         result = _routine()._maybe_eat(game, ctrl)
+        ctrl.click_widget.assert_not_called()
+        assert result is False
+
+    def test_critical_hp_ignores_cooldown(self):
+        """At/below CRITICAL_HP_THRESHOLD, eat immediately even mid-cooldown
+        — a real player keeps eating through lethal chip damage rather than
+        waiting out the same throttle used for routine top-ups."""
+        game = _make_game(tick=6, hp=BrutusFighterRoutine.CRITICAL_HP_THRESHOLD,
+                           widgets=[TROUT_SLOT],
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+        ctrl = _ctrl()
+        r = _routine()
+        r._last_eat_tick = 5  # 1 tick ago, well within EAT_COOLDOWN_TICKS
+
+        result = r._maybe_eat(game, ctrl)
+
+        ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
+        assert result is True
+
+    def test_above_critical_hp_still_respects_cooldown(self):
+        """One HP above CRITICAL_HP_THRESHOLD must not bypass the cooldown
+        — the override is specifically for the critical band."""
+        game = _make_game(tick=6, hp=BrutusFighterRoutine.CRITICAL_HP_THRESHOLD + 1,
+                           widgets=[TROUT_SLOT],
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+        ctrl = _ctrl()
+        r = _routine()
+        r._last_eat_tick = 5
+
+        result = r._maybe_eat(game, ctrl)
+
         ctrl.click_widget.assert_not_called()
         assert result is False
 

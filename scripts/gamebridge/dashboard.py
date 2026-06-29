@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
 )
 
 from .human.emulator import HumanEmulator
+from .human.mood import WeatherMoodSeeder
+from . import settings as _settings
 from .controller.controller import GameController
 from .decision.engine import DecisionEngine
 from .routines.base import Routine
@@ -45,7 +47,7 @@ from .routines.examples.brutus_fighter import BrutusFighterRoutine
 
 from .ui.theme import (
     C, STYLESHEET, _qc, _iface_color, _hms, _yaw_dir,
-    _break_label, _fatigue_rate_label, _fatigue_rate_per_min,
+    _break_label, _fatigue_rate_label, _fatigue_rate_per_min, _mood_label,
 )
 from .ui.components import Card, HDivider, StatBar, ConnectionDot
 from .ui.minimap import MinimapWidget
@@ -85,7 +87,10 @@ class GameBridgeWindow(QMainWindow):
         self._host = host
         self._port = port
 
-        self._human  = HumanEmulator()
+        hb = _settings.get("human_behaviour") or {}
+        self._mood_profile = WeatherMoodSeeder().seed(location=hb.get("weather_location", "auto"))
+        self._human = HumanEmulator()
+        self._human.apply_mood(self._mood_profile)
         self._ctrl   = GameController(human=self._human)
         self._engine = DecisionEngine(ctrl=self._ctrl, human=self._human)
         self._session_start = time.monotonic()
@@ -377,7 +382,12 @@ class GameBridgeWindow(QMainWindow):
         self._session_lbl = QLabel("Session: 00m 00s")
         self._session_lbl.setStyleSheet(
             f"color: {C.TEXT_MUTED}; font-size: 12px;")
+        self._mood_lbl = QLabel(_mood_label(self._mood_profile))
+        self._mood_lbl.setStyleSheet(
+            f"color: {C.TEXT_MUTED}; font-size: 12px;")
         row2.addWidget(self._routine_state_lbl)
+        row2.addStretch()
+        row2.addWidget(self._mood_lbl)
         row2.addStretch()
         row2.addWidget(self._session_lbl)
         card.layout().addLayout(row2)
