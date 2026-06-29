@@ -1,24 +1,25 @@
 """
 Brutus Fighter routine.
 
-TODO: "dodging" state has been removed in favour of keeping logic in "fighting".
-    We need to update the docstring, state diagram, any references, and the tests to reflect this change.
-
 Brutus is a 3x3 aggressive melee NPC (ids 15626/15627) that, after every
 4-5 basic attacks, telegraphs one of two special attacks with a distinct
-animation a few ticks before it actually lands:
+animation several ticks before it actually lands:
 
-  - "Charge" (telegraph: *growls*)
-  - "Slam"   (telegraph: *snorts*, repeated 3 times)
+  - "Charge" (telegraph anim 13778)
+  - "Slam"   (telegraph anim 13785, animation repeats in pulses)
 
 Both specials ignore protection prayers but can be fully avoided by moving
-off the tile before the attack resolves. The telegraph animation IDs below
-(13785, 13778) were read directly off a recorded fight (see
+off the tile before the attack resolves. The telegraph animation IDs above
+were read directly off a recorded fight (see
 ~/.gamebridge/recordings/recording-20260628-152254.jsonl) by diffing
 Brutus's per-tick `animation` field against player HP loss: 13783 is his
-basic melee swing (correlates with -1..-3 HP most ticks it fires), while
-13785/13778 never correlate with any HP loss in that recording — the player
-was dodging them, matching the in-game special-attack tells.
+basic melee swing (correlates with -1..-3 HP most ticks it fires); 13778 and
+13785 never correlate with any HP loss while the player keeps off the danger
+tile, matching the in-game special-attack tells. A closer per-tick read of
+that recording shows each telegraph holds its animation for several ticks,
+drops to -1 briefly, and (for Slam) can restart — re-engaging is only safe
+once the animation has actually cleared, not a fixed number of ticks after
+it first appears.
 
 State diagram
 ─────────────
@@ -28,26 +29,57 @@ State diagram
   └──────┬───────┘                                      │
          │ NPC clicked                                  │
          ▼                                              │
-  ┌──────────────┐   special telegraphed    ┌──────────┐│
-  │   fighting   │──────────────────────────►│ dodging  ││
-  └──────┬───────┘◄──────────────────────────└──────────┘│
-         │ NPC vanished — assume dead                    │
-         ▼                                               │
   ┌──────────────┐                                       │
-  │   looting    │───────────────────────────────────────┘
+  │   fighting   │── special telegraphed: dodge, wait ───┘
+  └──────┬───────┘   for the animation to clear, re-engage
+         │ NPC vanished — assume dead
+         ▼
+  ┌──────────────┐
+  │   looting    │
   └──────────────┘
 
-`healing` is reachable from find_target/fighting/dodging/looting whenever
-HP drops to/below HEAL_HP_THRESHOLD and food remains, returning to whichever
-state it interrupted.
+Dodging a telegraphed special is handled entirely inside `fighting()` —
+there is no separate "dodging" state, since a `Routine` only re-evaluates
+its current state once per tick (see base.py), and deferring the dodge click
+to a separate state would waste a full tick of an already-tight window.
+
+The dodge click is level-triggered, not one-shot: every tick the telegraph
+animation is showing and the player hasn't yet reached the chosen corner
+tile (`game.player_pos != target_tile`), the click is re-issued. An earlier
+version clicked once and unconditionally assumed it landed, so a single
+missed click (e.g. the tile's hull_update not yet `found`/`onScreen` on
+that exact tick) was never retried — the player stood still for the rest of
+the telegraph and ate the hit. The chosen corner (`_dodge_tile_key`) is
+locked for the duration of one telegraph episode so retries keep aiming at
+the same tile instead of recomputing "nearest" mid-walk.
+
+All 4 candidate dodge tiles (the corners _compute_dodge_tile can ever pick)
+are kept subscribed continuously, every tick of `fighting()`, regardless of
+whether a telegraph is currently showing — not only at the moment one
+appears. An earlier version subscribed reactively (only inside the dodge
+click itself), which left the very first dodge of every fight with zero lead
+time for the Java plugin's hullUpdate push to arrive, causing a logged
+"not yet on-screen — skipping this dodge click" and a real hit taken.
+Warming all 4 up-front from the start of the fight means the relevant
+clickbox is already known well before any telegraph fires.
+
+Healing is handled inline, not via a separate "healing" state: `_maybe_eat`
+is called at the top of find_target/fighting/looting and, whenever HP drops
+to/below HEAL_HP_THRESHOLD and food remains, clicks a food item immediately
+and then falls straight through into that same call's normal logic — still
+attacking/dodging/looting in the same tick the eat click fires. An earlier
+version returned a "healing" state and waited for the next tick to actually
+click the food, costing a full ~600ms tick of pure detection-only delay
+before the eat click ever fired — a real player eats and keeps fighting in
+the same reaction, not eats-then-freezes-for-a-tick.
 
 This routine declares itself "high-attention" (ATTENTION_LEVEL = "combat",
 applied every tick via GameController.set_attention_level) — Brutus aggros
-instantly and his specials only give a 3-4 tick window to dodge, so every
-click here uses HumanEmulator's faster combat reflex/movement multipliers
-instead of the default relaxed-skilling pacing. All clicks happen directly
-in the game viewport; the dodge step in particular never reaches for the
-minimap, since no human would for a one-tile sidestep.
+instantly and his specials only give a few ticks to dodge, so every click
+here uses HumanEmulator's faster combat reflex/movement multipliers instead
+of the default relaxed-skilling pacing. All clicks happen directly in the
+game viewport; the dodge step in particular never reaches for the minimap,
+since no human would for a one-tile sidestep.
 
 How to use
 ──────────
@@ -92,20 +124,24 @@ class BrutusFighterRoutine(InteractionRoutine):
     BRUTUS_SUB_ID = "brutus"
     BRUTUS_SUB_TTL_TICKS = 10
 
-    # Reused for every dodge — re-subscribing with the same subId just
-    # renews it, no need to unsubscribe between dodges. Short TTL since it's
-    # only ever needed for the few ticks around a single dodge gesture.
-    DODGE_TILE_SUB_ID = "brutus_dodge_tile"
-    DODGE_TILE_SUB_TTL_TICKS = 5
+    # The 4 candidate dodge tiles (see _safe_tiles) each get their own fixed
+    # subId, kept subscribed continuously every tick of fighting() — not just
+    # reactively when a telegraph appears. Renewing every tick is cheap (one
+    # plugin-side clickbox computation per subscription per ~20ms ClientTick)
+    # and gives the Java plugin's hullUpdate push many ticks of lead time
+    # before any telegraph ever shows, so a dodge click never has to wait on
+    # a cold subscription. See module docstring for the bug this fixes.
+    DODGE_TILE_SUB_IDS = {
+        "nw": "brutus_dodge_nw",
+        "ne": "brutus_dodge_ne",
+        "sw": "brutus_dodge_sw",
+        "se": "brutus_dodge_se",
+    }
+    DODGE_TILE_SUB_TTL_TICKS = 5  # renewed every fighting() tick, just needs to outlive one tick
 
     # Telegraph animation IDs for Brutus's two specials — see module docstring.
     BASIC_ATTACK_ANIM = 13783
     SPECIAL_TELL_ANIMS = frozenset({13785, 13778})
-
-    # How long (ticks) to wait after issuing the dodge-tile click before
-    # re-engaging — both specials' windows are 3-4 ticks; this just needs to
-    # clear the player from the danger tile before stepping back in.
-    DODGE_WAIT_TICKS = 3
 
     MISCLICK_TIMEOUT_TICKS = 10
     COMBAT_XP_SKILLS = ("ATTACK", "STRENGTH", "DEFENCE", "HITPOINTS")
@@ -127,8 +163,7 @@ class BrutusFighterRoutine(InteractionRoutine):
         self._attack_target: Optional[dict] = None
         self._loot_target: Optional[dict] = None
         self._dodge_clicked: bool = False
-        self._dodge_tick: int = -1
-        self._return_state: str = "find_target"
+        self._dodge_tile_key: Optional[str] = None
         self._last_eat_tick: int = -99
 
     # ------------------------------------------------------------------
@@ -154,10 +189,7 @@ class BrutusFighterRoutine(InteractionRoutine):
         """
         self._renew_brutus_subscription(ctrl)
         ctrl.set_attention_level(self.ATTENTION_LEVEL)
-
-        if self._needs_heal(game):
-            self._return_state = "find_target"
-            return "healing"
+        self._maybe_eat(game, ctrl)
 
         target = game.nearest_npc(self.NPC_NAME)
         if target is None:
@@ -183,19 +215,21 @@ class BrutusFighterRoutine(InteractionRoutine):
         """Keep fighting Brutus, watching for the special-attack telegraph
         and miss-clicks, same shape as MeleeFighterRoutine.fighting().
 
-        The dodge click is fired right here, the instant the telegraph is
-        seen — not deferred to the first tick of the "dodging" state. A
-        Routine only re-evaluates its *current* state method once per tick
-        (see base.py); returning "dodging" without acting first would waste
-        a full ~600ms tick doing nothing before the dodge click could go
-        out, eating into the 3-4 tick window the telegraph gives us.
+        Dodging is handled entirely within this one state — there is no
+        separate "dodging" state (see module docstring). The dodge click is
+        level-triggered: it fires every tick the telegraph is showing and
+        the player hasn't yet reached the locked `_dodge_tile_key` corner,
+        so a single missed click (clickbox not yet ready) gets retried
+        instead of being silently treated as done. The telegraph check runs
+        first and always returns "fighting" while the animation is still
+        telegraphing, so the re-engage check below it is never reached until
+        the animation actually clears — re-engaging is safe the instant that
+        happens (the danger is exactly and only `animation in
+        SPECIAL_TELL_ANIMS`), with no extra fixed wait needed.
         """
         self._renew_brutus_subscription(ctrl)
         ctrl.set_attention_level(self.ATTENTION_LEVEL)
-
-        if self._needs_heal(game):
-            self._return_state = "fighting"
-            return "healing"
+        self._maybe_eat(game, ctrl)
 
         live_target = next((n for n in game.npcs if n.get("index") == self._target_index), None)
 
@@ -209,22 +243,22 @@ class BrutusFighterRoutine(InteractionRoutine):
 
         self._target = live_target
 
-        if live_target.get("animation") in self.SPECIAL_TELL_ANIMS:
-            log.debug("Brutus telegraphing a special (anim=%d) — dodging now", live_target["animation"])
-            tile = self._compute_dodge_tile(game, ctrl, live_target)
-            self._click_dodge_tile(game, ctrl, tile)
-            self._dodge_clicked = True
-            self._dodge_tick = game.tick
-            # TODO: game client keeps clicking twice and taking ages to re-enage after a dodge — maybe the click is being sent to the minimap instead of the viewport? If so, need to subscribe to the tile and click its canvasX/Y instead of clicking the minimap.
-            # Brutus always does the "snort" special 3 times in a row and currently we spend that entire time
-            # dodging. We need to ensure we aren't hitting this "click_dodge_tile" unnecessarily often.
-            return "fighting"
-        
-        if self._dodge_clicked and (game.tick - self._dodge_tick < self.DODGE_WAIT_TICKS):
-            return None
+        safe_tiles = self._safe_tiles(game, ctrl, live_target)
+        self._renew_dodge_tile_subscriptions(ctrl, game, safe_tiles)
 
-        if self._dodge_clicked and self.click_live(ctrl, live_target, "npc"):
+        if live_target.get("animation") in self.SPECIAL_TELL_ANIMS:
+            if self._dodge_tile_key is None:
+                log.debug("Brutus telegraphing a special (anim=%d) — dodging now", live_target["animation"])
+                self._dodge_tile_key = self._nearest_safe_tile_key(game, safe_tiles)
+            target_tile = safe_tiles[self._dodge_tile_key]
+            if (game.player_pos[0], game.player_pos[1]) != target_tile:
+                self._click_dodge_tile(game, ctrl, self._dodge_tile_key, target_tile)
+            self._dodge_clicked = True
+            return "fighting"
+
+        if self._dodge_clicked and self.click_live(ctrl, live_target, "npc", False):
             self._dodge_clicked = False
+            self._dodge_tile_key = None
             return "fighting"
 
         got_xp_drop = any(
@@ -240,28 +274,11 @@ class BrutusFighterRoutine(InteractionRoutine):
 
         return None
 
-    def healing(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
-        """Eat one food item and resume whatever state was interrupted.
-        If HP is still low next tick, this state is re-entered and eats
-        again — mirrors a player eating repeatedly while taking damage."""
-        ctrl.set_attention_level(self.ATTENTION_LEVEL)
-
-        if game.tick - self._last_eat_tick >= self.EAT_COOLDOWN_TICKS:
-            for food_id in self.FOOD_ITEM_IDS:
-                if game.inventory_has_item(food_id) and self.click_inventory_item(game, ctrl, food_id):
-                    self._last_eat_tick = game.tick
-                    break
-
-        return self._return_state
-
     def looting(self, game: "GameState", ctrl: "GameController") -> Optional[str]:
         """Plain left-click looting (no menu verification, per requirement)
         across Brutus's whole 3x3 corpse footprint."""
         ctrl.set_attention_level(self.ATTENTION_LEVEL)
-
-        if self._needs_heal(game):
-            self._return_state = "looting"
-            return "healing"
+        self._maybe_eat(game, ctrl)
 
         sw_x, sw_y = self._target_pos
         items = self._ground_items_in_footprint(game, sw_x, sw_y)
@@ -305,6 +322,24 @@ class BrutusFighterRoutine(InteractionRoutine):
             game.inventory_has_item(food_id) for food_id in self.FOOD_ITEM_IDS
         )
 
+    def _maybe_eat(self, game: "GameState", ctrl: "GameController") -> bool:
+        """Eat one food item immediately if HP is low and food remains, then
+        let the caller's own state logic run in the same call — see module
+        docstring for why eating is inlined here rather than detouring
+        through a separate "healing" state. Cooldown-gated by
+        EAT_COOLDOWN_TICKS/_last_eat_tick so a routine that's still below
+        threshold next tick eats again, mirroring a player eating repeatedly
+        while taking damage. Returns True if a food click actually fired."""
+        if not self._needs_heal(game):
+            return False
+        if game.tick - self._last_eat_tick < self.EAT_COOLDOWN_TICKS:
+            return False
+        for food_id in self.FOOD_ITEM_IDS:
+            if game.inventory_has_item(food_id) and self.click_inventory_item(game, ctrl, food_id):
+                self._last_eat_tick = game.tick
+                return True
+        return False
+
     def _loot_key(self, item: dict) -> Tuple[int, int, int]:
         return (item["id"], item["worldX"], item["worldY"])
 
@@ -328,14 +363,14 @@ class BrutusFighterRoutine(InteractionRoutine):
             return update["worldX"], update["worldY"]
         return npc["worldX"], npc["worldY"]
 
-    def _compute_dodge_tile(self, game: "GameState", ctrl: "GameController", npc: dict) -> Tuple[int, int]:
-        """One tile further from Brutus's centre along the line from his
-        centre through the player's current tile — moves off both the
-        charge lane and the slam's adjacent-tile splash regardless of
-        whether the player is standing orthogonal or diagonal to him (see
-        module docstring / GAMEBRIDGE.md for the mechanic). Brutus's
-        worldX/worldY is his south-west tile (he is 3x3), so his centre is
-        one tile north-east of that corner.
+    def _safe_tiles(self, game: "GameState", ctrl: "GameController", npc: dict) -> dict:
+        """The 4 candidate dodge tiles, keyed "nw"/"ne"/"sw"/"se" to match
+        DODGE_TILE_SUB_IDS — one tile further from Brutus's centre along
+        each diagonal, clearing both the charge lane and the slam's
+        adjacent-tile splash regardless of whether the player is standing
+        orthogonal or diagonal to him (see module docstring / GAMEBRIDGE.md
+        for the mechanic). Brutus's worldX/worldY is his south-west tile (he
+        is 3x3), so his centre is one tile north-east of that corner.
 
         BRUTUS
         ┌───┬───┬───┐
@@ -343,7 +378,7 @@ class BrutusFighterRoutine(InteractionRoutine):
         ├───┼───┼───┤
         │   │ C │   │
         ├───┼───┼───┤
-        │   │   │ T │
+        │ T │   │   │
         └───┴───┴───┘
         C = Brutus's centre tile (bx+1, by+1)
         T = Brutus's south-west tile (bx, by) = npc["worldX"], npc["worldY"]
@@ -359,24 +394,36 @@ class BrutusFighterRoutine(InteractionRoutine):
         # Brutus full 3 tile square footprint: SW=(bx,by), SE=(bx+2,by), NW=(bx,by+2), NE=(bx+2,by+2)
         brutus_centre = (bx + 1, by + 1)  # NE of SW corner
 
-        # Player tile
-        player_tile = (game.player_pos[0], game.player_pos[1])
-
-        # Safe tiles are the four diagonal tiles at least 3 tiles away from Brutus's centre
-        safe_tiles = {
-            (brutus_centre[0] - 3, brutus_centre[1] - 3),  # NW
-            (brutus_centre[0] + 3, brutus_centre[1] - 3),  # NE
-            (brutus_centre[0] - 3, brutus_centre[1] + 3),  # SW
-            (brutus_centre[0] + 3, brutus_centre[1] + 3),  # SE
+        return {
+            "nw": (brutus_centre[0] - 3, brutus_centre[1] - 3),
+            "ne": (brutus_centre[0] + 3, brutus_centre[1] - 3),
+            "sw": (brutus_centre[0] - 3, brutus_centre[1] + 3),
+            "se": (brutus_centre[0] + 3, brutus_centre[1] + 3),
         }
 
-        # Compute the player's nearest safe tile
-        nearest_safe_tile = min(safe_tiles, key=lambda t: (abs(t[0] - player_tile[0]) + abs(t[1] - player_tile[1])))
+    def _nearest_safe_tile_key(self, game: "GameState", safe_tiles: dict) -> str:
+        """Which of the 4 safe_tiles keys is nearest the player right now (Manhattan distance)."""
+        player_tile = (game.player_pos[0], game.player_pos[1])
+        return min(safe_tiles, key=lambda k: abs(safe_tiles[k][0] - player_tile[0]) + abs(safe_tiles[k][1] - player_tile[1]))
 
-        return nearest_safe_tile
+    def _compute_dodge_tile(self, game: "GameState", ctrl: "GameController", npc: dict) -> Tuple[int, int]:
+        """The single nearest safe dodge tile — thin wrapper over
+        _safe_tiles/_nearest_safe_tile_key kept for callers (and tests) that
+        only care about the chosen tile's coordinates."""
+        safe_tiles = self._safe_tiles(game, ctrl, npc)
+        key = self._nearest_safe_tile_key(game, safe_tiles)
+        return safe_tiles[key]
+
+    def _renew_dodge_tile_subscriptions(self, ctrl: "GameController", game: "GameState", safe_tiles: dict) -> None:
+        """Keep all 4 candidate dodge tiles' live clickboxes warm every tick
+        of fighting() — see DODGE_TILE_SUB_IDS and the module docstring for
+        why this can't wait until a telegraph is actually seen."""
+        for key, (tx, ty) in safe_tiles.items():
+            ctrl.subscribe_to_tile(self.DODGE_TILE_SUB_IDS[key], tx, ty, game.plane,
+                                    ttl_ticks=self.DODGE_TILE_SUB_TTL_TICKS)
 
     def _click_dodge_tile(
-        self, game: "GameState", ctrl: "GameController", tile: Tuple[int, int],
+        self, game: "GameState", ctrl: "GameController", key: str, tile: Tuple[int, int],
     ) -> None:
         """Click the dodge tile directly in the game viewport — never the
         minimap. No human steps one tile sideways by reaching for the
@@ -385,19 +432,17 @@ class BrutusFighterRoutine(InteractionRoutine):
 
         Uses the real, plugin-computed canvas clickbox for the dodge tile
         (a `kind: "tile"` live-clickbox subscription — see GAMEBRIDGE.md)
-        rather than any geometric estimate: subscribing renews/overwrites
-        DODGE_TILE_SUB_ID, so re-subscribing every dodge is cheap and never
-        needs an explicit unsubscribe. If the subscription's first push
-        hasn't arrived yet, or the tile isn't currently on-screen, the dodge
-        click is skipped entirely (no minimap fallback) — the next
-        telegraph/tick will retry.
+        rather than any geometric estimate. The subscription itself is kept
+        warm by _renew_dodge_tile_subscriptions every tick, not here — by
+        the time this is called, the relevant subId should already have a
+        recent hullUpdate. If it doesn't (or the tile isn't currently
+        on-screen), the dodge click is skipped entirely (no minimap
+        fallback) — the next telegraph/tick will retry.
         """
-        tx, ty = tile
-        ctrl.subscribe_to_tile(self.DODGE_TILE_SUB_ID, tx, ty, game.plane,
-                                ttl_ticks=self.DODGE_TILE_SUB_TTL_TICKS)
-        update = ctrl.hull_update(self.DODGE_TILE_SUB_ID)
+        update = ctrl.hull_update(self.DODGE_TILE_SUB_IDS[key])
         if not update or not update.get("found") or not update.get("onScreen") \
                 or update.get("canvasX") is None:
-            log.debug("Dodge tile (%d, %d) not yet on-screen — skipping this dodge click", tx, ty)
+            tx, ty = tile
+            log.debug("Dodge tile %s (%d, %d) not yet on-screen — skipping this dodge click", key, tx, ty)
             return
         ctrl.click_walk_target(update["canvasX"], update["canvasY"], game)

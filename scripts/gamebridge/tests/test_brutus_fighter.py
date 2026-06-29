@@ -17,7 +17,7 @@ which BrutusFighterRoutine reuses unchanged via InteractionRoutine):
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 from scripts.gamebridge.item_ids import COOKED_SALMON, COOKED_TROUT
 from scripts.gamebridge.routines.examples.brutus_fighter import BrutusFighterRoutine
@@ -197,13 +197,20 @@ class TestFindTarget:
 
         assert result is None
 
-    def test_redirects_to_healing_before_engaging_if_hp_is_low(self):
+    def test_eats_then_still_engages_in_the_same_tick_if_hp_is_low(self):
+        """Eating must not cost a tick before engaging — both the eat click
+        and the attack click fire from within this single find_target() call."""
         game = _make_game(tick=3, hp=3, npcs=[BRUTUS],
-                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}],
+                           widgets=[TROUT_SLOT])
         ctrl = _ctrl()
+        ctrl.bring_entity_on_screen.return_value = True
+
         result = _routine().find_target(game, ctrl)
-        ctrl.click_entity.assert_not_called()
-        assert result == "healing"
+
+        ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
+        ctrl.click_entity.assert_called_once()
+        assert result == "fighting"
 
 
 # ---------------------------------------------------------------------------
@@ -227,23 +234,17 @@ class TestAttentionLevel:
         r.fighting(game, ctrl)
         ctrl.set_attention_level.assert_called_once_with("combat")
 
-    def test_dodging_sets_combat_attention(self):
-        game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
+    def test_fighting_sets_combat_attention_while_reengaging_after_a_dodge(self):
+        """Attention must stay "combat" on the re-engage tick too, not just
+        on the first telegraph sighting."""
+        game = _make_game(tick=5, npcs=[BRUTUS_BASIC_SWING])
         ctrl = _ctrl()
         r = _routine()
         r._target_index = BRUTUS["index"]
-        r._target = BRUTUS_TELEGRAPH_GROWL
+        r._target = BRUTUS_BASIC_SWING
+        r._fight_start_tick = 4
         r._dodge_clicked = True
-        r._dodge_tick = 5
-        r.dodging(game, ctrl)
-        ctrl.set_attention_level.assert_called_once_with("combat")
-
-    def test_healing_sets_combat_attention(self):
-        game = _make_game(tick=5, hp=4)
-        ctrl = _ctrl()
-        r = _routine()
-        r._return_state = "fighting"
-        r.healing(game, ctrl)
+        r.fighting(game, ctrl)
         ctrl.set_attention_level.assert_called_once_with("combat")
 
     def test_looting_sets_combat_attention(self):
@@ -276,18 +277,20 @@ class TestFightingTelegraphDetection:
     def test_dodges_on_growl_telegraph(self):
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         result = self._engaged_routine().fighting(game, _ctrl())
-        assert result == "dodging"
+        assert result == "fighting"
 
     def test_dodges_on_snort_telegraph(self):
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_SNORT])
         result = self._engaged_routine().fighting(game, _ctrl())
-        assert result == "dodging"
+        assert result == "fighting"
 
     def test_issues_dodge_click_immediately_on_telegraph_not_next_tick(self):
         """The dodge click must fire from within fighting() itself, the same
         tick the telegraph is seen — a Routine only re-evaluates its state
-        once per tick (base.py), so deferring the click to the first tick of
-        "dodging" would waste a full ~600ms tick of the 3-4 tick window."""
+        once per tick (base.py), so deferring the click to a separate
+        "dodging" state would waste a full ~600ms tick of an already-tight
+        window. There is no separate "dodging" state — dodging is handled
+        entirely inside fighting()."""
         r = self._engaged_routine()
         r._click_dodge_tile = MagicMock()
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
@@ -296,8 +299,39 @@ class TestFightingTelegraphDetection:
 
         r._click_dodge_tile.assert_called_once()
         assert r._dodge_clicked is True
-        assert r._dodge_tick == 5
-        assert result == "dodging"
+        assert result == "fighting"
+
+    def test_keeps_targeting_the_same_dodge_tile_while_telegraph_animation_persists(self):
+        """Brutus's telegraphs hold their animation for several ticks (and
+        Slam's repeats in pulses). The dodge click is retried every tick the
+        player hasn't yet reached the chosen tile (see module docstring), but
+        which tile is being aimed at must stay locked across those retries —
+        not recomputed from "nearest" each tick, which could flip-flop mid-walk."""
+        r = self._engaged_routine()
+        r._click_dodge_tile = MagicMock()
+        ctrl = _ctrl()
+
+        r.fighting(_make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_SNORT]), ctrl)
+        first_key = r._dodge_tile_key
+        result = r.fighting(_make_game(tick=6, npcs=[BRUTUS_TELEGRAPH_SNORT]), ctrl)
+
+        assert r._dodge_tile_key == first_key
+        assert r._click_dodge_tile.call_count == 2
+        assert result == "fighting"
+
+    def test_stays_dodging_no_matter_how_long_the_telegraph_persists(self):
+        """Regardless of how many ticks the telegraph animation has been
+        showing, fighting() must keep returning "fighting" without ever
+        attempting to re-engage (no click_entity call) while still
+        telegraphing."""
+        r = self._engaged_routine()
+        ctrl = _ctrl()
+
+        for tick in range(5, 15):
+            result = r.fighting(_make_game(tick=tick, npcs=[BRUTUS_TELEGRAPH_SNORT]), ctrl)
+            assert result == "fighting"
+
+        ctrl.click_entity.assert_not_called()
 
     def test_transitions_to_looting_when_brutus_vanishes(self):
         game = _make_game(tick=5, npcs=[])
@@ -321,97 +355,110 @@ class TestFightingTelegraphDetection:
 
 
 # ---------------------------------------------------------------------------
-# dodging — sidestep then re-engage
+# _compute_dodge_tile — pure geometry, no routine state involved
 # ---------------------------------------------------------------------------
 
-class TestDodging:
-    def _dodging_routine(self, dodge_tick: int = 5, dodge_clicked: bool = False) -> BrutusFighterRoutine:
-        r = _routine()
-        r._target_index = BRUTUS["index"]
-        r._target = BRUTUS_TELEGRAPH_GROWL
-        r._dodge_clicked = dodge_clicked
-        r._dodge_tick = dodge_tick
-        return r
-
+class TestComputeDodgeTile:
     def test_computes_tile_away_from_brutus_centre(self):
         # Brutus centre is (13279, 7229) — player one tile south-west of it.
+        # The four candidate safe tiles are the corners 3 tiles out from
+        # centre; nearest to the player (Manhattan distance) is the
+        # north-west corner, (13276, 7226).
         game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
-        r = self._dodging_routine()
-        tile = r._compute_dodge_tile(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
-        # Player is south of centre (py < cy) and west of centre (px < cx) —
-        # dodge should move further south-west, away from Brutus.
-        assert tile == (game.player_pos[0] - 1, game.player_pos[1] - 1)
+        tile = _routine()._compute_dodge_tile(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
+        assert tile == (13276, 7226)
+
+    def test_safe_tiles_returns_all_four_corners(self):
+        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        safe_tiles = _routine()._safe_tiles(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
+        assert safe_tiles == {
+            "nw": (13276, 7226),
+            "ne": (13282, 7226),
+            "sw": (13276, 7232),
+            "se": (13282, 7232),
+        }
+
+    def test_nearest_safe_tile_key_picks_nw_for_fixture_player_position(self):
+        game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        r = _routine()
+        safe_tiles = r._safe_tiles(game, _ctrl(), BRUTUS_TELEGRAPH_GROWL)
+        assert r._nearest_safe_tile_key(game, safe_tiles) == "nw"
 
     def test_prefers_live_hull_position_over_stale_tick_position(self):
         game = _make_game(tick=5, player_x=13278, player_y=7227, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
         ctrl.hull_update.return_value = {"found": True, "worldX": 13300, "worldY": 7300}
-        r = self._dodging_routine()
-        tile = r._compute_dodge_tile(game, ctrl, BRUTUS_TELEGRAPH_GROWL)
-        # Centre now far north-east at (13301, 7301) — player is south-west
-        # of it, so the dodge tile must move further south-west from there.
-        assert tile == (game.player_pos[0] - 1, game.player_pos[1] - 1)
+        tile = _routine()._compute_dodge_tile(game, ctrl, BRUTUS_TELEGRAPH_GROWL)
+        # Centre now far north-east at (13301, 7301) — of the four corners
+        # 3 tiles out from it, the nearest to the (unchanged) player position
+        # is still the north-west one, (13298, 7298).
+        assert tile == (13298, 7298)
 
-    def test_first_tick_issues_dodge_click_and_does_not_reengage(self):
-        game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
+
+# ---------------------------------------------------------------------------
+# fighting() — dodge-tile subscription warm-up (every tick, not reactive)
+# ---------------------------------------------------------------------------
+
+class TestDodgeTileWarmup:
+    def _engaged_routine(self) -> BrutusFighterRoutine:
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._target = BRUTUS
+        r._fight_start_tick = 0
+        return r
+
+    def test_subscribes_to_all_four_dodge_tiles_even_without_a_telegraph(self):
+        """Subscriptions must be kept warm every tick of fighting(),
+        regardless of whether a telegraph is currently showing — this is
+        what gives the Java plugin's hullUpdate push lead time before the
+        very first telegraph of a fight ever appears (see module docstring/
+        bug this fixes)."""
+        game = _make_game(tick=5, npcs=[BRUTUS_BASIC_SWING])
         ctrl = _ctrl()
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
-        r._click_dodge_tile = MagicMock()
 
-        result = r.dodging(game, ctrl)
+        self._engaged_routine().fighting(game, ctrl)
 
-        r._click_dodge_tile.assert_called_once()
-        ctrl.click_entity.assert_not_called()
-        assert r._dodge_clicked is True
-        assert r._dodge_tick == 5
-        assert result is None
+        for key, coords in {
+            "nw": (13276, 7226), "ne": (13282, 7226),
+            "sw": (13276, 7232), "se": (13282, 7232),
+        }.items():
+            ctrl.subscribe_to_tile.assert_any_call(
+                BrutusFighterRoutine.DODGE_TILE_SUB_IDS[key], *coords,
+                game.plane, ttl_ticks=BrutusFighterRoutine.DODGE_TILE_SUB_TTL_TICKS,
+            )
 
-    def test_waits_out_the_telegraph_window_before_reengaging(self):
-        game = _make_game(tick=6, npcs=[BRUTUS_TELEGRAPH_GROWL])
+    def test_does_not_reproduce_cold_start_miss_on_first_ever_telegraph(self):
+        """Regression test for the reported bug: subscriptions warmed up
+        over several preceding ticks of fighting() (no telegraph yet) must
+        already have hullUpdate data by the time the first telegraph of the
+        fight appears, so the dodge click is not skipped."""
         ctrl = _ctrl()
-        r = self._dodging_routine(dodge_tick=5, dodge_clicked=True)  # 1 tick elapsed < DODGE_WAIT_TICKS
+        r = self._engaged_routine()
 
-        result = r.dodging(game, ctrl)
+        for tick in range(5, 10):
+            r.fighting(_make_game(tick=tick, npcs=[BRUTUS_BASIC_SWING]), ctrl)
 
-        ctrl.click_entity.assert_not_called()
-        assert result is None
+        ctrl.hull_update.return_value = {
+            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_IDS["nw"], "found": True,
+            "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
+        }
+        result = r.fighting(_make_game(tick=10, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
 
-    def test_reengages_with_plain_left_click_once_window_elapses(self):
-        game = _make_game(tick=7, npcs=[BRUTUS_TELEGRAPH_GROWL])
-        ctrl = _ctrl()
-        r = self._dodging_routine(dodge_tick=5, dodge_clicked=True)  # 2 ticks elapsed == DODGE_WAIT_TICKS
-
-        result = r.dodging(game, ctrl)
-
-        ctrl.click_entity.assert_called_once()
+        ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, ANY)
         assert result == "fighting"
-        assert r._dodge_clicked is False
 
-    def test_stays_dodging_if_reengage_click_does_not_land(self):
-        game = _make_game(tick=7, npcs=[BRUTUS_TELEGRAPH_GROWL])
-        ctrl = _ctrl()
-        ctrl.click_entity.return_value = False
-        r = self._dodging_routine(dodge_tick=5, dodge_clicked=True)
 
-        result = r.dodging(game, ctrl)
+# ---------------------------------------------------------------------------
+# fighting() — dodge-tile click plumbing (first telegraph sighting)
+# ---------------------------------------------------------------------------
 
-        assert result is None
-        assert r._dodge_clicked is True
-
-    def test_click_dodge_tile_subscribes_to_the_computed_tile(self):
-        """The dodge click must register a `kind: "tile"` live-clickbox
-        subscription on the computed tile coordinates — see
-        GameController.subscribe_to_tile / GAMEBRIDGE.md."""
-        game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
-        ctrl = _ctrl()
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
-
-        r.dodging(game, ctrl)
-
-        ctrl.subscribe_to_tile.assert_called_once_with(
-            BrutusFighterRoutine.DODGE_TILE_SUB_ID, game.player_pos[0] - 1, game.player_pos[1] - 1,
-            game.plane, ttl_ticks=BrutusFighterRoutine.DODGE_TILE_SUB_TTL_TICKS,
-        )
+class TestDodgeTileClickPlumbing:
+    def _telegraphed_routine(self) -> BrutusFighterRoutine:
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._target = BRUTUS_TELEGRAPH_GROWL
+        r._fight_start_tick = 0
+        return r
 
     def test_clicks_canvas_position_from_tile_hull_update_when_onscreen(self):
         """Once the tile subscription's hullUpdate shows it on-screen, click
@@ -419,12 +466,11 @@ class TestDodging:
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
         ctrl.hull_update.return_value = {
-            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_ID, "found": True,
+            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_IDS["nw"], "found": True,
             "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
         }
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
 
-        r.dodging(game, ctrl)
+        self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
         ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, game)
@@ -434,10 +480,9 @@ class TestDodging:
         Must never fall back to a minimap click."""
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
-        ctrl.hull_update.return_value = {"subId": BrutusFighterRoutine.DODGE_TILE_SUB_ID, "found": False}
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
+        ctrl.hull_update.return_value = {"subId": BrutusFighterRoutine.DODGE_TILE_SUB_IDS["nw"], "found": False}
 
-        r.dodging(game, ctrl)
+        self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
         ctrl.click_walk_target.assert_not_called()
@@ -447,12 +492,11 @@ class TestDodging:
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
         ctrl.hull_update.return_value = {
-            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_ID, "found": True,
+            "subId": BrutusFighterRoutine.DODGE_TILE_SUB_IDS["nw"], "found": True,
             "onScreen": False, "canvasX": None, "canvasY": None,
         }
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
 
-        r.dodging(game, ctrl)
+        self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_minimap_entity.assert_not_called()
         ctrl.click_walk_target.assert_not_called()
@@ -463,26 +507,111 @@ class TestDodging:
         game = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
         ctrl = _ctrl()
         ctrl.hull_update.return_value = None
-        r = self._dodging_routine(dodge_tick=-1, dodge_clicked=False)
 
-        r.dodging(game, ctrl)
+        self._telegraphed_routine().fighting(game, ctrl)
 
         ctrl.click_walk_target.assert_not_called()
 
-    def test_transitions_to_looting_if_brutus_dies_mid_dodge(self):
-        game = _make_game(tick=5, npcs=[])
+    def test_retries_dodge_click_next_tick_if_first_attempt_missed(self):
+        """A dodge click that misses because the tile's hullUpdate isn't
+        `found` yet must be retried on the next tick — not abandoned. This is
+        the bug: the old one-shot dodge click marked itself "done" the
+        instant it was attempted, regardless of whether it actually landed."""
+        r = self._telegraphed_routine()
         ctrl = _ctrl()
-        r = self._dodging_routine()
-        result = r.dodging(game, ctrl)
-        assert result == "looting"
+        ctrl.hull_update.return_value = {"found": False}
+
+        r.fighting(_make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
+        ctrl.click_walk_target.assert_not_called()
+
+        ctrl.hull_update.return_value = {
+            "found": True, "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
+        }
+        result = r.fighting(_make_game(tick=6, npcs=[BRUTUS_TELEGRAPH_GROWL]), ctrl)
+
+        ctrl.click_walk_target.assert_called_once_with(386.0, 320.0, ANY)
+        assert result == "fighting"
+
+    def test_stops_clicking_once_player_has_reached_the_dodge_tile(self):
+        """Once `game.player_pos` matches the locked dodge tile, no further
+        click fires even while still telegraphing — "wait if already on the
+        dodge tile" rather than spamming the same destination forever."""
+        r = self._telegraphed_routine()
+        ctrl = _ctrl()
+        ctrl.hull_update.return_value = {
+            "found": True, "onScreen": True, "canvasX": 386.0, "canvasY": 320.0,
+        }
+
+        game1 = _make_game(tick=5, npcs=[BRUTUS_TELEGRAPH_GROWL])
+        r.fighting(game1, ctrl)
+        ctrl.click_walk_target.assert_called_once()
+
+        ctrl.click_walk_target.reset_mock()
+        nw_tile = r._safe_tiles(game1, ctrl, BRUTUS_TELEGRAPH_GROWL)[r._dodge_tile_key]
+        game2 = _make_game(tick=6, player_x=nw_tile[0], player_y=nw_tile[1],
+                            npcs=[BRUTUS_TELEGRAPH_GROWL])
+        result = r.fighting(game2, ctrl)
+
+        ctrl.click_walk_target.assert_not_called()
+        assert result == "fighting"
+
+
+# ---------------------------------------------------------------------------
+# fighting() — re-engaging once the telegraph animation has cleared
+# ---------------------------------------------------------------------------
+
+class TestReengageAfterDodge:
+    def _post_dodge_routine(self, fight_start_tick: int = 0) -> BrutusFighterRoutine:
+        r = _routine()
+        r._target_index = BRUTUS["index"]
+        r._target = BRUTUS
+        r._fight_start_tick = fight_start_tick
+        r._dodge_clicked = True
+        return r
+
+    def test_reengages_with_plain_left_click_once_animation_clears(self):
+        """No extra fixed wait — re-engaging is safe the same tick the
+        telegraph animation stops, confirmed against a recorded fight (see
+        module docstring)."""
+        game = _make_game(tick=6, npcs=[BRUTUS_BASIC_SWING])
+        ctrl = _ctrl()
+        r = self._post_dodge_routine()
+
+        result = r.fighting(game, ctrl)
+
+        ctrl.click_entity.assert_called_once()
+        assert result == "fighting"
         assert r._dodge_clicked is False
 
+    def test_stays_dodging_if_reengage_click_does_not_land(self):
+        game = _make_game(tick=6, npcs=[BRUTUS_BASIC_SWING])
+        ctrl = _ctrl()
+        ctrl.click_entity.return_value = False
+        r = self._post_dodge_routine()
+
+        result = r.fighting(game, ctrl)
+
+        assert result is None
+        assert r._dodge_clicked is True
+
+    def test_transitions_to_looting_if_brutus_dies_mid_dodge(self):
+        """The vanished-NPC check runs before the telegraph/re-engage logic,
+        so it must win outright regardless of dodge state."""
+        game = _make_game(tick=6, npcs=[])
+        ctrl = _ctrl()
+        r = self._post_dodge_routine()
+
+        result = r.fighting(game, ctrl)
+
+        assert result == "looting"
+
 
 # ---------------------------------------------------------------------------
-# healing — eat below threshold, cooldown, resume interrupted state
+# _maybe_eat — inline healing: eat below threshold, cooldown-gated, then the
+# caller's own state logic continues in the same tick (see module docstring)
 # ---------------------------------------------------------------------------
 
-class TestHealing:
+class TestMaybeEat:
     def test_needs_heal_false_above_threshold(self):
         game = _make_game(hp=10, inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
         assert _routine()._needs_heal(game) is False
@@ -495,28 +624,35 @@ class TestHealing:
         game = _make_game(hp=6, inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
         assert _routine()._needs_heal(game) is True
 
-    def test_fighting_redirects_to_healing_at_low_hp(self):
+    def test_fighting_eats_inline_without_costing_a_tick(self):
+        """Eating must happen in the same fighting() call that detects low
+        HP, not via a detour that costs a tick before the click fires."""
         game = _make_game(tick=5, hp=4, npcs=[BRUTUS_BASIC_SWING],
-                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}],
+                           widgets=[TROUT_SLOT])
+        ctrl = _ctrl()
         r = _routine()
         r._target_index = BRUTUS["index"]
         r._target = BRUTUS
         r._fight_start_tick = 4
-        result = r.fighting(game, _ctrl())
-        assert result == "healing"
-        assert r._return_state == "fighting"
+
+        result = r.fighting(game, ctrl)
+
+        ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
+        assert r._last_eat_tick == 5
+        assert result is None
 
     def test_eats_trout_then_salmon_when_trout_exhausted(self):
         game = _make_game(tick=5, hp=4, widgets=[SALMON_SLOT],
                            inventory=[{"slot": 1, "itemId": COOKED_SALMON, "qty": 1}])
         ctrl = _ctrl()
         r = _routine()
-        r._return_state = "fighting"
 
-        result = r.healing(game, ctrl)
+        result = r._maybe_eat(game, ctrl)
 
         ctrl.click_widget.assert_called_once_with(SALMON_SLOT)
-        assert result == "fighting"
+        assert result is True
+        assert r._last_eat_tick == 5
 
     def test_prefers_trout_when_both_present(self):
         game = _make_game(tick=5, hp=4, widgets=[TROUT_SLOT, SALMON_SLOT],
@@ -525,7 +661,7 @@ class TestHealing:
         ctrl = _ctrl()
         r = _routine()
 
-        r.healing(game, ctrl)
+        r._maybe_eat(game, ctrl)
 
         ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
 
@@ -536,9 +672,10 @@ class TestHealing:
         r = _routine()
         r._last_eat_tick = 5  # 1 tick ago < EAT_COOLDOWN_TICKS
 
-        r.healing(game, ctrl)
+        result = r._maybe_eat(game, ctrl)
 
         ctrl.click_widget.assert_not_called()
+        assert result is False
 
     def test_eats_again_once_cooldown_elapses(self):
         game = _make_game(tick=8, hp=4, widgets=[TROUT_SLOT],
@@ -547,16 +684,24 @@ class TestHealing:
         r = _routine()
         r._last_eat_tick = 5  # 3 ticks ago == EAT_COOLDOWN_TICKS
 
-        r.healing(game, ctrl)
+        r._maybe_eat(game, ctrl)
 
         ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
 
-    def test_returns_to_return_state_even_with_no_food_left(self):
+    def test_does_nothing_when_hp_is_fine(self):
+        game = _make_game(tick=5, hp=15, widgets=[TROUT_SLOT],
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+        ctrl = _ctrl()
+        result = _routine()._maybe_eat(game, ctrl)
+        ctrl.click_widget.assert_not_called()
+        assert result is False
+
+    def test_returns_false_with_no_food_left(self):
         game = _make_game(tick=5, hp=4, widgets=[], inventory=[])
-        r = _routine()
-        r._return_state = "looting"
-        result = r.healing(game, _ctrl())
-        assert result == "looting"
+        ctrl = _ctrl()
+        result = _routine()._maybe_eat(game, ctrl)
+        ctrl.click_widget.assert_not_called()
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -624,13 +769,21 @@ class TestLooting:
         ctrl.click_entity.assert_not_called()
         assert result is None
 
-    def test_redirects_to_healing_while_looting_if_hp_drops(self):
+    def test_eats_then_still_loots_in_the_same_tick_if_hp_drops(self):
+        """Eating must not cost a tick before looting resumes — both the eat
+        click and the loot click fire from within this single looting() call."""
         game = _make_game(tick=11, hp=3, ground_items=[COINS_ON_BRUTUS_TILE],
-                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}])
+                           inventory=[{"slot": 0, "itemId": COOKED_TROUT, "qty": 1}],
+                           widgets=[TROUT_SLOT])
+        ctrl = _ctrl()
         r = self._looting_routine()
-        result = r.looting(game, _ctrl())
-        assert result == "healing"
-        assert r._return_state == "looting"
+
+        result = r.looting(game, ctrl)
+
+        ctrl.click_widget.assert_called_once_with(TROUT_SLOT)
+        ctrl.click_entity.assert_called_once()
+        assert r._loot_target == COINS_ON_BRUTUS_TILE
+        assert result is None
 
     def test_returns_to_find_target_once_loot_window_elapses(self):
         game = _make_game(tick=15, ground_items=[])  # 15 - 10 = 5 >= LOOT_WINDOW_TICKS

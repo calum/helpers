@@ -4,6 +4,232 @@ Updated after each session. Add findings at the top of each section; never delet
 
 ---
 
+## Session: 2026-06-29 — Inline healing into Brutus's combat states (remove the dedicated "healing" state)
+
+### Goal
+
+User asked: does the "healing" state mean detection and the eat click happen
+on different ticks? Yes — `Routine.tick()` (`scripts/gamebridge/routines/base.py`)
+calls exactly one state method per incoming tick message and a returned state
+name only takes effect on the *next* call, so `find_target`/`fighting`/
+`looting` returning `"healing"` cost a full ~600ms tick of pure
+detection-only delay before the eat click in the old `healing()` state ever
+fired. Asked to rewrite so eating and the state's normal action (attack/dodge/
+loot) both happen within the same tick when both are needed.
+
+### Findings / Decisions
+
+- **The engine does not enforce "one action per tick"** — that was purely an
+  artifact of this routine's own state-machine design, not a constraint from
+  `DecisionEngine`. `decision/engine.py`'s threaded mode (`ingest()`/`drive()`
+  on separate threads) always has `drive()` react to the *latest* published
+  `GameState` snapshot regardless of how long the previous `drive()` call
+  blocked — so a state method calling two blocking controller actions
+  (`click_inventory_item` then `click_live`) back-to-back is architecturally
+  safe; it doesn't desync ticks or build a backlog, it just means no fresher
+  telegraph data is read until both actions finish (the same exposure a
+  single blocking click already has today).
+- **Fix**: replaced the separate `healing` state with an inlined
+  `_maybe_eat(game, ctrl) -> bool` helper, called at the top of
+  `find_target()`/`fighting()`/`looting()` (after `set_attention_level`,
+  before each state's own logic). It performs the same cooldown-gated
+  (`EAT_COOLDOWN_TICKS`/`_last_eat_tick`) trout→salmon eat click the old
+  `healing()` state did, then **falls through** into that same call's normal
+  logic — so a low-HP tick now eats *and* attacks/dodges/loots in one call
+  instead of freezing for a tick on detection.
+- Removed `BrutusFighterRoutine.healing()` and the `_return_state` field
+  entirely — no longer needed since there's no state to return to.
+- No Java file under `runelite-client/.../plugins/gamebridge/` was touched, so
+  no `GAMEBRIDGE.md` update was needed (per CLAUDE.md's Game Bridge
+  maintenance rule).
+
+### Tests
+
+Renamed `TestHealing` → `TestMaybeEat` in `test_brutus_fighter.py`, rewriting
+its eat-click tests to call `r._maybe_eat(game, ctrl)` directly instead of the
+removed `r.healing(game, ctrl)`. Replaced the three "redirects to healing"
+tests (`find_target`/`fighting`/`looting`) with tests asserting *both* the eat
+click and that state's own action (e.g. `click_entity`/`click_widget` for
+looting) fire from a single call when a food-bearing inventory/widget fixture
+is given. Removed the now-defunct `test_healing_sets_combat_attention`.
+Full suite: 1422 passed, 10 skipped (`python -m pytest scripts/gamebridge/tests/ -v`).
+
+---
+
+## Session: 2026-06-29 — Fix: Brutus dodge cold-start miss (subscribe-then-immediately-read race)
+
+### Goal
+
+Live testing showed Brutus's special-attack dodge missing and landing real
+damage even when the routine logged "dodging now" — production log included
+`Dodge tile (10588, 2428) not yet on-screen — skipping this dodge click`.
+User's first proposal was to pre-subscribe to every tile in a 6-tile radius
+around the player/Brutus at fight start so clickboxes are always warm.
+
+### Findings / Decisions
+
+- **Hard cap discovered**: `GameBridgePlugin.MAX_SUBSCRIPTIONS_PER_CLIENT = 20`
+  (`runelite-client/.../gamebridge/GameBridgePlugin.java:64`). Subscriptions
+  past the cap are silently dropped server-side (`handleSubscribe`, only a
+  `log.warn`) — Python receives no error/signal that a subscribe was
+  rejected. A 6-tile radius is `(2*6+1)^2 = 169` tiles — ~8x over budget, so
+  most of that radius would fail invisibly.
+- **Per-subscription compute cost is cheap, not the binding constraint**:
+  `TickMessageBuilder.findTile()` is a single `Perspective.getCanvasTilePoly`
+  call per subscription per `ClientTick` (~20ms) — the 20-sub cap, not
+  compute cost, is what rules out a wide radius.
+- **`_compute_dodge_tile` only ever produces 4 possible tiles** (the corners
+  3 tiles out from Brutus's centre along each diagonal) — a radius was never
+  actually necessary; only those 4 ever get clicked.
+- **Real root cause of the miss**: `_click_dodge_tile` previously called
+  `ctrl.subscribe_to_tile(...)` and then immediately `ctrl.hull_update(...)`
+  in the same call, at the exact moment a telegraph was first detected. The
+  subscribe message and the first `hullUpdate` push are an async TCP round
+  trip, so the very first dodge of every fight had zero lead time — the
+  "not yet on-screen" skip was the existing safety check correctly firing on
+  a subscription that had never had a chance to receive data.
+- **Decision (user-confirmed)**: rather than a wide radius requiring a Java
+  cap change, keep the 4 actual candidate dodge tiles (`DODGE_TILE_SUB_IDS`:
+  `nw`/`ne`/`sw`/`se`) subscribed continuously every tick of `fighting()` —
+  not just reactively inside the dodge-click gesture — well inside the
+  20-sub budget (4 dodge tiles + Brutus NPC sub + click-target sub + tooltip
+  placeholder ≈ 7 total). `_compute_dodge_tile` split into `_safe_tiles`
+  (all 4 corners) + `_nearest_safe_tile_key` (picks one), with
+  `_compute_dodge_tile` kept as a thin wrapper for backward compatibility.
+- No Java file under `runelite-client/.../plugins/gamebridge/` was touched,
+  so `GAMEBRIDGE.md`/`ARCHITECTURE.md` did not need updating (per CLAUDE.md's
+  Game Bridge maintenance rule, scoped to Java-side schema changes only).
+
+### Tests
+
+Added `TestDodgeTileWarmup` (warm-up assertion across all 4 corners every
+tick regardless of telegraph state, plus a regression test simulating several
+no-telegraph ticks before the first telegraph to prove the cold-start miss no
+longer reproduces) and `test_safe_tiles_returns_all_four_corners` /
+`test_nearest_safe_tile_key_picks_nw_for_fixture_player_position` to
+`TestComputeDodgeTile`. Updated existing click-plumbing tests to key off
+`DODGE_TILE_SUB_IDS["nw"]` instead of the removed single `DODGE_TILE_SUB_ID`.
+Full suite: 1420 passed, 10 skipped (`python -m pytest scripts/gamebridge/tests/ -v`).
+
+### Open / next steps
+
+- If Brutus ever moves significantly mid-fight (not yet observed), the 4
+  corners are recomputed fresh every tick from his live position, so this
+  should track him — but worth confirming against another recorded fight.
+
+---
+
+## Session: 2026-06-29 — Fix: Brutus dodge re-clicked every telegraph tick / lost time dodging; dodging→fighting doc & test fallout
+
+### Goal
+
+`BrutusFighterRoutine.fighting()` had two outstanding in-code TODOs from a
+prior session's merge of a separate `"dodging"` state into `fighting()`:
+1. The dodge-tile click fired on *every* tick the telegraph animation was
+   showing (no debounce), and the routine never reached its wait/re-engage
+   logic until the animation changed — "clicks the dodge tile twice"/"spends
+   the whole snort sequence dodging".
+2. The user's own attempted fix (gating the telegraph-detection branch itself
+   on `not self._dodge_clicked`) caused Brutus's special to actually land.
+3. The module docstring/state diagram still described a separate `"dodging"`
+   state, and `test_brutus_fighter.py` (added in the same original commit as
+   the routine) called a `dodging()` method that has never existed in this
+   repo's history — 16 of its 48 tests were failing with `AttributeError`.
+
+The user had already live-tested the merged design and confirmed it beats
+Brutus successfully, so this session was about the two TODOs and the
+doc/test cleanup, not re-validating the overall approach.
+
+### Findings / Decisions
+
+- **Root cause of the no-debounce bug**: the telegraph branch unconditionally
+  clicked the dodge tile, set `_dodge_clicked = True`, and reset
+  `_dodge_tick = game.tick` on *every* tick the animation was in
+  `SPECIAL_TELL_ANIMS`, then unconditionally `return`ed — so the
+  wait-then-reengage logic a few lines below was unreachable for as long as
+  the animation kept showing.
+- **Why the user's own `not self._dodge_clicked` fix missed dodges**: gating
+  *entry* to the whole telegraph branch on that flag meant that once
+  `_dodge_clicked` was set True on first sighting, every subsequent tick
+  (even while the animation was still telegraphing) fell straight through to
+  the wait/re-engage logic — which could count down and attempt to re-engage
+  while the telegraph's danger window was still active, walking the player
+  back into the hit.
+- **Resolved the "wait until clear, or wait a fixed N ticks?" ambiguity with
+  real data**: the user re-analysed a recorded fight and supplied exact
+  per-tick `animation` values for both specials. Both telegraphs hold their
+  animation for several consecutive ticks, then drop to `-1` briefly (Slam's
+  telegraph — animation 13785 in this recording — then restarts for several
+  pulses, matching the "repeated 3 times" framing). The user's own analysis:
+  re-engaging is safe "on the tick the animation is back to `-1`" — i.e. wait
+  for the telegraph animation to actually clear, with **no additional fixed
+  buffer** needed afterward (the recording shows damage lands while the tell
+  is still displaying, so by the time it clears it's already safe).
+- **Fix** (`scripts/gamebridge/routines/examples/brutus_fighter.py::fighting`):
+  - The telegraph branch now only fires `_click_dodge_tile` once per episode,
+    gated on `if not self._dodge_clicked:` *inside* the branch (not gating
+    branch entry) — so the branch still unconditionally `return`s `"fighting"`
+    every tick the animation persists, correctly blocking the re-engage check
+    below for the whole telegraph (and, for Slam, across its repeating
+    pulses) without re-clicking the tile.
+  - Removed `DODGE_WAIT_TICKS` (the fixed post-telegraph buffer) and
+    `_dodge_tick` entirely — both became dead code once "wait for the
+    telegraph branch to stop firing" is itself the correct wait condition.
+    The re-engage check (`if self._dodge_clicked and self.click_live(...)`) now
+    runs immediately on the first tick the animation leaves
+    `SPECIAL_TELL_ANIMS`, retrying every tick thereafter until the click lands
+    (unchanged retry semantics, just without the extra fixed delay first).
+  - Updated the module docstring: removed the stale top-of-file TODO,
+    collapsed the state diagram's separate `dodging` box into `fighting`'s own
+    self-loop, dropped `dodging` from the `healing`-reachability list, and
+    rewrote `fighting()`'s own docstring paragraph to describe the
+    debounce/animation-clear behaviour instead of the old "why dodging can't
+    be its own state" framing.
+- **Test fallout** (`scripts/gamebridge/tests/test_brutus_fighter.py`):
+  - Fixed 3 assertions in `TestFightingTelegraphDetection` expecting
+    `result == "dodging"` → `"fighting"`; added
+    `test_does_not_reclick_dodge_tile_while_telegraph_animation_persists` and
+    `test_stays_dodging_no_matter_how_long_the_telegraph_persists`.
+  - Replaced `TestDodging` (which called the nonexistent `dodging()` and had
+    two pre-existing off-by-one bugs in its expected `_compute_dodge_tile`
+    tuples, masked until now by the `AttributeError` firing first) with three
+    focused classes: `TestComputeDodgeTile` (pure geometry, expected tuples
+    corrected to the actual nearest-of-four-corners result),
+    `TestDodgeTileClickPlumbing` (subscribe/click/skip-fallback behaviour,
+    driven through `fighting()` with a telegraphing NPC), and
+    `TestReengageAfterDodge` (immediate re-engage once the animation clears,
+    retry-on-failed-click, and death-mid-dodge → `"looting"`, driven through
+    `fighting()` with a non-telegraphing NPC and `_dodge_clicked` pre-seeded).
+  - Retargeted `TestAttentionLevel.test_dodging_sets_combat_attention` →
+    `test_fighting_sets_combat_attention_while_reengaging_after_a_dodge`.
+
+### Tests
+
+`python -m pytest scripts/gamebridge/tests/test_brutus_fighter.py -v` → 48
+passed (was 32 passed / 16 failed before this session). Full suite:
+`python -m pytest scripts/gamebridge/tests/ -q` → 1417 passed, 10 skipped
+(unchanged from before this session — no regressions elsewhere).
+
+### Open / next steps
+
+- Still only verified at the unit-test level for the *timing* fix — the
+  debounce behaviour itself was already confirmed live (user beat Brutus
+  before this session), but the "no extra wait, re-engage immediately on
+  animation clear" change removes a buffer that was previously masking any
+  one-tick race between the animation clearing and Brutus actually being
+  re-clickable. Worth a live re-test to confirm re-engagement still lands
+  cleanly without the old buffer.
+- The recording data the user supplied labels animation 13778 as the
+  "Charge" tell and 13785 as "Slam" — the *opposite* pairing from the module
+  docstring's prior growl/snort naming. Updated the docstring's animation-ID
+  bullet list to drop the now-unverified growl/snort flavour text rather than
+  guess at the correct mapping; doesn't affect behaviour since both IDs are
+  handled identically via `SPECIAL_TELL_ANIMS`, but worth confirming the
+  correct charge/slam↔anim-id pairing if it's ever needed for per-special
+  logic.
+
+---
+
 ## Session: 2026-06-28 — Real tile clickboxes (`"tile"` subscription kind) for Brutus dodge
 
 ### Goal
