@@ -9,7 +9,6 @@ __pycache__/
 *.pyc
 recordings/
 
-research/
 
 ### IntelliJ IDEA ###
 .idea/
