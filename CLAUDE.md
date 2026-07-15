@@ -9,10 +9,6 @@ Every code change — bug fix, new feature, or refactor — must include new or 
 - Any modified behaviour must have its existing tests updated to match and new tests added for the changed logic.
 - Tests must pass locally before considering the task done. Run with:
   ```powershell
-  # Python (gamebridge scripts)
-  python -m pytest scripts/gamebridge/tests/ -v
-
-  # Java (RuneLite client)
   ./gradlew.bat :runelite-client:test
   ```
 - Do not skip or comment out failing tests to make the suite green — fix the code or the test.
@@ -47,23 +43,15 @@ This mirrors the structure each `PLAN.md` session entry already follows
 
 After any research session (reading source files, exploring the codebase, investigating APIs), update `PLAN.md` with new findings. Add concrete details: file paths, class names, how mechanisms work, open questions, and next steps. Keep `PLAN.md` as a living document that accumulates knowledge across sessions.
 
-## Game Bridge maintenance rule
-
-`GAMEBRIDGE.md` is the Python developer guide for the Game Bridge plugin. It documents the exact JSON wire format, event types, field names, config keys, and code examples. **Whenever you modify any file in `runelite-client/…/plugins/gamebridge/`, you must also update `GAMEBRIDGE.md`** to keep the two in sync. Specifically:
-
-- Adding or removing a field in a tick message → update the relevant section and its JSON example in `GAMEBRIDGE.md`
-- Adding, removing, or renaming an event type → update the Events section
-- Adding or removing a config item → update the Plugin config reference table
-- Changing the hull filter matching logic → update the Hull filter section
-- Changing the port default or protocol framing → update the Protocol section
-
-The guide is the contract between the Java plugin and any Python tooling built against it. A silent schema change breaks Python consumers without any compile-time warning.
-
 ---
 
 ## Goal
 
-Add a simple hook (plugin) to RuneLite that logs a console event when a `Tree` game object spawns, then build the client and wire it to the Jagex Launcher as the default client.
+This is a personal RuneLite fork for writing small, focused custom plugins —
+testing new game content, assistive QA tooling, event/object loggers,
+overlays. There's no bot or automation layer here. When starting a new
+plugin, copy the pattern from `runelite-client/…/plugins/helperexample/`
+(see below).
 
 ---
 
@@ -73,8 +61,8 @@ Add a simple hook (plugin) to RuneLite that logs a console event when a `Tree` g
 |---|---|---|
 | `runelite-api` | `runelite-api/` | Java interfaces that mirror the RS game engine. No implementation; injected at runtime by Mixins. |
 | `runelite-client` | `runelite-client/` | The actual desktop application. Contains plugins, UI, event bus, config system. |
-| `cache` | `cache/` | Cache-reading utilities. Not needed for this task. |
-| `runelite-gradle-plugin` | `runelite-gradle-plugin/` | Gradle plugin used by the build. Not needed for this task. |
+| `cache` | `cache/` | Cache-reading utilities. Not needed for plugin work. |
+| `runelite-gradle-plugin` | `runelite-gradle-plugin/` | Gradle plugin used by the build. Not needed for plugin work. |
 
 Project root is a Gradle composite build. Gradle wrapper: `./gradlew.bat` (Windows).
 
@@ -115,6 +103,11 @@ public class TreeLoggerPlugin extends Plugin {
 }
 ```
 
+This is essentially what `runelite-client/…/plugins/helperexample/HelperExamplePlugin.java`
+does (with `log.info` instead of `System.out.println`, per the logging
+convention below, and the name-match logic pulled into a testable static
+method) — copy that package as the starting point for a new plugin.
+
 ### How the Game Client starts
 
 Entry point: `RuneLite.java` — sets up Guice, loads `RuneLiteModule`, discovers plugins via classpath scanning, then starts the game loop.
@@ -122,30 +115,6 @@ Entry point: `RuneLite.java` — sets up Guice, loads `RuneLiteModule`, discover
 ### API vs Implementation
 
 `runelite-api` only contains **interfaces** (e.g. `Client.java`, `GameObject.java`). The real game classes that implement them are injected by the RS client at runtime via **Mixins** (byte-code weaving). You never instantiate these yourself.
-
----
-
-## Relevant Files for Our Task
-
-| File | Why |
-|---|---|
-| `runelite-api/…/api/events/GameObjectSpawned.java` | Event fired when a game object appears in the scene |
-| `runelite-api/…/api/events/GameObjectDespawned.java` | Counterpart despawn event |
-| `runelite-api/…/api/GameObject.java` | Interface for in-world objects |
-| `runelite-api/…/api/ObjectComposition.java` | Holds the object's name, actions, etc. |
-| `runelite-api/…/api/Client.java` | Main game client interface — `getObjectDefinition(id)` resolves composition |
-| `runelite-client/…/client/plugins/` | Drop our new plugin here |
-| `runelite-client/…/client/RuneLite.java` | Main entry point |
-
-### Game Bridge plugin files
-
-| File | Purpose |
-|---|---|
-| `runelite-client/…/plugins/gamebridge/GameBridgePlugin.java` | Plugin entry point — event subscriptions, tick batching, JSON serialisation |
-| `runelite-client/…/plugins/gamebridge/GameBridgeConfig.java` | Config interface (port, category toggles, hull filter) |
-| `runelite-client/…/plugins/gamebridge/BridgeServer.java` | Embedded TCP server — accept loop, broadcast |
-| `runelite-client/…/plugins/gamebridge/HullFilter.java` | Parses ID/name filter CSV; answers `matches(id, name)` |
-| `GAMEBRIDGE.md` | Python developer guide — **keep in sync with any schema changes** |
 
 ---
 
@@ -183,11 +152,7 @@ To integrate a custom build with the launcher:
    & "C:\Users\Calum\AppData\Local\RuneLite\RuneLite.exe" --skip-update
    ```
 
-Alternatively, bypass the launcher entirely using the bundled JRE and the shaded jar directly:
-```powershell
-& "C:\Users\Calum\AppData\Local\RuneLite\jre\bin\java.exe" -jar "path\to\client-<version>-shaded.jar"
-```
-This is confirmed working — see ARCHITECTURE.md for full details.
+Or use `mise run full-build` for the one-command version — see [ARCHITECTURE.md](ARCHITECTURE.md) for full details, including the reverse-engineered Jagex Launcher findings.
 
 ---
 

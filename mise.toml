@@ -1,26 +1,10 @@
 [tools]
 java = "temurin-11"
-python = "3.12"
 
 [tasks.full-build]
 description = "Build custom RuneLite client and deploy to the Jagex Launcher"
 run = "powershell -ExecutionPolicy Bypass -File scripts/full-build.ps1"
 
-[tasks.gamebridge-setup]
-description = "Install GameBridge Python dependencies"
-run = "python -m pip install -r scripts/gamebridge/requirements.txt"
-
-[tasks.gamebridge]
-description = "Launch the GameBridge Qt dashboard (debug logging to ~/.gamebridge/gamebridge.log)"
-run = "python -m scripts.gamebridge.main --dashboard --debug"
-
-[tasks.gamebridge-watch]
-description = "Watch live game state in the terminal (no routine, no input)"
-run = "python -m scripts.gamebridge.main --watch --debug"
-
 [tasks.test]
-description = "Run all tests (Python GameBridge + Java RuneLite)"
-run = """
-python scripts/gamebridge/tests/run_mise_tests.py
-mise exec -- ./gradlew.bat testAll
-"""
+description = "Run RuneLite client tests"
+run = "mise exec -- ./gradlew.bat testAll"
