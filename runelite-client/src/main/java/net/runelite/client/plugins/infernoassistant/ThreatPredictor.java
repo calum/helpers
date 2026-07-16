@@ -40,6 +40,25 @@ final class ThreatPredictor
 		boolean protectMagicHeld, boolean protectMissilesHeld, boolean protectMeleeHeld,
 		int currentTick, int lookaheadTicks)
 	{
+		return advance(state, player, losEngine, protectMagicHeld, protectMissilesHeld, protectMeleeHeld,
+			currentTick, lookaheadTicks, true);
+	}
+
+	/**
+	 * @param allPillarsDown nibblers exclusively attack pillars until all three are
+	 * destroyed - per {@code research/INFERNO_MECHANICS.md}, they pose no threat to the
+	 * player before then, so this suppresses all nibbler LOS/range/prediction output
+	 * until it's {@code true}.
+	 */
+	List<ThreatPrediction> advance(NpcThreatState state, Footprint player, LosEngine losEngine,
+		boolean protectMagicHeld, boolean protectMissilesHeld, boolean protectMeleeHeld,
+		int currentTick, int lookaheadTicks, boolean allPillarsDown)
+	{
+		if (state.mobType == MobType.NIBBLER && !allPillarsDown)
+		{
+			return List.of();
+		}
+
 		MobDef def = MobDef.of(state.mobType);
 		state.hasLos = losEngine.mobHasLos(def, state.footprint, player.x, player.y);
 		state.inRange = def.range == 1

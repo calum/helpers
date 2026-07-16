@@ -290,4 +290,64 @@ public class ThreatPredictorTest
 		assertTrue(ThreatPredictor.meleerDigThresholdReached(-38));
 		assertTrue(ThreatPredictor.meleerDigThresholdReached(-50));
 	}
+
+	/**
+	 * Nibblers exclusively attack pillars until all three are destroyed - they
+	 * pose no threat to the player before then (per
+	 * research/INFERNO_MECHANICS.md), so {@code advance} must suppress every
+	 * nibbler prediction/armed-warning, and skip updating hasLos/inRange, while
+	 * any pillar is still alive.
+	 */
+	@Test
+	public void nibblerProducesNothingWhilePillarsAlive()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		NpcThreatState nibbler = new NpcThreatState(1, MobType.NIBBLER, new Footprint(10, 11, 1)); // melee-adjacent
+		nibbler.ticksSinceLastAttack = 10;
+
+		List<ThreatPrediction> predictions = predictor.advance(nibbler, player, engine,
+			false, false, false, 0, 6, false);
+
+		assertTrue(predictions.isEmpty());
+		assertFalse(nibbler.hasLos);
+		assertFalse(nibbler.inRange);
+	}
+
+	@Test
+	public void nibblerResumesNormalPredictionOnceAllPillarsDown()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		NpcThreatState nibbler = new NpcThreatState(1, MobType.NIBBLER, new Footprint(10, 11, 1)); // melee-adjacent
+		nibbler.ticksSinceLastAttack = 3; // atkSpeed(4) - 1, becomes eligible after increment
+
+		// lookaheadTicks=1 isolates a single scheduled attack (next cycle at t=4 falls outside).
+		List<ThreatPrediction> predictions = predictor.advance(nibbler, player, engine,
+			false, false, false, 0, 1, true);
+
+		assertTrue(nibbler.hasLos);
+		assertTrue(nibbler.inRange);
+		assertEquals(1, predictions.size());
+		assertEquals(AttackStyle.MELEE, predictions.get(0).style);
+	}
+
+	@Test
+	public void allPillarsDownDefaultsToTrueForTheThreeArgOverload()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		NpcThreatState nibbler = new NpcThreatState(1, MobType.NIBBLER, new Footprint(10, 11, 1));
+		nibbler.ticksSinceLastAttack = 3;
+
+		// The pre-existing 8-arg overload (used by callers that don't know about
+		// pillar state) must not silently suppress nibblers.
+		List<ThreatPrediction> predictions = predictor.advance(nibbler, player, engine,
+			false, false, false, 0, 1);
+
+		assertEquals(1, predictions.size());
+	}
 }

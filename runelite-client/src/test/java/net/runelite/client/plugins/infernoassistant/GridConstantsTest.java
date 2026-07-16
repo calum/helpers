@@ -63,15 +63,22 @@ public class GridConstantsTest
 	}
 
 	@Test
-	public void pillarSlotsMatchAutozukPillarLocs()
+	public void pillarSlotsMatchRealGameObjectCalibrationConvertedToGridFrame()
 	{
-		// PILLAR_LOCS (research/AUTOZUK/index.html:372): S:{x:11,y:24}, W:{x:1,y:10}, N:{x:18,y:8}, size 3.
+		// research/inferno-scouter's PillarSlot (InfernoScouterPlugin.java:1134-1136) is
+		// calibrated against real GameObject positions: WEST(0,9), NORTH(17,7), SOUTH(10,23),
+		// using scoutX=regionX-18, scoutY=47-regionY. Converting those real-world-validated
+		// values into this package's grid frame (gridX=regionX-17, gridY=46-regionY) requires
+		// gridX=scoutX+1, gridY=scoutY-1 - NOT AUTOZUK's raw PILLAR_LOCS (S:{x:11,y:24} etc,
+		// research/AUTOZUK/index.html:372) taken as-is, which put every pillar 2 tiles too far
+		// south and wrongly blocked LOS through real, walkable tiles past each pillar's true
+		// southern edge (see PillarSlot's javadoc).
 		assertEquals(1, PillarSlot.WEST.x);
-		assertEquals(10, PillarSlot.WEST.y);
+		assertEquals(8, PillarSlot.WEST.y);
 		assertEquals(18, PillarSlot.NORTH.x);
-		assertEquals(8, PillarSlot.NORTH.y);
+		assertEquals(6, PillarSlot.NORTH.y);
 		assertEquals(11, PillarSlot.SOUTH.x);
-		assertEquals(24, PillarSlot.SOUTH.y);
+		assertEquals(22, PillarSlot.SOUTH.y);
 		assertEquals(3, PillarSlot.SIZE);
 	}
 }

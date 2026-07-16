@@ -25,16 +25,31 @@
 package net.runelite.client.plugins.infernoassistant;
 
 /**
- * The three Inferno pillar locations, in the SW-corner grid convention
- * (converted once from inferno-scouter's NW-corner {@code PillarSlot} to
- * match AUTOZUK's {@code PILLAR_LOCS}: {@code S:{x:11,y:24}},
- * {@code W:{x:1,y:10}}, {@code N:{x:18,y:8}}).
+ * The three Inferno pillar locations, in this package's SW-corner grid
+ * convention ({@link GridConstants#gridX}/{@link GridConstants#gridY},
+ * {@code gridX = regionX-17}, {@code gridY = 46-regionY}).
+ *
+ * <p>These are <b>not</b> AUTOZUK's raw {@code PILLAR_LOCS} - AUTOZUK is a
+ * from-scratch offline simulator whose internal grid was never calibrated
+ * against real {@code WorldPoint}s. The one field-validated pillar position
+ * data in this repo is {@code research/inferno-scouter}'s {@code PillarSlot}
+ * enum ({@code InfernoScouterPlugin.java:1134-1136}: {@code WEST(0,9)},
+ * {@code NORTH(17,7)}, {@code SOUTH(10,23)}), calibrated against real
+ * {@code GameObject} positions using its own offset
+ * ({@code InfernoScouterPlugin.java:827-828}: {@code scoutX = regionX-18},
+ * {@code scoutY = 47-regionY}). Converting those validated values into this
+ * package's grid frame requires solving both offsets:
+ * {@code gridX = scoutX+1}, {@code gridY = scoutY-1} - giving
+ * {@code WEST(1,8)}, {@code NORTH(18,6)}, {@code SOUTH(11,22)} below. Using
+ * AUTOZUK's raw values directly (as a previous version of this enum did)
+ * put every y-coordinate 2 tiles too far south, wrongly blocking LOS through
+ * real, walkable tiles just past each pillar's true southern edge.
  */
 enum PillarSlot
 {
-	WEST(1, 10),
-	NORTH(18, 8),
-	SOUTH(11, 24);
+	WEST(1, 8),
+	NORTH(18, 6),
+	SOUTH(11, 22);
 
 	static final int SIZE = 3;
 

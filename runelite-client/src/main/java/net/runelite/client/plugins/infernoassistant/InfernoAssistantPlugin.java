@@ -27,6 +27,7 @@ package net.runelite.client.plugins.infernoassistant;
 import com.google.inject.Provides;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -217,15 +218,16 @@ public class InfernoAssistantPlugin extends Plugin
 		boolean protectMelee = client.isPrayerActive(Prayer.PROTECT_FROM_MELEE);
 		int queueLength = Math.max(0, config.queueLength());
 		int tick = client.getTickCount();
+		boolean allPillarsDown = Arrays.stream(PillarSlot.values()).noneMatch(pillarTracker::isAlive);
 
-		debugLogger.log("onGameTick: tick=%d player=(%d,%d) trackedNpcs=%d protectMagic=%b protectMissiles=%b protectMelee=%b",
-			tick, playerFootprint.x, playerFootprint.y, npcStates.size(), protectMagic, protectMissiles, protectMelee);
+		debugLogger.log("onGameTick: tick=%d player=(%d,%d) trackedNpcs=%d protectMagic=%b protectMissiles=%b protectMelee=%b allPillarsDown=%b",
+			tick, playerFootprint.x, playerFootprint.y, npcStates.size(), protectMagic, protectMissiles, protectMelee, allPillarsDown);
 
 		List<ThreatPrediction> predictions = new ArrayList<>();
 		for (NpcThreatState state : npcStates.values())
 		{
 			List<ThreatPrediction> npcPredictions = threatPredictor.advance(state, playerFootprint, losEngine,
-				protectMagic, protectMissiles, protectMelee, tick, queueLength);
+				protectMagic, protectMissiles, protectMelee, tick, queueLength, allPillarsDown);
 			debugLogger.log("  npc index=%d type=%s footprint=(%d,%d,%d) hasLos=%b inRange=%b ticksSinceLastAttack=%d blobPhase=%s predictions=%d",
 				state.npcIndex, state.mobType, state.footprint.x, state.footprint.y, state.footprint.size,
 				state.hasLos, state.inRange, state.ticksSinceLastAttack, state.blobPhase, npcPredictions.size());
