@@ -27,7 +27,7 @@ package net.runelite.client.plugins.infernoassistant;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
-import java.awt.Rectangle;
+import java.awt.Point;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Map;
@@ -38,8 +38,9 @@ import net.runelite.client.ui.overlay.OverlayPanel;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.components.ComponentOrientation;
 import net.runelite.client.ui.overlay.components.ImageComponent;
+import net.runelite.client.ui.overlay.components.LayoutableRenderableEntity;
 import net.runelite.client.ui.overlay.components.LineComponent;
-import net.runelite.client.ui.overlay.components.PanelComponent;
+import net.runelite.client.ui.overlay.components.SplitComponent;
 import net.runelite.client.ui.overlay.components.TitleComponent;
 
 /**
@@ -50,6 +51,9 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
  */
 class InfernoAssistantOverlay extends OverlayPanel
 {
+	// Matches XpInfoBoxOverlay.XP_AND_ICON_GAP's convention for icon-then-label rows.
+	private static final int ICON_LABEL_GAP = 4;
+
 	private final InfernoAssistantPlugin plugin;
 	private final InfernoAssistantConfig config;
 
@@ -186,7 +190,7 @@ class InfernoAssistantOverlay extends OverlayPanel
 		return nearest;
 	}
 
-	private PanelComponent queueRow(int tick, ConflictResolution resolution)
+	private LayoutableRenderableEntity queueRow(int tick, ConflictResolution resolution)
 	{
 		if (resolution.recommendedStyle == null)
 		{
@@ -201,42 +205,53 @@ class InfernoAssistantOverlay extends OverlayPanel
 			return textRow("+" + tick, right, colorFor(resolution.recommendedStyle));
 		}
 
-		PanelComponent row = iconRow("+" + tick, icon);
-		if (config.showUnmitigatedWarnings() && !resolution.unmitigated.isEmpty())
-		{
-			row.getChildren().add(LineComponent.builder()
-				.left("!")
-				.leftColor(Color.ORANGE)
-				.build());
-		}
-		return row;
+		boolean conflict = config.showUnmitigatedWarnings() && !resolution.unmitigated.isEmpty();
+		return iconRow("+" + tick, icon, conflict ? "!" : "", Color.ORANGE);
 	}
 
-	private PanelComponent textRow(String left, String right, Color rightColor)
+	/**
+	 * Single-{@link LineComponent} rows can be added straight into the outer
+	 * (VERTICAL) {@code panelComponent} - it already gets a correct full-width
+	 * {@code preferredSize} there, unlike a {@code PanelComponent(HORIZONTAL)}
+	 * child (see {@link #iconRow}).
+	 */
+	private LineComponent textRow(String left, String right, Color rightColor)
 	{
-		PanelComponent row = new PanelComponent();
-		row.setOrientation(ComponentOrientation.HORIZONTAL);
-		row.setBackgroundColor(null);
-		row.setBorder(new Rectangle());
-		row.getChildren().add(LineComponent.builder()
+		return LineComponent.builder()
 			.left(left)
 			.right(right)
 			.rightColor(rightColor)
-			.build());
-		return row;
+			.build();
 	}
 
-	private PanelComponent iconRow(String left, BufferedImage icon)
+	private LayoutableRenderableEntity iconRow(String left, BufferedImage icon)
 	{
-		PanelComponent row = new PanelComponent();
-		row.setOrientation(ComponentOrientation.HORIZONTAL);
-		row.setBackgroundColor(null);
-		row.setBorder(new Rectangle());
-		row.getChildren().add(LineComponent.builder()
-			.left(left)
-			.build());
-		row.getChildren().add(new ImageComponent(icon));
-		return row;
+		return iconRow(left, icon, "", Color.ORANGE);
+	}
+
+	/**
+	 * Icon-then-label row built with {@link SplitComponent} rather than a
+	 * {@code PanelComponent(HORIZONTAL)}: {@code PanelComponent} zeroes every
+	 * HORIZONTAL child's preferred width before rendering it, which makes
+	 * {@link LineComponent} (whose rendered width depends on that preferred
+	 * size) report back a width of 0 regardless of the text actually drawn -
+	 * the next sibling then gets positioned at the same x, overlapping it.
+	 * {@code SplitComponent} avoids this by rendering {@code first} (the
+	 * fixed-size icon) at its own real width first, then explicitly offsetting
+	 * {@code second} past it.
+	 */
+	private LayoutableRenderableEntity iconRow(String left, BufferedImage icon, String right, Color rightColor)
+	{
+		return SplitComponent.builder()
+			.orientation(ComponentOrientation.HORIZONTAL)
+			.gap(new Point(ICON_LABEL_GAP, 0))
+			.first(new ImageComponent(icon))
+			.second(LineComponent.builder()
+				.left(left)
+				.right(right)
+				.rightColor(rightColor)
+				.build())
+			.build();
 	}
 
 	private BufferedImage iconFor(AttackStyle style)

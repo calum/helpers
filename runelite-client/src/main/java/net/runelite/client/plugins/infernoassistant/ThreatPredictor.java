@@ -118,7 +118,7 @@ final class ThreatPredictor
 		while (t <= lookaheadTicks)
 		{
 			int delay = ProjectileHitTicks.delayFor(def.type, def.style, distance);
-			out.add(ThreatPrediction.attack(state.npcIndex, def.type, t + delay, def.style, def.maxHit, uncertain));
+			out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(t + delay), def.style, def.maxHit, uncertain));
 			if (firstIteration && t == 0)
 			{
 				state.ticksSinceLastAttack = 0;
@@ -152,7 +152,7 @@ final class ThreatPredictor
 			int distance = Footprint.chebyshev(state.footprint.x, state.footprint.y, player.x, player.y);
 			boolean secondaryMelee = secondaryMeleeApplies(def, state.footprint, player);
 			int delay = ProjectileHitTicks.delayFor(def.type, state.blobResolvedStyle, distance);
-			out.add(ThreatPrediction.attack(state.npcIndex, def.type, delay, state.blobResolvedStyle, def.maxHit, secondaryMelee));
+			out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(delay), state.blobResolvedStyle, def.maxHit, secondaryMelee));
 
 			state.blobPhase = BlobPhase.FIRE;
 			state.blobPhaseTicksRemaining = def.atkSpeed;
@@ -211,7 +211,23 @@ final class ThreatPredictor
 
 		int distance = Footprint.chebyshev(projection.footprint.x, projection.footprint.y, player.x, player.y);
 		int delay = ProjectileHitTicks.delayFor(def.type, style, distance);
-		out.add(ThreatPrediction.attack(state.npcIndex, def.type, fireTick + delay, style, def.maxHit, true));
+		out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(fireTick + delay), style, def.maxHit, true));
+	}
+
+	/**
+	 * Shifts a raw fire-tick-plus-projectile-delay sum one tick earlier
+	 * (floored at 0), correcting for the one-tick lag between a
+	 * {@code GameTick} firing and the player actually reacting to it:
+	 * empirically, turning on a protection prayer during the tick the
+	 * overlay showed "+2" was already too late to stop a hit that landed 1
+	 * tick later, not 2 - the raw computed value is always 1 tick ahead of
+	 * the real deadline to act. Every attack style's minimum
+	 * {@link ProjectileHitTicks} delay is 1, so without this adjustment
+	 * {@code ticksUntilHit} could never reach 0 for a real attack.
+	 */
+	private static int reactionAdjust(int rawTicksUntilHit)
+	{
+		return Math.max(0, rawTicksUntilHit - 1);
 	}
 
 	private void handleMeleerDig(NpcThreatState state, List<ThreatPrediction> out)

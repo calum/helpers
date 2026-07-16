@@ -27,29 +27,46 @@ package net.runelite.client.plugins.infernoassistant;
 /**
  * The three Inferno pillar locations, in this package's SW-corner grid
  * convention ({@link GridConstants#gridX}/{@link GridConstants#gridY},
- * {@code gridX = regionX-17}, {@code gridY = 46-regionY}).
+ * {@code gridX = regionX-17}, {@code gridY = 46-regionY}), where {@code y}
+ * is the footprint's <b>south</b> edge (matching every other
+ * {@link Footprint} in this package - see {@code Footprint}'s
+ * {@code y - size + 1 .. y} span).
  *
- * <p>These are <b>not</b> AUTOZUK's raw {@code PILLAR_LOCS} - AUTOZUK is a
- * from-scratch offline simulator whose internal grid was never calibrated
- * against real {@code WorldPoint}s. The one field-validated pillar position
- * data in this repo is {@code research/inferno-scouter}'s {@code PillarSlot}
- * enum ({@code InfernoScouterPlugin.java:1134-1136}: {@code WEST(0,9)},
+ * <p>The one field-validated pillar position data in this repo is
+ * {@code research/inferno-scouter}'s {@code PillarSlot} enum
+ * ({@code InfernoScouterPlugin.java:1134-1136}: {@code WEST(0,9)},
  * {@code NORTH(17,7)}, {@code SOUTH(10,23)}), calibrated against real
  * {@code GameObject} positions using its own offset
  * ({@code InfernoScouterPlugin.java:827-828}: {@code scoutX = regionX-18},
- * {@code scoutY = 47-regionY}). Converting those validated values into this
- * package's grid frame requires solving both offsets:
- * {@code gridX = scoutX+1}, {@code gridY = scoutY-1} - giving
- * {@code WEST(1,8)}, {@code NORTH(18,6)}, {@code SOUTH(11,22)} below. Using
- * AUTOZUK's raw values directly (as a previous version of this enum did)
- * put every y-coordinate 2 tiles too far south, wrongly blocking LOS through
- * real, walkable tiles just past each pillar's true southern edge.
+ * {@code scoutY = 47-regionY}) - but that stored coordinate is the
+ * footprint's <b>north</b> edge (NW-corner convention), not south. Converting
+ * it to this package's south-edge convention needs two steps, not one: first
+ * shift from north edge to south edge <i>within inferno-scouter's own
+ * frame</i> (add {@code size-1}, since the footprint spans
+ * {@code [northY, northY+size-1]}), then re-base the axis to this package's
+ * frame ({@code gridY = scoutY-1}, since {@code gridY = 46-regionY} and
+ * {@code scoutY = 47-regionY} differ only by that constant for any given
+ * real tile):
+ * <pre>
+ *   southEdgeGridY = (northEdgeScoutY + size - 1) - 1
+ * </pre>
+ * Working this through for all three pillars ({@code (9+2-1)=10},
+ * {@code (7+2-1)=8}, {@code (23+2-1)=24}) reproduces AUTOZUK's raw
+ * {@code PILLAR_LOCS} (`research/AUTOZUK/index.html:372`:
+ * {@code W:{x:1,y:10}}, {@code N:{x:18,y:8}}, {@code S:{x:11,y:24}})
+ * exactly - two independent sources agreeing is strong corroboration.
+ * A previous version of this enum applied only the axis re-basing and not
+ * the north-to-south shift, landing on {@code WEST(1,8)}, {@code NORTH(18,6)},
+ * {@code SOUTH(11,22)} - each pillar's blocked footprint 2 tiles too far
+ * north, wrongly opening LOS through the real pillar's true southern rows
+ * while wrongly blocking real open ground 2 tiles north of it. Don't
+ * re-derive this a third time without re-checking both conversion steps.
  */
 enum PillarSlot
 {
-	WEST(1, 8),
-	NORTH(18, 6),
-	SOUTH(11, 22);
+	WEST(1, 10),
+	NORTH(18, 8),
+	SOUTH(11, 24);
 
 	static final int SIZE = 3;
 

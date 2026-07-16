@@ -9,10 +9,25 @@ Every code change — bug fix, new feature, or refactor — must include new or 
 - Any modified behaviour must have its existing tests updated to match and new tests added for the changed logic.
 - Tests must pass locally before considering the task done. Run with:
   ```powershell
-  ./gradlew.bat :runelite-client:test
+  ./gradlew.bat :client:test
+  ```
+  **Not** `:runelite-client:test` — despite the directory being named
+  `runelite-client/`, `settings.gradle.kts` maps it to the Gradle project name
+  `:client` (`include("client"); project(":client").projectDir = file("./runelite-client")`).
+  `./gradlew.bat projects` lists the real project names if this ever drifts.
+  To run just one package's tests during iteration:
+  ```powershell
+  ./gradlew.bat :client:test --tests "net.runelite.client.plugins.<name>.*"
   ```
 - Do not skip or comment out failing tests to make the suite green — fix the code or the test.
 - Test the actual behaviour, not implementation details: assert on observable outputs (return values, logged messages, mock call counts/args), not on internal state.
+- **Overlay/`Graphics2D` rendering code is the one carve-out**: nothing in this
+  codebase unit-tests `Overlay.render()`/`Perspective`/canvas-polygon logic
+  (no existing plugin has a test for it) — it needs a live client to verify
+  visually. Keep rendering methods thin and push any real logic (coordinate
+  math, threat calculation, layout decisions) into plain, testable
+  helper classes/methods instead, so the untestable surface stays as small as
+  possible.
 
 ---
 
@@ -115,6 +130,53 @@ Entry point: `RuneLite.java` — sets up Guice, loads `RuneLiteModule`, discover
 ### API vs Implementation
 
 `runelite-api` only contains **interfaces** (e.g. `Client.java`, `GameObject.java`). The real game classes that implement them are injected by the RS client at runtime via **Mixins** (byte-code weaving). You never instantiate these yourself.
+
+### Instanced areas (Inferno, raids, etc.) need `WorldPoint.toLocalInstance`
+
+Reading a live entity's position (`npc.getWorldLocation()`, `player.getWorldLocation()`)
+already comes back auto-translated to the real/template map coordinates —
+that direction "just works" regardless of instancing.
+
+The **reverse** direction does not: if you build a `WorldPoint` yourself from
+known template/region coordinates (e.g. via `WorldPoint.fromRegion(...)`, or
+any custom grid→world conversion) and then want to draw something at it
+(`LocalPoint.fromWorld(worldView, worldPoint)` → `Perspective.getCanvasTilePoly(...)`),
+that call **silently returns `null`** for every tile while standing inside an
+instance, because the instance's scene `baseX`/`baseY` doesn't correspond to
+the static template region's coordinates. The overlay just renders nothing,
+with no exception or warning.
+
+Fix: translate through `WorldPoint.toLocalInstance(worldView, worldPoint)`
+first, then call `LocalPoint.fromWorld` on each returned candidate:
+```java
+for (WorldPoint instanceWorldPoint : WorldPoint.toLocalInstance(worldView, worldPoint))
+{
+    LocalPoint localPoint = LocalPoint.fromWorld(worldView, instanceWorldPoint);
+    // ...
+}
+```
+See `research/inferno-scouter/…/InfernoStartTileOverlay.java` for a working
+reference, and `infernoassistant/InfernoLosOverlay.java` for this exact bug
+being fixed (2026-07-16 session — the ground-tile LOS overlay rendered
+nothing at all until this translation was added).
+
+### `PanelComponent(HORIZONTAL)` + `LineComponent` silently overlaps siblings
+
+`PanelComponent.render()` forces every `HORIZONTAL`-orientation child's
+`preferredSize` to width `0` before rendering it. `LineComponent.render()`
+then computes its layout as if it has zero width available and **reports
+back a rendered width of `0`**, regardless of how much text it actually drew.
+Since `PanelComponent` advances its next-child x-cursor by that reported
+width, the following sibling (typically an icon) gets positioned at the same
+x as the text — a hard-to-notice visual overlap, not a crash or compile
+error.
+
+Don't put a `LineComponent` inside a `PanelComponent(HORIZONTAL)` expecting
+it to auto-size. For "icon + text" rows, use `SplitComponent` instead — it
+renders `first` at its own real dimension, then explicitly offsets `second`
+past it (see `xptracker/XpInfoBoxOverlay.java` for the idiomatic pattern,
+and `infernoassistant/InfernoAssistantOverlay.java`'s `iconRow`/`textRow`
+helpers for this exact fix).
 
 ---
 

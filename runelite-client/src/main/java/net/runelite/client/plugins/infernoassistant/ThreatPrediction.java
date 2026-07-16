@@ -36,6 +36,14 @@ package net.runelite.client.plugins.infernoassistant;
  * LOS/range and isn't predicted to gain it within the lookahead window -
  * since such an NPC fires the instant it does gain LOS, this is a fallback
  * warning for when movement projection can't say when that will be.
+ *
+ * <p>{@link ThreatPredictor} deliberately computes {@code ticksUntilHit} one
+ * tick lower than the raw fire-tick-plus-projectile-delay sum (floored at 0)
+ * before calling {@link #attack} - see its call sites for why. This class
+ * itself stores whatever value it's given verbatim; the adjustment is not
+ * applied here so that tests/callers constructing a {@link ThreatPrediction}
+ * directly (e.g. {@link ConflictResolver}'s unit tests) get the tick value
+ * they actually asked for.
  */
 final class ThreatPrediction
 {

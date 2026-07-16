@@ -47,8 +47,28 @@ public class ThreatPredictorTest
 		assertEquals(1, predictions.size());
 		ThreatPrediction prediction = predictions.get(0);
 		assertEquals(AttackStyle.RANGE, prediction.style);
-		assertEquals(2, prediction.ticksUntilHit); // distance 5 -> ranger table delay = 2
+		// distance 5 -> ranger table delay = 2, minus the 1-tick reaction-lag adjustment
+		assertEquals(1, prediction.ticksUntilHit);
 		assertEquals(0, ranger.ticksSinceLastAttack);
+	}
+
+	@Test
+	public void reactionLagAdjustmentFloorsAtZeroInsteadOfGoingNegative()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		// distance 3 -> BAT table delay = 1, so raw (t=0)+(delay=1)=1, adjusted to 0.
+		NpcThreatState bat = new NpcThreatState(1, MobType.BAT, new Footprint(10, 13, 2));
+		bat.ticksSinceLastAttack = 2; // atkSpeed(3) - 1, becomes eligible after increment
+
+		// lookaheadTicks=2 isolates a single scheduled attack (next cycle at t=3 falls outside).
+		List<ThreatPrediction> predictions = predictor.advance(bat, player, engine, false, false, false, 0, 2);
+
+		assertEquals(1, predictions.size());
+		ThreatPrediction prediction = predictions.get(0);
+		assertEquals(AttackStyle.RANGE, prediction.style);
+		assertEquals(0, prediction.ticksUntilHit);
 	}
 
 	@Test
@@ -198,7 +218,8 @@ public class ThreatPredictorTest
 		assertEquals(AttackStyle.RANGE, prediction.style);
 		assertTrue(prediction.uncertain);
 		assertFalse(prediction.armed);
-		assertEquals(expectedFireTick + expectedDelay, prediction.ticksUntilHit);
+		// -1: ticksUntilHit is adjusted for the measured 1-tick reaction lag, floored at 0.
+		assertEquals(Math.max(0, expectedFireTick + expectedDelay - 1), prediction.ticksUntilHit);
 	}
 
 	@Test
@@ -239,7 +260,8 @@ public class ThreatPredictorTest
 		ThreatPrediction prediction = predictions.get(0);
 		assertEquals(expectedStyle, prediction.style);
 		assertTrue(prediction.uncertain);
-		assertEquals(expectedFireTick + expectedDelay, prediction.ticksUntilHit);
+		// -1: ticksUntilHit is adjusted for the measured 1-tick reaction lag, floored at 0.
+		assertEquals(Math.max(0, expectedFireTick + expectedDelay - 1), prediction.ticksUntilHit);
 		// The real scan/fire phase machine hasn't started yet - still pre-engagement.
 		assertEquals(BlobPhase.NONE, blob.blobPhase);
 	}

@@ -56,27 +56,28 @@ public class PillarTrackerTest
 	}
 
 	@Test
-	public void applyToBlocksCorrectedSouthPillarFootprint()
+	public void applyToBlocksSouthPillarFootprintAtItsTrueLocation()
 	{
 		tracker.applyTo(engine);
 
-		// SOUTH (11,22), size 3 -> occupies x[11,13], y[20,22].
-		assertTrue(engine.isBlocked(11, 20));
-		assertTrue(engine.isBlocked(13, 22));
-		assertTrue(engine.isBlocked(12, 21));
+		// SOUTH (11,24), size 3 -> occupies x[11,13], y[22,24].
+		assertTrue(engine.isBlocked(11, 22));
+		assertTrue(engine.isBlocked(13, 24));
+		assertTrue(engine.isBlocked(12, 23));
 
-		// One tile past the corrected footprint's southern edge must be open -
-		// this is exactly the tile that was wrongly blocked before the fix
-		// (the old buggy SOUTH coordinate was (11,24), 2 tiles further south).
-		assertFalse(engine.isBlocked(11, 23));
-		assertFalse(engine.isBlocked(11, 24));
+		// One tile north of the true footprint must be open - this is exactly
+		// the tile a previous (backwards) coordinate fix wrongly blocked,
+		// while wrongly leaving the real pillar's southern rows open. See
+		// PillarSlot's javadoc for the corner-conversion reasoning.
+		assertFalse(engine.isBlocked(11, 21));
+		assertFalse(engine.isBlocked(11, 20));
 	}
 
 	@Test
 	public void destroyedPillarNpcClearsItsFootprintTheSameTick()
 	{
 		tracker.applyTo(engine);
-		assertTrue(engine.isBlocked(12, 21));
+		assertTrue(engine.isBlocked(12, 23));
 
 		NPC destroyedPillar = pillarNpc(7710, PillarSlot.SOUTH.x + 1, PillarSlot.SOUTH.y);
 		tracker.updateFromNpcs(List.of(destroyedPillar));
@@ -84,7 +85,7 @@ public class PillarTrackerTest
 		assertFalse(tracker.isAlive(PillarSlot.SOUTH));
 
 		tracker.applyTo(engine);
-		assertFalse(engine.isBlocked(12, 21));
+		assertFalse(engine.isBlocked(12, 23));
 	}
 
 	@Test

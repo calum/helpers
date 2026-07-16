@@ -93,21 +93,28 @@ class InfernoLosOverlay extends Overlay
 			int gridX = LosTileCalculator.unpackX(entry.getKey());
 			int gridY = LosTileCalculator.unpackY(entry.getKey());
 
+			// The Inferno is played inside an instance, so the static/template WorldPoint
+			// from GridConstants.worldPointFor must be translated to its instance-local
+			// occurrence(s) before LocalPoint.fromWorld can resolve it - same pattern as
+			// research/inferno-scouter's InfernoStartTileOverlay.
 			WorldPoint worldPoint = GridConstants.worldPointFor(gridX, gridY, plane);
-			LocalPoint localPoint = LocalPoint.fromWorld(worldView, worldPoint);
-			if (localPoint == null)
+			for (WorldPoint instanceWorldPoint : WorldPoint.toLocalInstance(worldView, worldPoint))
 			{
-				continue;
-			}
+				LocalPoint localPoint = LocalPoint.fromWorld(worldView, instanceWorldPoint);
+				if (localPoint == null)
+				{
+					continue;
+				}
 
-			Polygon poly = Perspective.getCanvasTilePoly(client, localPoint);
-			if (poly == null)
-			{
-				continue;
-			}
+				Polygon poly = Perspective.getCanvasTilePoly(client, localPoint);
+				if (poly == null)
+				{
+					continue;
+				}
 
-			graphics.setColor(blend(entry.getValue(), alpha));
-			graphics.fill(poly);
+				graphics.setColor(blend(entry.getValue(), alpha));
+				graphics.fill(poly);
+			}
 		}
 
 		return null;
