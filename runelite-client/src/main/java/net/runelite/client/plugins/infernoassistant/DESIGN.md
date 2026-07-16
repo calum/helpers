@@ -248,6 +248,25 @@ Deferred, not dropped:
   not present anywhere in the current AUTOZUK reference and is explicitly
   out of scope until a dedicated research pass is done.
 
+### Movement-based pre-LOS prediction (implemented)
+
+Originally an open limitation — the overlay used to only warn once an NPC
+already had (or had very recently had) LOS, via the `armed` warning. This is
+now closed: `MovementSimulator` ports AUTOZUK's greedy chase-toward-player
+step (`moveMob`/`hlMoveMob`, index.html:2134-2160/859-884, no BFS, no
+mob-mob collision or jitter - approximated the same way `expectedDamage` is
+elsewhere) to simulate forward until an out-of-LOS NPC's projected footprint
+gains LOS, then projects an attack timing from there. This is wired into
+`ThreatPredictor.advanceStandard`/`advanceBlob` and feeds the existing
+`ConflictResolver` pipeline unchanged (reusing the `uncertain` flag to mark
+these as movement-projections rather than confirmed cooldown timers). The
+overlay's top-line recommendation now also falls back to the nearest
+upcoming queue entry (rather than "No threats") when nothing is due the
+current tick, so a wave-start ranger closing toward LOS is recommended
+ahead of time rather than only once it actually gets LOS. `queueLength`
+doubles as the movement-simulation lookahead bound (default raised from 6
+to 15 to give wave-start spawns enough runway to close to LOS).
+
 ## References
 
 - `research/INFERNO_MECHANICS.md` — mechanics research and Part 2 outline
