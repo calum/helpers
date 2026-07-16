@@ -63,6 +63,19 @@ public class GridConstantsTest
 	}
 
 	@Test
+	public void worldPointForIsInverseOfGridXY()
+	{
+		WorldPoint original = new WorldPoint(GridConstants.REGION_X_OFFSET + 5, GridConstants.REGION_Y_OFFSET - 3, 0);
+
+		WorldPoint reconstructed = GridConstants.worldPointFor(
+			GridConstants.gridX(original), GridConstants.gridY(original), original.getPlane());
+
+		assertEquals(original.getRegionX(), reconstructed.getRegionX());
+		assertEquals(original.getRegionY(), reconstructed.getRegionY());
+		assertEquals(original.getPlane(), reconstructed.getPlane());
+	}
+
+	@Test
 	public void pillarSlotsMatchRealGameObjectCalibrationConvertedToGridFrame()
 	{
 		// research/inferno-scouter's PillarSlot (InfernoScouterPlugin.java:1134-1136) is

@@ -28,6 +28,7 @@ import java.awt.Color;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Range;
 
 @ConfigGroup("infernoassistant")
 public interface InfernoAssistantConfig extends Config
@@ -110,5 +111,28 @@ public interface InfernoAssistantConfig extends Config
 	default boolean debugLogging()
 	{
 		return false;
+	}
+
+	@ConfigItem(
+		position = 7,
+		keyName = "showLosOverlay",
+		name = "Show LOS tile overlay",
+		description = "Shades ground tiles by which NPC attack style(s) currently have line of sight to them."
+	)
+	default boolean showLosOverlay()
+	{
+		return true;
+	}
+
+	@Range(max = 255)
+	@ConfigItem(
+		position = 8,
+		keyName = "losOverlayAlpha",
+		name = "LOS overlay opacity",
+		description = "Alpha (0-255) for the LOS tile shading. Lower is more subtle."
+	)
+	default int losOverlayAlpha()
+	{
+		return 40;
 	}
 }

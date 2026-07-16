@@ -28,6 +28,7 @@ import com.google.inject.Provides;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -64,8 +65,6 @@ import net.runelite.client.ui.overlay.OverlayManager;
 @Slf4j
 public class InfernoAssistantPlugin extends Plugin
 {
-	private static final int INFERNO_REGION_ID = 9043;
-
 	@Inject
 	private Client client;
 
@@ -74,6 +73,9 @@ public class InfernoAssistantPlugin extends Plugin
 
 	@Inject
 	private InfernoAssistantOverlay overlay;
+
+	@Inject
+	private InfernoLosOverlay losOverlay;
 
 	@Inject
 	private InfernoAssistantConfig config;
@@ -87,6 +89,7 @@ public class InfernoAssistantPlugin extends Plugin
 	private final InfernoAssistantDebugLogger debugLogger = new InfernoAssistantDebugLogger();
 
 	private Map<Integer, ConflictResolution> currentQueue = Map.of();
+	private Map<Long, EnumSet<AttackStyle>> currentLosTiles = Map.of();
 
 	@Provides
 	InfernoAssistantConfig provideConfig(ConfigManager configManager)
@@ -98,6 +101,7 @@ public class InfernoAssistantPlugin extends Plugin
 	protected void startUp() throws Exception
 	{
 		overlayManager.add(overlay);
+		overlayManager.add(losOverlay);
 		if (config.debugLogging())
 		{
 			debugLogger.open(DEBUG_LOG_FILE);
@@ -108,8 +112,10 @@ public class InfernoAssistantPlugin extends Plugin
 	protected void shutDown() throws Exception
 	{
 		overlayManager.remove(overlay);
+		overlayManager.remove(losOverlay);
 		npcStates.clear();
 		currentQueue = Map.of();
+		currentLosTiles = Map.of();
 		debugLogger.close();
 	}
 
@@ -137,6 +143,7 @@ public class InfernoAssistantPlugin extends Plugin
 		{
 			npcStates.clear();
 			currentQueue = Map.of();
+			currentLosTiles = Map.of();
 		}
 	}
 
@@ -191,6 +198,7 @@ public class InfernoAssistantPlugin extends Plugin
 		if (!isInInferno())
 		{
 			currentQueue = Map.of();
+			currentLosTiles = Map.of();
 			return;
 		}
 
@@ -241,7 +249,8 @@ public class InfernoAssistantPlugin extends Plugin
 		}
 
 		currentQueue = ConflictResolver.resolve(predictions, queueLength);
-		debugLogger.log("onGameTick: resolved queue entries=%d", currentQueue.size());
+		currentLosTiles = LosTileCalculator.computeLosTiles(npcStates.values(), losEngine);
+		debugLogger.log("onGameTick: resolved queue entries=%d losTiles=%d", currentQueue.size(), currentLosTiles.size());
 	}
 
 	private void refreshNpcFootprints()
@@ -279,7 +288,7 @@ public class InfernoAssistantPlugin extends Plugin
 		}
 		for (int region : regions)
 		{
-			if (region == INFERNO_REGION_ID)
+			if (region == GridConstants.INFERNO_REGION_ID)
 			{
 				return true;
 			}
@@ -290,6 +299,11 @@ public class InfernoAssistantPlugin extends Plugin
 	Map<Integer, ConflictResolution> getCurrentQueue()
 	{
 		return currentQueue;
+	}
+
+	Map<Long, EnumSet<AttackStyle>> getCurrentLosTiles()
+	{
+		return currentLosTiles;
 	}
 
 	/**

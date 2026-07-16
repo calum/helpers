@@ -34,6 +34,8 @@ import net.runelite.api.coords.WorldPoint;
  */
 final class GridConstants
 {
+	static final int INFERNO_REGION_ID = 9043;
+
 	static final int REGION_X_OFFSET = 17;
 	static final int REGION_Y_OFFSET = 46;
 
@@ -62,5 +64,16 @@ final class GridConstants
 	static Footprint footprintFor(WorldPoint worldPoint, int size)
 	{
 		return new Footprint(gridX(worldPoint), gridY(worldPoint), size);
+	}
+
+	/**
+	 * Inverse of {@link #gridX(WorldPoint)}/{@link #gridY(WorldPoint)} - only
+	 * valid within {@link #INFERNO_REGION_ID}, same as the forward conversion.
+	 */
+	static WorldPoint worldPointFor(int gridX, int gridY, int plane)
+	{
+		int regionX = gridX + REGION_X_OFFSET;
+		int regionY = REGION_Y_OFFSET - gridY;
+		return WorldPoint.fromRegion(INFERNO_REGION_ID, regionX, regionY, plane);
 	}
 }
