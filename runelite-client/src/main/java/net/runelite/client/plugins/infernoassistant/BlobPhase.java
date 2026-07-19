@@ -25,12 +25,18 @@
 package net.runelite.client.plugins.infernoassistant;
 
 /**
- * A blob's 6-tick scan(3)-then-fire(3) cycle state, ported from AUTOZUK's
- * {@code hlMobAttack} blob branch (index.html:909-913).
+ * A blob's 6-tick scan-then-fire cycle state, ported from AUTOZUK's
+ * {@code hlMobAttack} blob branch (index.html:909-913). A scan resolves
+ * <b>immediately</b> - either the instant LOS is freshly gained, or the
+ * instant {@link #SCAN_WAIT}'s cooldown expires - there is no multi-tick
+ * "scanning" state. {@link #FIRE} is the fixed {@code atkSpeed}-tick
+ * countdown from a resolved scan to the attack itself; {@link #SCAN_WAIT}
+ * is the fixed {@code atkSpeed}-tick cooldown from a fire back to the next
+ * scan becoming eligible.
  */
 enum BlobPhase
 {
 	NONE,
-	SCAN,
+	SCAN_WAIT,
 	FIRE
 }

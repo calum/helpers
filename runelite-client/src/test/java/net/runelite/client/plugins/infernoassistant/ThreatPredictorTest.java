@@ -40,6 +40,7 @@ public class ThreatPredictorTest
 		Footprint player = new Footprint(10, 10, 1);
 		NpcThreatState ranger = new NpcThreatState(1, MobType.RANGER, new Footprint(10, 15, 3));
 		ranger.ticksSinceLastAttack = 3; // atkSpeed(4) - 1, becomes eligible after increment
+		ranger.hasLos = true; // already had LOS last tick - not a fresh gain, so t=0 applies
 
 		// lookaheadTicks=3 isolates a single scheduled attack (next cycle at t=4 falls outside).
 		List<ThreatPrediction> predictions = predictor.advance(ranger, player, engine, false, false, false, 0, 3);
@@ -47,28 +48,31 @@ public class ThreatPredictorTest
 		assertEquals(1, predictions.size());
 		ThreatPrediction prediction = predictions.get(0);
 		assertEquals(AttackStyle.RANGE, prediction.style);
-		// distance 5 -> ranger table delay = 2, minus the 1-tick reaction-lag adjustment
-		assertEquals(1, prediction.ticksUntilHit);
+		// Already eligible and had LOS last tick, so it fires this very tick (t=0).
+		assertEquals(0, prediction.ticksUntilHit);
 		assertEquals(0, ranger.ticksSinceLastAttack);
 	}
 
 	@Test
-	public void reactionLagAdjustmentFloorsAtZeroInsteadOfGoingNegative()
+	public void freshLosGainFiresImmediatelyWhenCooldownAlreadyExpired()
 	{
 		ThreatPredictor predictor = new ThreatPredictor();
 		LosEngine engine = new LosEngine();
 		Footprint player = new Footprint(10, 10, 1);
-		// distance 3 -> BAT table delay = 1, so raw (t=0)+(delay=1)=1, adjusted to 0.
-		NpcThreatState bat = new NpcThreatState(1, MobType.BAT, new Footprint(10, 13, 2));
-		bat.ticksSinceLastAttack = 2; // atkSpeed(3) - 1, becomes eligible after increment
+		// hasLos defaults to false, so this advance() call observes a fresh false->true
+		// LOS gain with a long-stale, already-expired cooldown - a walked-into-view armed
+		// NPC attacks the same tick, not the tick after.
+		NpcThreatState ranger = new NpcThreatState(1, MobType.RANGER, new Footprint(10, 15, 3));
+		ranger.ticksSinceLastAttack = 10; // far past atkSpeed(4) - cooldown already expired
 
-		// lookaheadTicks=2 isolates a single scheduled attack (next cycle at t=3 falls outside).
-		List<ThreatPrediction> predictions = predictor.advance(bat, player, engine, false, false, false, 0, 2);
+		// lookaheadTicks=3 isolates a single scheduled attack (next cycle at t=4 falls outside).
+		List<ThreatPrediction> predictions = predictor.advance(ranger, player, engine, false, false, false, 0, 3);
 
 		assertEquals(1, predictions.size());
 		ThreatPrediction prediction = predictions.get(0);
-		assertEquals(AttackStyle.RANGE, prediction.style);
+		// Fresh LOS gain with an already-expired cooldown fires this very tick (t=0).
 		assertEquals(0, prediction.ticksUntilHit);
+		assertEquals(0, ranger.ticksSinceLastAttack);
 	}
 
 	@Test
@@ -121,37 +125,87 @@ public class ThreatPredictorTest
 	}
 
 	@Test
-	public void blobResolvesStyleFromPrayerHeldAtScanTickNotFireTick()
+	public void blobReScanResolvesStyleFromPrayerHeldAtCooldownExpiryNotEarlier()
 	{
 		ThreatPredictor predictor = new ThreatPredictor();
 		LosEngine engine = new LosEngine();
 		Footprint player = new Footprint(10, 10, 1);
 		NpcThreatState blob = new NpcThreatState(1, MobType.BLOB, new Footprint(10, 15, 3));
 
-		// Scan tick: protect-magic held -> reactive rule resolves to RANGE.
+		// Tick 0: fresh LOS gain resolves the first scan immediately (protect-magic held -> RANGE).
 		predictor.advance(blob, player, engine, true, false, false, 0, 6);
-		// Prayer changes mid-scan; must not affect the already-resolved style.
+		// Ticks 1-2: fire countdown continues (2, then 1 remaining).
 		predictor.advance(blob, player, engine, false, false, false, 1, 6);
-		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, false, true, false, 2, 6);
+		predictor.advance(blob, player, engine, false, false, false, 2, 6);
+		// Tick 3: fires (0 remaining), rolls into SCAN_WAIT.
+		predictor.advance(blob, player, engine, false, false, false, 3, 6);
+		// Ticks 4-5: SCAN_WAIT counting down - held prayer here must not affect the next scan.
+		predictor.advance(blob, player, engine, false, true, false, 4, 6);
+		predictor.advance(blob, player, engine, false, true, false, 5, 6);
+		// Tick 6: cooldown expires - the re-scan resolves using *this* tick's prayer (protect-magic -> RANGE),
+		// not the protect-missiles held during ticks 4-5 (which would wrongly resolve MAGIC if sampled early).
+		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, true, false, false, 6, 6);
 
 		assertEquals(1, predictions.size());
 		assertEquals(AttackStyle.RANGE, predictions.get(0).style);
 	}
 
 	@Test
-	public void blobResolvesToMagicWhenNoRelevantPrayerHeldAtScanTick()
+	public void blobResolvesToUnknownWhenNoRelevantPrayerHeldAtScanTick()
 	{
 		ThreatPredictor predictor = new ThreatPredictor();
 		LosEngine engine = new LosEngine();
 		Footprint player = new Footprint(10, 10, 1);
 		NpcThreatState blob = new NpcThreatState(1, MobType.BLOB, new Footprint(10, 15, 3));
 
-		predictor.advance(blob, player, engine, false, false, false, 0, 6);
-		predictor.advance(blob, player, engine, false, false, false, 1, 6);
-		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, false, false, false, 2, 6);
+		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, false, false, false, 0, 6);
 
 		assertEquals(1, predictions.size());
-		assertEquals(AttackStyle.MAGIC, predictions.get(0).style);
+		assertEquals(AttackStyle.UNKNOWN, predictions.get(0).style);
+	}
+
+	@Test
+	public void freshLosGainResolvesBlobScanImmediatelyWithNoPriorWait()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		NpcThreatState blob = new NpcThreatState(1, MobType.BLOB, new Footprint(10, 15, 3));
+		MobDef def = MobDef.of(MobType.BLOB);
+
+		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, true, false, false, 0, 6);
+
+		assertEquals(1, predictions.size());
+		assertEquals(def.atkSpeed, predictions.get(0).ticksUntilHit);
+		assertEquals(BlobPhase.FIRE, blob.blobPhase);
+	}
+
+	@Test
+	public void blobFireCountdownEmittedEveryTickUntilAttackBegins()
+	{
+		ThreatPredictor predictor = new ThreatPredictor();
+		LosEngine engine = new LosEngine();
+		Footprint player = new Footprint(10, 10, 1);
+		NpcThreatState blob = new NpcThreatState(1, MobType.BLOB, new Footprint(10, 15, 3));
+
+		List<ThreatPrediction> tick0 = predictor.advance(blob, player, engine, true, false, false, 0, 6);
+		List<ThreatPrediction> tick1 = predictor.advance(blob, player, engine, true, false, false, 1, 6);
+		List<ThreatPrediction> tick2 = predictor.advance(blob, player, engine, true, false, false, 2, 6);
+		List<ThreatPrediction> tick3 = predictor.advance(blob, player, engine, true, false, false, 3, 6);
+		List<ThreatPrediction> tick4 = predictor.advance(blob, player, engine, true, false, false, 4, 6);
+		List<ThreatPrediction> tick5 = predictor.advance(blob, player, engine, true, false, false, 5, 6);
+		List<ThreatPrediction> tick6 = predictor.advance(blob, player, engine, true, false, false, 6, 6);
+
+		// Scan resolves immediately at tick 0, then counts down every tick to the fire at tick 3.
+		assertEquals(3, tick0.get(0).ticksUntilHit);
+		assertEquals(2, tick1.get(0).ticksUntilHit);
+		assertEquals(1, tick2.get(0).ticksUntilHit);
+		assertEquals(0, tick3.get(0).ticksUntilHit);
+		// SCAN_WAIT ticks produce no prediction - the queue goes quiet until the next scan.
+		assertTrue(tick4.isEmpty());
+		assertTrue(tick5.isEmpty());
+		// The cooldown expires at tick 6 (3 ticks after the tick-3 fire), resolving the next scan immediately.
+		assertEquals(3, tick6.get(0).ticksUntilHit);
 	}
 
 	@Test
@@ -203,10 +257,9 @@ public class ThreatPredictorTest
 
 		MovementSimulator.Projection expected = MovementSimulator.project(def, start, player, engine, lookaheadTicks);
 		assertTrue("test setup expects the ranger to close into LOS within the lookahead", expected.ticks >= 0);
-		int expectedDistance = Footprint.chebyshev(expected.footprint.x, expected.footprint.y, player.x, player.y);
-		int expectedDelay = ProjectileHitTicks.delayFor(MobType.RANGER, AttackStyle.RANGE, expectedDistance);
 		// ticksSinceLastAttack starts at 0 and is incremented once before the eta check.
 		int futureTicksSinceLastAttack = 1 + expected.ticks;
+		// If the cooldown will have already expired by eta, it fires that same tick.
 		int expectedFireTick = futureTicksSinceLastAttack >= def.atkSpeed
 			? expected.ticks
 			: expected.ticks + (def.atkSpeed - futureTicksSinceLastAttack);
@@ -218,8 +271,7 @@ public class ThreatPredictorTest
 		assertEquals(AttackStyle.RANGE, prediction.style);
 		assertTrue(prediction.uncertain);
 		assertFalse(prediction.armed);
-		// -1: ticksUntilHit is adjusted for the measured 1-tick reaction lag, floored at 0.
-		assertEquals(Math.max(0, expectedFireTick + expectedDelay - 1), prediction.ticksUntilHit);
+		assertEquals(expectedFireTick, prediction.ticksUntilHit);
 	}
 
 	@Test
@@ -249,9 +301,7 @@ public class ThreatPredictorTest
 
 		MovementSimulator.Projection expected = MovementSimulator.project(def, start, player, engine, lookaheadTicks);
 		assertTrue("test setup expects the blob to close into LOS within the lookahead", expected.ticks >= 0);
-		int expectedDistance = Footprint.chebyshev(expected.footprint.x, expected.footprint.y, player.x, player.y);
-		AttackStyle expectedStyle = ThreatPredictor.resolveBlobStyle(true); // protectMagicHeld=true -> reacts with RANGE
-		int expectedDelay = ProjectileHitTicks.delayFor(MobType.BLOB, expectedStyle, expectedDistance);
+		AttackStyle expectedStyle = ThreatPredictor.resolveBlobStyle(true, false); // protectMagicHeld=true -> reacts with RANGE
 		int expectedFireTick = expected.ticks + def.atkSpeed;
 
 		List<ThreatPrediction> predictions = predictor.advance(blob, player, engine, true, false, false, 0, lookaheadTicks);
@@ -260,8 +310,7 @@ public class ThreatPredictorTest
 		ThreatPrediction prediction = predictions.get(0);
 		assertEquals(expectedStyle, prediction.style);
 		assertTrue(prediction.uncertain);
-		// -1: ticksUntilHit is adjusted for the measured 1-tick reaction lag, floored at 0.
-		assertEquals(Math.max(0, expectedFireTick + expectedDelay - 1), prediction.ticksUntilHit);
+		assertEquals(expectedFireTick, prediction.ticksUntilHit);
 		// The real scan/fire phase machine hasn't started yet - still pre-engagement.
 		assertEquals(BlobPhase.NONE, blob.blobPhase);
 	}
@@ -287,8 +336,9 @@ public class ThreatPredictorTest
 	@Test
 	public void resolveBlobStyleReactsToHeldPrayer()
 	{
-		assertEquals(AttackStyle.RANGE, ThreatPredictor.resolveBlobStyle(true));
-		assertEquals(AttackStyle.MAGIC, ThreatPredictor.resolveBlobStyle(false));
+		assertEquals(AttackStyle.RANGE, ThreatPredictor.resolveBlobStyle(true, false));
+		assertEquals(AttackStyle.MAGIC, ThreatPredictor.resolveBlobStyle(false, true));
+		assertEquals(AttackStyle.UNKNOWN, ThreatPredictor.resolveBlobStyle(false, false));
 	}
 
 	@Test

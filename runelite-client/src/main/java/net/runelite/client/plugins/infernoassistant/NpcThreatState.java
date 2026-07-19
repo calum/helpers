@@ -36,6 +36,7 @@ final class NpcThreatState
 
 	int ticksSinceLastAttack;
 	boolean hasLos;
+	boolean hadLosLastTick;
 	boolean inRange;
 
 	BlobPhase blobPhase = BlobPhase.NONE;

@@ -36,8 +36,8 @@ final class GridConstants
 {
 	static final int INFERNO_REGION_ID = 9043;
 
-	static final int REGION_X_OFFSET = 17;
-	static final int REGION_Y_OFFSET = 46;
+	static final int REGION_X_OFFSET = 16;
+	static final int REGION_Y_OFFSET = 47;
 
 	static final int ARENA_X_MIN = 1;
 	static final int ARENA_X_MAX = 29;

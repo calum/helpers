@@ -264,6 +264,8 @@ class InfernoAssistantOverlay extends OverlayPanel
 				return rangeIcon;
 			case MELEE:
 				return meleeIcon;
+			case UNKNOWN:
+				return null;
 			default:
 				throw new IllegalStateException("Unhandled AttackStyle: " + style);
 		}
@@ -295,6 +297,8 @@ class InfernoAssistantOverlay extends OverlayPanel
 				return "Protect from Missiles";
 			case MELEE:
 				return "Protect from Melee";
+			case UNKNOWN:
+				return "Blob unknown";
 			default:
 				throw new IllegalStateException("Unhandled AttackStyle: " + style);
 		}
@@ -310,6 +314,8 @@ class InfernoAssistantOverlay extends OverlayPanel
 				return config.rangeColor();
 			case MELEE:
 				return config.meleeColor();
+			case UNKNOWN:
+				return Color.GRAY;
 			default:
 				throw new IllegalStateException("Unhandled AttackStyle: " + style);
 		}

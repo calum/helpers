@@ -60,6 +60,7 @@ final class ThreatPredictor
 		}
 
 		MobDef def = MobDef.of(state.mobType);
+		state.hadLosLastTick = state.hasLos;
 		state.hasLos = losEngine.mobHasLos(def, state.footprint, player.x, player.y);
 		state.inRange = def.range == 1
 			? LosEngine.isWithinMeleeRange(state.footprint, player.x, player.y)
@@ -74,7 +75,7 @@ final class ThreatPredictor
 
 		if (def.isBlob)
 		{
-			advanceBlob(state, def, player, losEngine, protectMagicHeld, lookaheadTicks, predictions);
+			advanceBlob(state, def, player, losEngine, protectMagicHeld, protectMissilesHeld, lookaheadTicks, predictions);
 		}
 		else
 		{
@@ -109,16 +110,18 @@ final class ThreatPredictor
 			return;
 		}
 
-		int distance = Footprint.chebyshev(state.footprint.x, state.footprint.y, player.x, player.y);
 		boolean secondaryMelee = secondaryMeleeApplies(def, state.footprint, player);
 		boolean uncertain = secondaryMelee || def.hasFlicker;
 
+		// A mob whose cooldown has already expired fires the instant it gains
+		// LOS - there is no separate 1-tick "target acquisition" delay on top
+		// of that, confirmed by direct observation (an armed NPC attacks the
+		// same tick the player walks into its LOS, not the tick after).
 		int t = isEligibleToAttack(state, def) ? 0 : def.atkSpeed - state.ticksSinceLastAttack;
 		boolean firstIteration = true;
 		while (t <= lookaheadTicks)
 		{
-			int delay = ProjectileHitTicks.delayFor(def.type, def.style, distance);
-			out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(t + delay), def.style, def.maxHit, uncertain));
+			out.add(ThreatPrediction.attack(state.npcIndex, def.type, t, def.style, def.maxHit, uncertain));
 			if (firstIteration && t == 0)
 			{
 				state.ticksSinceLastAttack = 0;
@@ -128,46 +131,57 @@ final class ThreatPredictor
 		}
 	}
 
+	/**
+	 * Ported from AUTOZUK's {@code hlMobAttack} blob branch (index.html:909-913):
+	 * a scan resolves <b>immediately</b> either the instant LOS is freshly
+	 * gained, or whenever the post-fire cooldown ({@link BlobPhase#SCAN_WAIT})
+	 * counts down to 0 - there is no multi-tick delay before the first scan
+	 * of a fresh engagement, only between a fire and the next scan. Once
+	 * resolved, the blob counts down {@code def.atkSpeed} ticks to the fire
+	 * itself, emitting an updated prediction every tick of that countdown so
+	 * the queue doesn't go blank mid-cycle.
+	 */
 	private void advanceBlob(NpcThreatState state, MobDef def, Footprint player, LosEngine losEngine,
-		boolean protectMagicHeld, int lookaheadTicks, List<ThreatPrediction> out)
+		boolean protectMagicHeld, boolean protectMissilesHeld, int lookaheadTicks, List<ThreatPrediction> out)
 	{
-		if (!state.hasLos && state.blobPhase == BlobPhase.NONE)
+		boolean freshLosGain = state.hasLos && !state.hadLosLastTick;
+
+		if (!state.hasLos && state.blobPhase != BlobPhase.FIRE)
 		{
-			predictIncomingAttack(state, def, resolveBlobStyle(protectMagicHeld), def.atkSpeed, player, losEngine,
-				lookaheadTicks, out);
+			// No LOS, and not already mid a locked-in fire countdown from an earlier
+			// scan (a blob that scanned and then lost LOS still fires blind, per
+			// AUTOZUK - matches the "hold-recommendation only" approximation already
+			// documented for this plugin).
+			state.blobPhase = BlobPhase.NONE;
+			predictIncomingAttack(state, def, resolveBlobStyle(protectMagicHeld, protectMissilesHeld), def.atkSpeed,
+				player, losEngine, lookaheadTicks, out);
 			return;
 		}
 
-		if (state.blobPhase == BlobPhase.NONE)
+		boolean scanResolvesNow = freshLosGain
+			|| (state.blobPhase == BlobPhase.SCAN_WAIT && --state.blobPhaseTicksRemaining <= 0);
+
+		if (scanResolvesNow)
 		{
-			state.blobPhase = BlobPhase.SCAN;
-			state.blobPhaseTicksRemaining = def.atkSpeed;
-			state.blobResolvedStyle = resolveBlobStyle(protectMagicHeld);
-		}
-
-		state.blobPhaseTicksRemaining--;
-
-		if (state.blobPhase == BlobPhase.SCAN && state.blobPhaseTicksRemaining <= 0)
-		{
-			int distance = Footprint.chebyshev(state.footprint.x, state.footprint.y, player.x, player.y);
-			boolean secondaryMelee = secondaryMeleeApplies(def, state.footprint, player);
-			int delay = ProjectileHitTicks.delayFor(def.type, state.blobResolvedStyle, distance);
-			out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(delay), state.blobResolvedStyle, def.maxHit, secondaryMelee));
-
+			state.blobResolvedStyle = resolveBlobStyle(protectMagicHeld, protectMissilesHeld);
 			state.blobPhase = BlobPhase.FIRE;
 			state.blobPhaseTicksRemaining = def.atkSpeed;
 		}
-		else if (state.blobPhase == BlobPhase.FIRE && state.blobPhaseTicksRemaining <= 0)
+		else if (state.blobPhase == BlobPhase.FIRE)
 		{
-			if (state.hasLos)
+			state.blobPhaseTicksRemaining--;
+		}
+
+		if (state.blobPhase == BlobPhase.FIRE)
+		{
+			boolean secondaryMelee = secondaryMeleeApplies(def, state.footprint, player);
+			out.add(ThreatPrediction.attack(state.npcIndex, def.type, state.blobPhaseTicksRemaining,
+				state.blobResolvedStyle, def.maxHit, secondaryMelee));
+
+			if (state.blobPhaseTicksRemaining <= 0)
 			{
-				state.blobPhase = BlobPhase.SCAN;
+				state.blobPhase = BlobPhase.SCAN_WAIT;
 				state.blobPhaseTicksRemaining = def.atkSpeed;
-				state.blobResolvedStyle = resolveBlobStyle(protectMagicHeld);
-			}
-			else
-			{
-				state.blobPhase = BlobPhase.NONE;
 			}
 		}
 	}
@@ -198,6 +212,10 @@ final class ThreatPredictor
 		}
 		else
 		{
+			// If the mob's cooldown will have already expired by the tick it's
+			// projected to walk into LOS (eta), it fires that same tick - matching
+			// the same no-extra-delay rule applied in advanceStandard for the
+			// confirmed-LOS case.
 			int futureTicksSinceLastAttack = state.ticksSinceLastAttack + eta;
 			fireTick = futureTicksSinceLastAttack >= def.atkSpeed
 				? eta
@@ -209,25 +227,7 @@ final class ThreatPredictor
 			return;
 		}
 
-		int distance = Footprint.chebyshev(projection.footprint.x, projection.footprint.y, player.x, player.y);
-		int delay = ProjectileHitTicks.delayFor(def.type, style, distance);
-		out.add(ThreatPrediction.attack(state.npcIndex, def.type, reactionAdjust(fireTick + delay), style, def.maxHit, true));
-	}
-
-	/**
-	 * Shifts a raw fire-tick-plus-projectile-delay sum one tick earlier
-	 * (floored at 0), correcting for the one-tick lag between a
-	 * {@code GameTick} firing and the player actually reacting to it:
-	 * empirically, turning on a protection prayer during the tick the
-	 * overlay showed "+2" was already too late to stop a hit that landed 1
-	 * tick later, not 2 - the raw computed value is always 1 tick ahead of
-	 * the real deadline to act. Every attack style's minimum
-	 * {@link ProjectileHitTicks} delay is 1, so without this adjustment
-	 * {@code ticksUntilHit} could never reach 0 for a real attack.
-	 */
-	private static int reactionAdjust(int rawTicksUntilHit)
-	{
-		return Math.max(0, rawTicksUntilHit - 1);
+		out.add(ThreatPrediction.attack(state.npcIndex, def.type, fireTick, style, def.maxHit, true));
 	}
 
 	private void handleMeleerDig(NpcThreatState state, List<ThreatPrediction> out)
@@ -250,19 +250,25 @@ final class ThreatPredictor
 		return state.hasLos && state.inRange && state.ticksSinceLastAttack >= def.atkSpeed;
 	}
 
-	static int projectileDelay(MobDef def, int distance)
-	{
-		return ProjectileHitTicks.delayFor(def.type, def.style, distance);
-	}
-
 	/**
 	 * Reactive blob style resolution ported from AUTOZUK's {@code calcSimDamage}
 	 * (index.html:1211-1220): whichever style Protect from Magic does *not*
-	 * block, evaluated using the prayer held at the scan tick.
+	 * block, evaluated using the prayer held at the scan tick. If neither
+	 * Protect from Magic nor Protect from Missiles is held (e.g. Protect from
+	 * Melee, or no prayer) at that tick, per the wiki the blob's attack style
+	 * is effectively random - reported as {@link AttackStyle#UNKNOWN}.
 	 */
-	static AttackStyle resolveBlobStyle(boolean protectMagicHeld)
+	static AttackStyle resolveBlobStyle(boolean protectMagicHeld, boolean protectMissilesHeld)
 	{
-		return protectMagicHeld ? AttackStyle.RANGE : AttackStyle.MAGIC;
+		if (protectMagicHeld && !protectMissilesHeld)
+		{
+			return AttackStyle.RANGE;
+		}
+		if (protectMissilesHeld && !protectMagicHeld)
+		{
+			return AttackStyle.MAGIC;
+		}
+		return AttackStyle.UNKNOWN;
 	}
 
 	/**

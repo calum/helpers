@@ -81,7 +81,7 @@ public class LosTileCalculatorTest
 
 		assertTrue(LosTileCalculator.computeLosTiles(List.of(blob), engine).isEmpty());
 
-		blob.blobPhase = BlobPhase.SCAN;
+		blob.blobPhase = BlobPhase.SCAN_WAIT;
 		assertTrue(LosTileCalculator.computeLosTiles(List.of(blob), engine).isEmpty());
 	}
 

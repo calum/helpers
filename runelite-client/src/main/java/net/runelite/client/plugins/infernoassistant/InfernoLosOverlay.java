@@ -146,6 +146,8 @@ class InfernoLosOverlay extends Overlay
 				return config.rangeColor();
 			case MELEE:
 				return config.meleeColor();
+			case UNKNOWN:
+				return Color.GRAY;
 			default:
 				throw new IllegalStateException("Unhandled AttackStyle: " + style);
 		}

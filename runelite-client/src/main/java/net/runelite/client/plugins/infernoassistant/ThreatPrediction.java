@@ -27,23 +27,16 @@ package net.runelite.client.plugins.infernoassistant;
 /**
  * A single predicted upcoming event for one NPC, per DESIGN.md §5. One of:
  * a predicted attack ({@link #style} set, {@link #ticksUntilHit} the tick
- * offset the hit lands - this includes movement-projected attacks from an
- * NPC that doesn't have LOS yet, see {@link MovementSimulator}, always
- * marked {@link #uncertain}); a meleer "about to dig and relocate" warning
- * ({@link #meleerDigWarning} true, no style/timing since dig completion
- * isn't deterministic); or an "armed" warning ({@link #armed} true) for an
- * NPC whose attack timer has already expired but which currently lacks
- * LOS/range and isn't predicted to gain it within the lookahead window -
- * since such an NPC fires the instant it does gain LOS, this is a fallback
- * warning for when movement projection can't say when that will be.
- *
- * <p>{@link ThreatPredictor} deliberately computes {@code ticksUntilHit} one
- * tick lower than the raw fire-tick-plus-projectile-delay sum (floored at 0)
- * before calling {@link #attack} - see its call sites for why. This class
- * itself stores whatever value it's given verbatim; the adjustment is not
- * applied here so that tests/callers constructing a {@link ThreatPrediction}
- * directly (e.g. {@link ConflictResolver}'s unit tests) get the tick value
- * they actually asked for.
+ * offset the NPC's attack begins - this includes movement-projected attacks
+ * from an NPC that doesn't have LOS yet, see {@link MovementSimulator},
+ * always marked {@link #uncertain}); a meleer "about to dig and relocate"
+ * warning ({@link #meleerDigWarning} true, no style/timing since dig
+ * completion isn't deterministic); or an "armed" warning ({@link #armed}
+ * true) for an NPC whose attack timer has already expired but which
+ * currently lacks LOS/range and isn't predicted to gain it within the
+ * lookahead window - since such an NPC fires the instant it does gain LOS,
+ * this is a fallback warning for when movement projection can't say when
+ * that will be.
  */
 final class ThreatPrediction
 {

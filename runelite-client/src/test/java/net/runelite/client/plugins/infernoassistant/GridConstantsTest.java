@@ -33,7 +33,7 @@ public class GridConstantsTest
 	@Test
 	public void gridXYMatchesKnownInfernoScouterCoordinate()
 	{
-		// regionX=17, regionY=46 is grid origin (0,0) per REGION_X_OFFSET/REGION_Y_OFFSET.
+		// regionX=16, regionY=47 is grid origin (0,0) per REGION_X_OFFSET/REGION_Y_OFFSET.
 		WorldPoint worldPoint = new WorldPoint(GridConstants.REGION_X_OFFSET, GridConstants.REGION_Y_OFFSET, 0);
 
 		assertEquals(0, GridConstants.gridX(worldPoint));
@@ -82,11 +82,13 @@ public class GridConstantsTest
 		// calibrated against real GameObject positions: WEST(0,9), NORTH(17,7), SOUTH(10,23),
 		// using scoutX=regionX-18, scoutY=47-regionY - but that stored coordinate is each
 		// footprint's NORTH edge (NW-corner convention), while this package's Footprint/grid
-		// frame stores the SOUTH edge (SW-corner convention, gridX=regionX-17,
-		// gridY=46-regionY). Converting north-edge to south-edge needs +[size-1] within
-		// inferno-scouter's own frame before re-basing the axis (gridY=scoutY-1) - see
-		// PillarSlot's javadoc. That two-step conversion reproduces AUTOZUK's raw
-		// PILLAR_LOCS exactly (research/AUTOZUK/index.html:372).
+		// frame stores the SOUTH edge (SW-corner convention). Converting north-edge to
+		// south-edge needs +[size-1] within inferno-scouter's own frame before re-basing the
+		// axis (gridY=scoutY-1) - see PillarSlot's javadoc. That two-step conversion
+		// reproduces AUTOZUK's raw PILLAR_LOCS exactly (research/AUTOZUK/index.html:372),
+		// which is also the frame GridConstants.REGION_X_OFFSET/REGION_Y_OFFSET (16/47) are
+		// calibrated against (research/AUTOZUK/index.html:3442-3443) - so these grid values
+		// convert back to the correct real-world tile via GridConstants.worldPointFor.
 		assertEquals(1, PillarSlot.WEST.x);
 		assertEquals(10, PillarSlot.WEST.y);
 		assertEquals(18, PillarSlot.NORTH.x);
@@ -94,5 +96,19 @@ public class GridConstantsTest
 		assertEquals(11, PillarSlot.SOUTH.x);
 		assertEquals(24, PillarSlot.SOUTH.y);
 		assertEquals(3, PillarSlot.SIZE);
+	}
+
+	@Test
+	public void regionOffsetsMatchAutozukGroundTruthCalibration()
+	{
+		// AUTOZUK's own tile-marker export function (research/AUTOZUK/index.html:3442-3443,
+		// the code path used to place a real, verifiable RuneLite tile marker in-game) defines
+		// the ground-truth conversion as regionX = gameX+16, regionY = 47-gameY. These two
+		// constants have drifted before (see PillarTracker's javadoc on the prior
+		// 17/46-vs-18/47 inconsistency) and caused every grid<->world conversion in this
+		// package to be off by 1 tile NW - pin them directly so a future "unification" can't
+		// silently regress this again.
+		assertEquals(16, GridConstants.REGION_X_OFFSET);
+		assertEquals(47, GridConstants.REGION_Y_OFFSET);
 	}
 }

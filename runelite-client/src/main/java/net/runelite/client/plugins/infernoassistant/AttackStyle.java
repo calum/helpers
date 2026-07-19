@@ -34,7 +34,9 @@ enum AttackStyle
 {
 	MAGIC(Prayer.PROTECT_FROM_MAGIC),
 	RANGE(Prayer.PROTECT_FROM_MISSILES),
-	MELEE(Prayer.PROTECT_FROM_MELEE);
+	MELEE(Prayer.PROTECT_FROM_MELEE),
+	/** Style not yet resolvable - no protection prayer can block it. */
+	UNKNOWN(null);
 
 	private final Prayer protectionPrayer;
 
@@ -64,6 +66,8 @@ enum AttackStyle
 				return protectMissilesHeld;
 			case MELEE:
 				return protectMeleeHeld;
+			case UNKNOWN:
+				return false;
 			default:
 				throw new IllegalStateException("Unhandled AttackStyle: " + this);
 		}

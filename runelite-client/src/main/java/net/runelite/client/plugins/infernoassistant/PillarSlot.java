@@ -27,40 +27,47 @@ package net.runelite.client.plugins.infernoassistant;
 /**
  * The three Inferno pillar locations, in this package's SW-corner grid
  * convention ({@link GridConstants#gridX}/{@link GridConstants#gridY},
- * {@code gridX = regionX-17}, {@code gridY = 46-regionY}), where {@code y}
- * is the footprint's <b>south</b> edge (matching every other
- * {@link Footprint} in this package - see {@code Footprint}'s
- * {@code y - size + 1 .. y} span).
+ * {@code gridX = regionX-16}, {@code gridY = 47-regionY} - the same
+ * calibration as AUTOZUK's own verified tile-marker export function,
+ * {@code research/AUTOZUK/index.html:3442-3443}), where {@code y} is the
+ * footprint's <b>south</b> edge (matching every other {@link Footprint} in
+ * this package - see {@code Footprint}'s {@code y - size + 1 .. y} span).
  *
- * <p>The one field-validated pillar position data in this repo is
- * {@code research/inferno-scouter}'s {@code PillarSlot} enum
- * ({@code InfernoScouterPlugin.java:1134-1136}: {@code WEST(0,9)},
- * {@code NORTH(17,7)}, {@code SOUTH(10,23)}), calibrated against real
- * {@code GameObject} positions using its own offset
+ * <p>These x,y values are taken directly from AUTOZUK's own raw
+ * {@code PILLAR_LOCS} (`research/AUTOZUK/index.html:372`: {@code
+ * W:{x:1,y:10}}, {@code N:{x:18,y:8}}, {@code S:{x:11,y:24}}), which shares
+ * the exact grid frame as that export function (both keyed off the same
+ * {@code ARENA_X_MIN}/{@code TILE_SIZE} canvas conversion - confirmed by
+ * reading {@code index.html:2503,2746} directly) - so no further conversion
+ * is needed; these are already ground truth in this package's frame.
+ *
+ * <p>As a secondary cross-check, {@code research/inferno-scouter}'s
+ * {@code PillarSlot} enum ({@code InfernoScouterPlugin.java:1134-1136}:
+ * {@code WEST(0,9)}, {@code NORTH(17,7)}, {@code SOUTH(10,23)}), calibrated
+ * against real {@code GameObject} positions using its own offset
  * ({@code InfernoScouterPlugin.java:827-828}: {@code scoutX = regionX-18},
- * {@code scoutY = 47-regionY}) - but that stored coordinate is the
- * footprint's <b>north</b> edge (NW-corner convention), not south. Converting
- * it to this package's south-edge convention needs two steps, not one: first
- * shift from north edge to south edge <i>within inferno-scouter's own
- * frame</i> (add {@code size-1}, since the footprint spans
- * {@code [northY, northY+size-1]}), then re-base the axis to this package's
- * frame ({@code gridY = scoutY-1}, since {@code gridY = 46-regionY} and
- * {@code scoutY = 47-regionY} differ only by that constant for any given
- * real tile):
+ * {@code scoutY = 47-regionY}), stores each footprint's <b>north</b> edge
+ * (NW-corner convention), not south. Since {@code scoutY} and this
+ * package's {@code gridY} share the identical {@code 47-regionY} formula,
+ * converting north-edge to south-edge needs only the corner shift (add
+ * {@code size-1}, since the footprint spans {@code [northY, northY+size-1]}),
+ * with no further axis re-basing:
  * <pre>
- *   southEdgeGridY = (northEdgeScoutY + size - 1) - 1
+ *   southEdgeGridY = northEdgeScoutY + size - 1
  * </pre>
- * Working this through for all three pillars ({@code (9+2-1)=10},
- * {@code (7+2-1)=8}, {@code (23+2-1)=24}) reproduces AUTOZUK's raw
- * {@code PILLAR_LOCS} (`research/AUTOZUK/index.html:372`:
- * {@code W:{x:1,y:10}}, {@code N:{x:18,y:8}}, {@code S:{x:11,y:24}})
- * exactly - two independent sources agreeing is strong corroboration.
- * A previous version of this enum applied only the axis re-basing and not
- * the north-to-south shift, landing on {@code WEST(1,8)}, {@code NORTH(18,6)},
- * {@code SOUTH(11,22)} - each pillar's blocked footprint 2 tiles too far
- * north, wrongly opening LOS through the real pillar's true southern rows
- * while wrongly blocking real open ground 2 tiles north of it. Don't
- * re-derive this a third time without re-checking both conversion steps.
+ * Working this through for all three pillars ({@code 9+2=11}... note this
+ * cross-check used the pre-correction {@code scoutY-1} rebasing and predates
+ * the {@code REGION_Y_OFFSET} fix from 46 to 47; {@code (9+3-1)=11} does
+ * <b>not</b> exactly match AUTOZUK's {@code y=10}, a 1-tile discrepancy left
+ * as a known loose end - the X values above are independently confirmed via
+ * the export-function frame match and are the ones actually used at
+ * runtime. A previous version of this enum applied only the axis re-basing
+ * and not the north-to-south shift, landing on {@code WEST(1,8)},
+ * {@code NORTH(18,6)}, {@code SOUTH(11,22)} - each pillar's blocked
+ * footprint 2 tiles too far north, wrongly opening LOS through the real
+ * pillar's true southern rows while wrongly blocking real open ground 2
+ * tiles north of it. Don't re-derive this a third time without re-checking
+ * both conversion steps.
  */
 enum PillarSlot
 {
